@@ -1,0 +1,54 @@
+# OS / editor noise
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Local runtime / tool config
+.home/
+.hyperspy/
+.matplotlib/
+.mplconfig/
+
+# Logs
+*.log
+
+# EBSD source data and generated outputs
+*.h5
+*.hdf5
+*.h5oina
+*.edaxh5
+*.up1
+*.up2
+*.ang
+*.sdf5
+*.npz
+*.nml
+reindex_*
+reindexed_output*
+dict_*
+
+# Reference / legacy workspaces
+ReferenceCodes/
+EMSphInx Studio/
+_Depr/
+CuAl TKD Sam/
+overlap_ebsd_gui.py
+2601.14155v3-2.pdf
+2601.14155v3-2.txt
+AGENTS.rtf
