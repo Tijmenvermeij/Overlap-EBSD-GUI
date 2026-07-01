@@ -19,12 +19,12 @@ In practice, the application can:
 
 - Load Oxford `.h5oina` data or EDAX `.up1` / `.up2` patterns with a companion `.ang` file
 - Calibrate or edit pattern centers
-- Build, save, load, and reuse Kikuchipy dictionaries
+- Build, save, load, and reuse [kikuchipy](https://github.com/pyxem/kikuchipy) dictionaries
 - Run dictionary indexing and post-index orientation refinement
 - Fit primary overlap residuals, index residuals, and refine residual matches
 - Fit overlap-mixture models for selected points or ROIs
 - Export reindexed maps, primary or residual ROI maps, workflow state, and optional residual patterns
-- Use Kikuchipy where possible, with a legacy projector fallback for older master-pattern formats
+- Use a legacy projector fallback for older master-pattern formats
 
 The GUI starts with local example file paths filled in. Replace them with your own data or browse to matching files on disk.
 
@@ -37,8 +37,6 @@ The GUI starts with local example file paths filled in. Replace them with your o
 Install the Python dependencies with:
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate
 pip install -r requirements_gui.txt
 ```
 
@@ -58,5 +56,5 @@ python multistep_overlap_ebsd_gui.py
 
 ## Notes
 
-- Large EBSD datasets, generated dictionaries, residual exports, logs, caches, and local virtual environments are ignored by git.
+- Large EBSD datasets, generated dictionaries, residual exports, logs, and caches are ignored by git.
 - `ReferenceCodes/`, `EMSphInx Studio/`, `_Depr/`, the local paper copies, and the deprecated launcher are ignored by git and are not part of the current workflow.
