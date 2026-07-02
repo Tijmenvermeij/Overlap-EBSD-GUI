@@ -2485,68 +2485,70 @@ class WorkflowSession:
                 selected_root = roots[0] if roots else None
                 xmap = getattr(s, "xmap", None)
 
-                eulers: np.ndarray | None = None
-                phases: np.ndarray | None = None
-                x: np.ndarray | None = None
-                y: np.ndarray | None = None
+                euler_path = _h5oina_first_path(
+                    f,
+                    H5OINA_DATASET_CANDIDATES["euler"],
+                    roots=roots,
+                    label="Euler",
+                    required=False,
+                )
+                phase_path = _h5oina_first_path(
+                    f,
+                    H5OINA_DATASET_CANDIDATES["phase"],
+                    roots=roots,
+                    label="phase",
+                    required=False,
+                )
+                x_path = _h5oina_first_path(f, H5OINA_DATASET_CANDIDATES["x"], roots=roots)
+                y_path = _h5oina_first_path(f, H5OINA_DATASET_CANDIDATES["y"], roots=roots)
+
+                eulers: np.ndarray | None = (
+                    np.asarray(f[euler_path][()], dtype=np.float64).reshape(-1, 3) if euler_path is not None else None
+                )
+                phases: np.ndarray | None = (
+                    np.asarray(f[phase_path][()], dtype=np.int32).ravel() if phase_path is not None else None
+                )
+                x: np.ndarray | None = np.asarray(f[x_path][()], dtype=np.float64).ravel() if x_path is not None else None
+                y: np.ndarray | None = np.asarray(f[y_path][()], dtype=np.float64).ravel() if y_path is not None else None
+
                 if xmap is not None:
-                    try:
-                        xmap_eulers = np.asarray(xmap.rotations.to_euler(), dtype=np.float64).reshape(-1, 3)
-                        if xmap_eulers.shape[0] == expected:
-                            eulers = xmap_eulers
-                    except Exception:
-                        eulers = None
-                    try:
-                        xmap_phases = np.asarray(xmap.phase_id, dtype=np.int32).ravel()
-                        if xmap_phases.size == expected:
-                            phases = xmap_phases
-                    except Exception:
-                        phases = None
-                    try:
-                        xmap_x = np.asarray(xmap.x, dtype=np.float64).ravel()
-                        if xmap_x.size == expected:
-                            x = xmap_x
-                    except Exception:
-                        x = None
-                    try:
-                        xmap_y = np.asarray(xmap.y, dtype=np.float64).ravel()
-                        if xmap_y.size == expected:
-                            y = xmap_y
-                    except Exception:
-                        y = None
+                    if eulers is None:
+                        try:
+                            xmap_eulers = np.asarray(xmap.rotations.to_euler(), dtype=np.float64).reshape(-1, 3)
+                            if xmap_eulers.shape[0] == expected:
+                                eulers = xmap_eulers
+                        except Exception:
+                            eulers = None
+                    if phases is None:
+                        try:
+                            xmap_phases = np.asarray(xmap.phase_id, dtype=np.int32).ravel()
+                            if xmap_phases.size == expected:
+                                phases = xmap_phases
+                        except Exception:
+                            phases = None
+                    if x is None:
+                        try:
+                            xmap_x = np.asarray(xmap.x, dtype=np.float64).ravel()
+                            if xmap_x.size == expected:
+                                x = xmap_x
+                        except Exception:
+                            x = None
+                    if y is None:
+                        try:
+                            xmap_y = np.asarray(xmap.y, dtype=np.float64).ravel()
+                            if xmap_y.size == expected:
+                                y = xmap_y
+                        except Exception:
+                            y = None
 
                 if eulers is None:
-                    euler_path = _h5oina_first_path(
-                        f,
-                        H5OINA_DATASET_CANDIDATES["euler"],
-                        roots=roots,
-                        label="Euler",
-                        required=True,
-                    )
-                    assert euler_path is not None
-                    eulers = np.asarray(f[euler_path][()], dtype=np.float64).reshape(-1, 3)
+                    raise RuntimeError("H5OINA file is missing a usable Euler dataset.")
                 if phases is None:
-                    phase_path = _h5oina_first_path(
-                        f,
-                        H5OINA_DATASET_CANDIDATES["phase"],
-                        roots=roots,
-                        label="phase",
-                        required=True,
-                    )
-                    assert phase_path is not None
-                    phases = np.asarray(f[phase_path][()], dtype=np.int32).ravel()
+                    raise RuntimeError("H5OINA file is missing a usable phase dataset.")
                 if x is None:
-                    x_path = _h5oina_first_path(f, H5OINA_DATASET_CANDIDATES["x"], roots=roots)
-                    if x_path is not None:
-                        x = np.asarray(f[x_path][()], dtype=np.float64).ravel()
-                    else:
-                        x = np.tile(np.arange(cols), rows).astype(np.float64)
+                    x = np.tile(np.arange(cols), rows).astype(np.float64)
                 if y is None:
-                    y_path = _h5oina_first_path(f, H5OINA_DATASET_CANDIDATES["y"], roots=roots)
-                    if y_path is not None:
-                        y = np.asarray(f[y_path][()], dtype=np.float64).ravel()
-                    else:
-                        y = np.repeat(np.arange(rows), cols).astype(np.float64)
+                    y = np.repeat(np.arange(rows), cols).astype(np.float64)
 
                 beam_kv_path = _h5oina_first_path(f, H5OINA_DATASET_CANDIDATES["beam_kv"], roots=roots)
                 beam_kv = float(np.ravel(f[beam_kv_path][()])[0]) if beam_kv_path is not None else None
