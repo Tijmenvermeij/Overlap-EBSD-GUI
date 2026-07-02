@@ -123,6 +123,73 @@ def _h5oina_first_path(
     return None
 
 
+def _is_hexagonal_lattice_angles(angles: np.ndarray) -> bool:
+    arr = np.asarray(angles, dtype=np.float64).reshape(-1)
+    if arr.size < 3 or not np.all(np.isfinite(arr[:3])):
+        return False
+    test = arr[:3].copy()
+    if float(np.nanmax(np.abs(test))) > (2.0 * np.pi + 0.5):
+        test = np.deg2rad(test)
+    target = np.deg2rad(np.array([90.0, 90.0, 120.0], dtype=np.float64))
+    return bool(np.allclose(test, target, atol=1e-3))
+
+
+def _h5_phase_euler_corrections(h5_file: h5py.File, roots: list[str] | None = None) -> dict[int, float]:
+    """Return per-phase Euler corrections for H5OINA phases.
+
+    Oxford hexagonal H5OINA phases appear to use a basis offset from the
+    x||a convention used internally for IPF coloring and pattern
+    simulation. We normalize these phases by rotating +30 deg about the
+    crystal c-axis on load, and undo that on H5OINA export.
+    """
+    out: dict[int, float] = {}
+    for root_path in _h5oina_existing_paths(
+        h5_file,
+        H5OINA_DATASET_CANDIDATES["phase_symmetries"],
+        roots=roots,
+    ):
+        for key, group in h5_file[root_path].items():
+            try:
+                phase_id = int(key)
+            except (TypeError, ValueError):
+                continue
+            try:
+                angles = np.asarray(group["Lattice Angles"][()], dtype=np.float64)
+            except Exception:
+                continue
+            if _is_hexagonal_lattice_angles(angles):
+                out[phase_id] = np.deg2rad(30.0)
+    return out
+
+
+def _apply_phase_euler_corrections(
+    eulers_rad: np.ndarray,
+    phases: np.ndarray | None,
+    corrections_rad: dict[int, float],
+    *,
+    inverse: bool = False,
+) -> np.ndarray:
+    arr = np.asarray(eulers_rad, dtype=np.float64).reshape(-1, 3).copy()
+    if phases is None or not corrections_rad:
+        return arr
+    phase_ids = np.asarray(phases, dtype=np.int32).reshape(-1)
+    if phase_ids.size != arr.shape[0]:
+        raise ValueError("Phase/Euler array size mismatch while applying phase Euler corrections.")
+
+    from orix.quaternion import Rotation
+
+    valid = np.all(np.isfinite(arr), axis=1)
+    for phase_id, angle_rad in corrections_rad.items():
+        mask = (phase_ids == int(phase_id)) & valid
+        if not np.any(mask):
+            continue
+        angle_use = -float(angle_rad) if inverse else float(angle_rad)
+        correction = Rotation.from_axes_angles([[0.0, 0.0, 1.0]], [angle_use], degrees=False)
+        rots = Rotation.from_euler(arr[mask], degrees=False)
+        arr[mask] = (correction * rots).to_euler()
+    return arr
+
+
 @dataclass
 class GeometryConfig:
     pc_convention: str = "edax"
@@ -245,6 +312,7 @@ class LoadedInputData:
     scan_unit: str
     pc_output_convention: str
     phase_symmetries: dict[int, object] = field(default_factory=dict)
+    phase_euler_corrections_rad: dict[int, float] = field(default_factory=dict)
     detector_px_size: float | None = None
     detector_binning: float | None = None
     ang_header_lines: list[str] | None = None
@@ -2575,6 +2643,8 @@ class WorkflowSession:
                         if arr.size >= expected:
                             map_layers[label] = arr[:expected].reshape(rows, cols).astype(np.float32)
                 phase_symmetries = _h5_phase_symmetries(f, roots=roots)
+                phase_euler_corrections = _h5_phase_euler_corrections(f, roots=roots)
+                eulers = _apply_phase_euler_corrections(eulers, phases, phase_euler_corrections)
 
             det = s.detector
             pc_bruker = np.asarray(det.pc_bruker(), dtype=np.float64).reshape(rows, cols, 3)
@@ -2606,6 +2676,7 @@ class WorkflowSession:
                 scan_unit=str(s.axes_manager.navigation_axes[0].units) if len(s.axes_manager.navigation_axes) >= 1 else "px",
                 pc_output_convention="oxford",
                 phase_symmetries=phase_symmetries,
+                phase_euler_corrections_rad=phase_euler_corrections,
                 detector_px_size=float(det.px_size) if det.px_size is not None else None,
                 detector_binning=float(det.binning) if det.binning is not None else None,
                 up_pattern_reader=None,
@@ -2628,7 +2699,11 @@ class WorkflowSession:
             self.residual_candidate_eulers_rad = None
             unique_ph = np.unique(phases)
             self.last_action_note = f"Phases in data: {unique_ph.tolist()}"
-            return f"Loaded H5OINA: map={rows}x{cols}, pattern={h}x{w}, N={rows * cols}."
+            correction_note = ""
+            if phase_euler_corrections:
+                phase_labels = sorted(int(pid) for pid in phase_euler_corrections)
+                correction_note = f" Applied +30 deg x||a Euler correction for H5OINA phase(s) {phase_labels}."
+            return f"Loaded H5OINA: map={rows}x{cols}, pattern={h}x{w}, N={rows * cols}.{correction_note}"
 
         if ext in (".up1", ".up2"):
             if not orientation_path:
@@ -2735,6 +2810,7 @@ class WorkflowSession:
                 scan_unit="um",
                 pc_output_convention=ang_pc_convention,
                 phase_symmetries=_ang_phase_symmetries(header_lines),
+                phase_euler_corrections_rad={},
                 detector_px_size=None,
                 detector_binning=None,
                 ang_header_lines=header_lines,
@@ -6379,6 +6455,12 @@ class WorkflowSession:
             with h5py.File(out, "r+") as f:
                 pc_map = self.current_pc_custom.reshape(self.data.rows, self.data.cols, 3)
                 roots = [self.data.h5_analysis_root] if self.data.h5_analysis_root is not None else _h5oina_analysis_roots(f)
+                eulers_out = _apply_phase_euler_corrections(
+                    self.current_eulers_rad,
+                    self.current_phases,
+                    self.data.phase_euler_corrections_rad,
+                    inverse=True,
+                )
 
                 def _write_h5_fields(candidates: list[str], values: np.ndarray, *, label: str) -> None:
                     paths = _h5oina_existing_paths(f, candidates, roots=roots)
@@ -6389,7 +6471,7 @@ class WorkflowSession:
                         ds = f[path]
                         ds[...] = flat.reshape(ds.shape).astype(ds.dtype, copy=False)
 
-                _write_h5_fields(H5OINA_DATASET_CANDIDATES["euler"], self.current_eulers_rad, label="Euler")
+                _write_h5_fields(H5OINA_DATASET_CANDIDATES["euler"], eulers_out, label="Euler")
                 _write_h5_fields(H5OINA_DATASET_CANDIDATES["phase"], self.current_phases, label="phase")
                 _write_h5_fields(H5OINA_DATASET_CANDIDATES["pcx"], pc_map[..., 0], label="pattern-center X")
                 _write_h5_fields(H5OINA_DATASET_CANDIDATES["pcy"], pc_map[..., 1], label="pattern-center Y")
@@ -6601,9 +6683,14 @@ class WorkflowSession:
                 if not phase_paths:
                     raise RuntimeError("H5OINA export could not find any phase dataset to update.")
                 quality_paths = self._h5oina_quality_dataset_paths(h5)
-                row_eulers = roi_eulers.reshape(roi_rows, roi_cols, 3)
-                row_quality = roi_quality.reshape(roi_rows, roi_cols)
                 row_phase = roi_phase.reshape(roi_rows, roi_cols)
+                row_eulers = _apply_phase_euler_corrections(
+                    roi_eulers.reshape(-1, 3),
+                    row_phase.reshape(-1),
+                    self.data.phase_euler_corrections_rad,
+                    inverse=True,
+                ).reshape(roi_rows, roi_cols, 3)
+                row_quality = roi_quality.reshape(roi_rows, roi_cols)
 
                 def _write_h5_roi_dataset(ds: h5py.Dataset, values: np.ndarray, *, is_euler: bool) -> None:
                     if is_euler:
