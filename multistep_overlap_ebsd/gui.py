@@ -1053,8 +1053,9 @@ class MultiStepOverlapGUI(tk.Tk):
         self._stop_progress_pulse(kind)
         variable.set(clipped)
         status_var.set(message)
-        if clipped < 100.0:
-            self._schedule_progress_pulse(kind)
+        # Keep refinement / overlap progress bars determinate so the displayed
+        # value tracks the reported percentage instead of switching to a pulse.
+        self.update_idletasks()
 
     def _attach_point_value_traces(self) -> None:
         vars_to_watch = (
