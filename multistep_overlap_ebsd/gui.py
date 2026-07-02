@@ -85,6 +85,7 @@ class MultiStepOverlapGUI(tk.Tk):
         self.trust_euler_var = tk.DoubleVar(value=1.0)
         self.trust_pc_var = tk.DoubleVar(value=0.03)
         self.maxfev_var = tk.IntVar(value=25)
+        self.refine_full_resolution_var = tk.BooleanVar(value=False)
 
         self.di_res_deg_var = tk.DoubleVar(value=12.0)
         self.di_binning_var = tk.IntVar(value=4)
@@ -108,6 +109,7 @@ class MultiStepOverlapGUI(tk.Tk):
         self.gain_fit_popsize_var = tk.IntVar(value=15)
         self.residual_trust_euler_var = tk.DoubleVar(value=2.0)
         self.residual_maxfev_var = tk.IntVar(value=100)
+        self.residual_refine_full_resolution_var = tk.BooleanVar(value=False)
         self.residual_keep_n_var = tk.IntVar(value=1)
         self.overlap_mixture_trust_euler_var = tk.DoubleVar(value=1.0)
         self.overlap_mixture_maxfev_var = tk.IntVar(value=80)
@@ -126,10 +128,15 @@ class MultiStepOverlapGUI(tk.Tk):
             ("Ellipse y offset", tk.DoubleVar(value=-0.15), tk.DoubleVar(value=0.15)),
             ("Ellipse x offset", tk.DoubleVar(value=-0.15), tk.DoubleVar(value=0.15)),
         ]
-        self.use_scan_pc_shift_var = tk.BooleanVar(value=True)
+        self.use_scan_pc_shift_var = tk.BooleanVar(value=False)
         self.detector_px_size_var = tk.DoubleVar(value=1.0)
         self.detector_binning_var = tk.DoubleVar(value=1.0)
         self.calibration_summary_var = tk.StringVar(value="No calibration points selected.")
+        self._roi_drag_view_index: int | None = None
+        self._roi_drag_axis = None
+        self._roi_drag_start: tuple[float, float] | None = None
+        self._roi_drag_last: tuple[float, float] | None = None
+        self._roi_drag_patch: Rectangle | None = None
         self.pattern_mask_option_var = tk.IntVar(value=-1)
         self.pattern_mask_status_var = tk.StringVar(value=f"Mask: {self.session.pattern_mask_description()}")
         self.dynamic_bg_enabled_var = tk.BooleanVar(value=False)
@@ -139,7 +146,10 @@ class MultiStepOverlapGUI(tk.Tk):
         self.map_layer_var = tk.StringVar(value=ORIENTATION_LAYER_LABEL)
         self.index_quality_layer_var = tk.StringVar(value="CI")
         self.status_var = tk.StringVar(value="Load data to begin.")
+        self.refinement_progress_bar: ttk.Progressbar | None = None
         self.overlap_progress_bar: ttk.Progressbar | None = None
+        self._progress_pulse_after_ids: dict[str, str] = {}
+        self._progress_pulse_active: set[str] = set()
 
         self._build_ui()
         self._attach_point_value_traces()
@@ -228,23 +238,29 @@ class MultiStepOverlapGUI(tk.Tk):
         ttk.Entry(refinement, textvariable=self.trust_euler_var, width=10).grid(row=0, column=1, sticky="w")
         ttk.Label(refinement, text="max evaluations").grid(row=1, column=0, sticky="w")
         ttk.Entry(refinement, textvariable=self.maxfev_var, width=10).grid(row=1, column=1, sticky="w")
+        ttk.Checkbutton(
+            refinement,
+            text="Use full-resolution patterns for refinement",
+            variable=self.refine_full_resolution_var,
+        ).grid(row=2, column=0, columnspan=2, sticky="w", pady=(6, 0))
         self.btn_refine_indexed = ttk.Button(
             refinement,
             text="Refine Last Indexed Orientations",
             command=self._refine_last_indexed,
         )
-        self.btn_refine_indexed.grid(row=2, column=0, columnspan=2, sticky="we", pady=(8, 0))
-        ttk.Progressbar(
+        self.btn_refine_indexed.grid(row=3, column=0, columnspan=2, sticky="we", pady=(8, 0))
+        self.refinement_progress_bar = ttk.Progressbar(
             refinement,
             variable=self.refinement_progress_var,
             maximum=100.0,
             mode="determinate",
-        ).grid(row=3, column=0, columnspan=2, sticky="we", pady=(6, 0))
+        )
+        self.refinement_progress_bar.grid(row=4, column=0, columnspan=2, sticky="we", pady=(6, 0))
         ttk.Label(
             refinement,
             textvariable=self.refinement_progress_status_var,
             wraplength=390,
-        ).grid(row=4, column=0, columnspan=2, sticky="w", pady=(2, 0))
+        ).grid(row=5, column=0, columnspan=2, sticky="w", pady=(2, 0))
         refinement.columnconfigure(0, weight=1)
         output = ttk.LabelFrame(controls, text="Save and Reopen Results", padding=8)
         output.pack(fill=tk.X, pady=4)
@@ -266,10 +282,10 @@ class MultiStepOverlapGUI(tk.Tk):
         self._build_overlap_tab(overlap)
         ttk.Label(
             controls,
-            text="Paper model: fit Gaussian σ and an elliptical power-law gain mask, normalize S′, then subtract Zexp − NCC(E,S′)·S′. The residual is indexed with the dictionary retained from tab 2.",
+            text="Paper model: fit Gaussian σ and an elliptical power-law gain mask, normalize S′, then subtract Zexp − NCC(E,S′)·S′. The ROI is set in tab 2 and reused here; it is read-only on this tab.",
             wraplength=390,
         ).pack(fill=tk.X, pady=(0, 4))
-        self._build_selection_controls(controls, include_roi=True)
+        self._build_selection_controls(controls, include_roi=False)
         self._build_info_and_log(controls, log_height=10)
         self._build_plot_area(right, 2, fixed_ipf=True)
 
@@ -279,7 +295,12 @@ class MultiStepOverlapGUI(tk.Tk):
         optimization = ttk.LabelFrame(controls, text="Shared Gain/Blur Mixture Fit", padding=8)
         optimization.pack(fill=tk.X, pady=4)
         self._build_overlap_optimization_tab(optimization)
-        self._build_selection_controls(controls, include_roi=True)
+        ttk.Label(
+            controls,
+            text="The ROI is defined in tab 2 and reused here; it is read-only on this tab.",
+            wraplength=390,
+        ).pack(fill=tk.X, pady=(0, 4))
+        self._build_selection_controls(controls, include_roi=False)
         self._build_info_and_log(controls, log_height=8)
         self._build_plot_area(right, 3, fixed_ipf=True)
 
@@ -299,17 +320,22 @@ class MultiStepOverlapGUI(tk.Tk):
 
         geometry = ttk.LabelFrame(parent, text="Geometry and Loading", padding=8)
         geometry.pack(fill=tk.X, pady=4)
-        ttk.Label(geometry, text="sample tilt").grid(row=0, column=0, sticky="w")
+        ttk.Label(geometry, text="sample tilt (.up1/.up2 load only)").grid(row=0, column=0, sticky="w")
         ttk.Entry(geometry, textvariable=self.sample_tilt_var, width=10).grid(row=0, column=1, sticky="w")
-        ttk.Label(geometry, text="detector tilt").grid(row=1, column=0, sticky="w")
+        ttk.Label(geometry, text="detector tilt (.up1/.up2 load only)").grid(row=1, column=0, sticky="w")
         ttk.Entry(geometry, textvariable=self.detector_tilt_var, width=10).grid(row=1, column=1, sticky="w")
-        ttk.Label(geometry, text="pattern mask (-1/0/N px)").grid(row=2, column=0, sticky="w", pady=(6, 0))
-        ttk.Entry(geometry, textvariable=self.pattern_mask_option_var, width=10).grid(row=2, column=1, sticky="w", pady=(6, 0))
+        ttk.Label(
+            geometry,
+            text="H5OINA uses geometry from the file; these fields only affect .up1/.up2 loading.",
+            wraplength=390,
+        ).grid(row=2, column=0, columnspan=2, sticky="w", pady=(2, 0))
+        ttk.Label(geometry, text="pattern mask (-1/0/N px)").grid(row=3, column=0, sticky="w", pady=(6, 0))
+        ttk.Entry(geometry, textvariable=self.pattern_mask_option_var, width=10).grid(row=3, column=1, sticky="w", pady=(6, 0))
         ttk.Label(geometry, textvariable=self.pattern_mask_status_var, wraplength=390).grid(
-            row=3, column=0, columnspan=2, sticky="w", pady=(2, 0)
+            row=4, column=0, columnspan=2, sticky="w", pady=(2, 0)
         )
         bg_controls = ttk.Frame(geometry)
-        bg_controls.grid(row=4, column=0, columnspan=2, sticky="w", pady=(6, 0))
+        bg_controls.grid(row=5, column=0, columnspan=2, sticky="w", pady=(6, 0))
         ttk.Checkbutton(
             bg_controls,
             text="dynamic BG subtraction",
@@ -319,11 +345,11 @@ class MultiStepOverlapGUI(tk.Tk):
         ttk.Label(bg_controls, text="std px (0=auto)").pack(side=tk.LEFT, padx=(12, 4))
         ttk.Entry(bg_controls, textvariable=self.dynamic_bg_std_var, width=10).pack(side=tk.LEFT)
         ttk.Label(geometry, textvariable=self.dynamic_bg_status_var, wraplength=390).grid(
-            row=5, column=0, columnspan=2, sticky="w", pady=(2, 0)
+            row=6, column=0, columnspan=2, sticky="w", pady=(2, 0)
         )
-        ttk.Button(geometry, text="Load Input Data", command=self._load_input).grid(row=6, column=0, sticky="we", pady=(8, 0))
-        ttk.Button(geometry, text="Load Master Pattern", command=self._load_master).grid(row=6, column=1, sticky="we", pady=(8, 0))
-        ttk.Button(geometry, text="Open Existing Workflow", command=self._restore_workflow).grid(row=7, column=0, columnspan=2, sticky="we", pady=(4, 0))
+        ttk.Button(geometry, text="Load Input Data", command=self._load_input).grid(row=7, column=0, sticky="we", pady=(8, 0))
+        ttk.Button(geometry, text="Load Master Pattern", command=self._load_master).grid(row=7, column=1, sticky="we", pady=(8, 0))
+        ttk.Button(geometry, text="Open Existing Workflow", command=self._restore_workflow).grid(row=8, column=0, columnspan=2, sticky="we", pady=(4, 0))
 
     def _build_selection_controls(self, parent: ttk.Frame, *, include_roi: bool) -> None:
         box = ttk.LabelFrame(parent, text="Map Selection", padding=8)
@@ -350,6 +376,11 @@ class MultiStepOverlapGUI(tk.Tk):
             ttk.Button(box, text="Apply ROI to Map", command=self._apply_roi_selection).grid(
                 row=7, column=0, columnspan=3, sticky="we", pady=(4, 0)
             )
+            ttk.Label(
+                box,
+                text="Tip: hold Shift and drag on the full IPF or initial CI map to draw an ROI.",
+                wraplength=380,
+            ).grid(row=8, column=0, columnspan=3, sticky="w", pady=(4, 0))
 
     def _build_point_editor_controls(self, parent: ttk.Frame) -> None:
         box = ttk.LabelFrame(parent, text="Selected Point Orientation and PC", padding=8)
@@ -428,6 +459,8 @@ class MultiStepOverlapGUI(tk.Tk):
         toolbar.update()
         toolbar.pack(fill=tk.X)
         canvas.mpl_connect("button_press_event", lambda event, i=view_index: self._on_plot_click(event, i))
+        canvas.mpl_connect("motion_notify_event", lambda event, i=view_index: self._on_plot_motion(event, i))
+        canvas.mpl_connect("button_release_event", lambda event, i=view_index: self._on_plot_release(event, i))
         self._plot_views[view_index] = {
             "figure": figure,
             "axes": axes,
@@ -534,15 +567,20 @@ class MultiStepOverlapGUI(tk.Tk):
 
         geom_box = ttk.LabelFrame(parent, text="Geometry / Loading", padding=8)
         geom_box.pack(fill=tk.X, pady=4)
-        ttk.Label(geom_box, text="sample tilt").grid(row=0, column=0, sticky="w")
+        ttk.Label(geom_box, text="sample tilt (.up1/.up2 load only)").grid(row=0, column=0, sticky="w")
         ttk.Entry(geom_box, textvariable=self.sample_tilt_var, width=10).grid(row=0, column=1, sticky="w")
-        ttk.Label(geom_box, text="detector tilt").grid(row=1, column=0, sticky="w")
+        ttk.Label(geom_box, text="detector tilt (.up1/.up2 load only)").grid(row=1, column=0, sticky="w")
         ttk.Entry(geom_box, textvariable=self.detector_tilt_var, width=10).grid(row=1, column=1, sticky="w")
-        ttk.Button(geom_box, text="Load Input Data", command=self._load_input).grid(row=2, column=0, sticky="we", pady=(8, 0))
-        ttk.Button(geom_box, text="Load Master", command=self._load_master).grid(row=2, column=1, sticky="we", pady=(8, 0))
-        ttk.Button(geom_box, text="Export Re-indexed Results", command=self._export_results).grid(row=3, column=0, columnspan=2, sticky="we", pady=(6, 0))
-        ttk.Button(geom_box, text="Save Workflow State", command=self._save_workflow).grid(row=4, column=0, sticky="we", pady=(4, 0))
-        ttk.Button(geom_box, text="Open Workflow State", command=self._restore_workflow).grid(row=4, column=1, sticky="we", pady=(4, 0))
+        ttk.Label(
+            geom_box,
+            text="H5OINA uses geometry from the file; these fields only affect .up1/.up2 loading.",
+            wraplength=390,
+        ).grid(row=2, column=0, columnspan=2, sticky="w", pady=(2, 0))
+        ttk.Button(geom_box, text="Load Input Data", command=self._load_input).grid(row=3, column=0, sticky="we", pady=(8, 0))
+        ttk.Button(geom_box, text="Load Master", command=self._load_master).grid(row=3, column=1, sticky="we", pady=(8, 0))
+        ttk.Button(geom_box, text="Export Re-indexed Results", command=self._export_results).grid(row=4, column=0, columnspan=2, sticky="we", pady=(6, 0))
+        ttk.Button(geom_box, text="Save Workflow State", command=self._save_workflow).grid(row=5, column=0, sticky="we", pady=(4, 0))
+        ttk.Button(geom_box, text="Open Workflow State", command=self._restore_workflow).grid(row=5, column=1, sticky="we", pady=(4, 0))
 
         select_box = ttk.LabelFrame(parent, text="Selection", padding=8)
         select_box.pack(fill=tk.X, pady=4)
@@ -683,42 +721,39 @@ class MultiStepOverlapGUI(tk.Tk):
         ttk.Button(parent, text="Add Selected Calibration Point", command=self._add_calibration_point).grid(
             row=3, column=0, columnspan=2, sticky="we", pady=(6, 0)
         )
-        ttk.Button(parent, text="Remove Selected Calibration Point", command=self._remove_calibration_point).grid(
+        ttk.Button(parent, text="Clear Calibration Points", command=self._clear_calibration_points).grid(
             row=4, column=0, columnspan=2, sticky="we", pady=(4, 0)
         )
-        ttk.Button(parent, text="Clear Calibration Points", command=self._clear_calibration_points).grid(
-            row=5, column=0, columnspan=2, sticky="we", pady=(4, 0)
-        )
         ttk.Label(parent, textvariable=self.calibration_summary_var, wraplength=460).grid(
-            row=6, column=0, columnspan=2, sticky="w", pady=(4, 0)
+            row=5, column=0, columnspan=2, sticky="w", pady=(4, 0)
         )
         ttk.Button(parent, text="Optimize Selected Point (orientation + PC)", command=self._refine_selected_point).grid(
-            row=7, column=0, columnspan=2, sticky="we", pady=(6, 0)
+            row=6, column=0, columnspan=2, sticky="we", pady=(6, 0)
         )
         self.btn_refine_roi = ttk.Button(parent, text="Optimize All Calibration Points", command=self._refine_calibration_points)
-        self.btn_refine_roi.grid(row=8, column=0, columnspan=2, sticky="we", pady=(4, 0))
+        self.btn_refine_roi.grid(row=7, column=0, columnspan=2, sticky="we", pady=(4, 0))
         ttk.Checkbutton(
             parent,
             text="Correct PC for scan position with Kikuchipy",
             variable=self.use_scan_pc_shift_var,
-        ).grid(row=9, column=0, columnspan=2, sticky="w", pady=(8, 0))
-        ttk.Label(parent, text="detector pixel size (scan-step unit)").grid(row=10, column=0, sticky="w")
-        ttk.Entry(parent, textvariable=self.detector_px_size_var, width=8).grid(row=10, column=1, sticky="w")
-        ttk.Label(parent, text="detector binning").grid(row=11, column=0, sticky="w")
-        ttk.Entry(parent, textvariable=self.detector_binning_var, width=8).grid(row=11, column=1, sticky="w")
+        ).grid(row=8, column=0, columnspan=2, sticky="w", pady=(8, 0))
+        ttk.Label(parent, text="detector pixel size (unbinned, same units as scan step)").grid(row=9, column=0, sticky="w")
+        ttk.Entry(parent, textvariable=self.detector_px_size_var, width=8).grid(row=9, column=1, sticky="w")
+        ttk.Label(parent, text="detector binning (hardware/acquisition)").grid(row=10, column=0, sticky="w")
+        ttk.Entry(parent, textvariable=self.detector_binning_var, width=8).grid(row=10, column=1, sticky="w")
         ttk.Button(parent, text="Average PCs and Apply to Map", command=self._apply_average_calibration_pc).grid(
-            row=12, column=0, columnspan=2, sticky="we", pady=(8, 0)
+            row=11, column=0, columnspan=2, sticky="we", pady=(8, 0)
         )
         ttk.Label(
             parent,
             text="For maps below ~50 µm, compare the reported max |dPC|; the correction may be negligible.",
             wraplength=460,
-        ).grid(row=13, column=0, columnspan=2, sticky="w", pady=(4, 0))
+        ).grid(row=12, column=0, columnspan=2, sticky="w", pady=(4, 0))
 
     def _build_index_tab(self, parent: ttk.Frame) -> None:
         ttk.Label(parent, text="orientation resolution (deg)").grid(row=0, column=0, sticky="w")
         ttk.Entry(parent, textvariable=self.di_res_deg_var, width=8).grid(row=0, column=1, sticky="w")
-        ttk.Label(parent, text="software pattern binning").grid(row=1, column=0, sticky="w")
+        ttk.Label(parent, text="dictionary software binning").grid(row=1, column=0, sticky="w")
         ttk.Entry(parent, textvariable=self.di_binning_var, width=8).grid(row=1, column=1, sticky="w")
         ttk.Button(parent, text="Generate Binned Dictionary", command=self._generate_dictionary).grid(
             row=2, column=0, columnspan=2, sticky="we", pady=(6, 0)
@@ -733,8 +768,9 @@ class MultiStepOverlapGUI(tk.Tk):
         ttk.Label(parent, textvariable=self.dictionary_status_var, wraplength=390).grid(
             row=4, column=0, columnspan=2, sticky="w", pady=(4, 0)
         )
-        ttk.Entry(parent, textvariable=self.dictionary_path_var, width=36).grid(row=5, column=0, sticky="we", pady=(6, 0))
-        ttk.Button(parent, text="Browse", command=self._browse_dictionary).grid(row=5, column=1, sticky="we", padx=(4, 0), pady=(6, 0))
+        ttk.Entry(parent, textvariable=self.dictionary_path_var, width=36).grid(
+            row=5, column=0, columnspan=2, sticky="we", pady=(6, 0)
+        )
         ttk.Button(parent, text="Save Dictionary", command=self._save_dictionary).grid(row=6, column=0, sticky="we", pady=(4, 0))
         ttk.Button(parent, text="Load Dictionary", command=self._load_dictionary).grid(row=6, column=1, sticky="we", pady=(4, 0))
         ttk.Button(parent, text="Load Indexed Data", command=self._restore_workflow).grid(
@@ -778,59 +814,52 @@ class MultiStepOverlapGUI(tk.Tk):
         ttk.Entry(parent, textvariable=self.residual_trust_euler_var, width=8).grid(row=4, column=1, sticky="w")
         ttk.Label(parent, text="residual refinement max evaluations").grid(row=5, column=0, sticky="w")
         ttk.Entry(parent, textvariable=self.residual_maxfev_var, width=8).grid(row=5, column=1, sticky="w")
-        ttk.Label(parent, text="keep_n (top matches)").grid(row=6, column=0, sticky="w")
-        ttk.Entry(parent, textvariable=self.residual_keep_n_var, width=8).grid(row=6, column=1, sticky="w")
-        ttk.Button(parent, text="Fit Selected Point and Build Residual", command=self._analyze_overlap).grid(row=7, column=0, columnspan=2, sticky="we", pady=(6, 0))
+        ttk.Checkbutton(
+            parent,
+            text="Use full-resolution patterns for residual refinement",
+            variable=self.residual_refine_full_resolution_var,
+        ).grid(row=6, column=0, columnspan=2, sticky="w", pady=(6, 0))
+        ttk.Label(parent, text="keep_n (top matches)").grid(row=7, column=0, sticky="w")
+        ttk.Entry(parent, textvariable=self.residual_keep_n_var, width=8).grid(row=7, column=1, sticky="w")
+        ttk.Button(parent, text="Fit Selected Point and Build Residual", command=self._analyze_overlap).grid(row=8, column=0, columnspan=2, sticky="we", pady=(6, 0))
         ttk.Button(parent, text="Index Residual for Selected Point", command=self._index_overlap_residual).grid(
-            row=8, column=0, columnspan=2, sticky="we", pady=(4, 0)
-        )
-        ttk.Button(parent, text="Refine Residual for Selected Point", command=self._refine_overlap_residual).grid(
             row=9, column=0, columnspan=2, sticky="we", pady=(4, 0)
         )
-        ttk.Separator(parent, orient=tk.HORIZONTAL).grid(row=10, column=0, columnspan=2, sticky="we", pady=8)
-        ttk.Label(parent, text="Full ROI residual workflow (uses the shared ROI selection)").grid(
-            row=11, column=0, columnspan=2, sticky="w"
+        ttk.Button(parent, text="Refine Residual for Selected Point", command=self._refine_overlap_residual).grid(
+            row=10, column=0, columnspan=2, sticky="we", pady=(4, 0)
         )
-        ttk.Label(parent, text="minimum primary NCC for residual work").grid(row=12, column=0, sticky="w")
-        ttk.Entry(parent, textvariable=self.overlap_min_ncc_var, width=8).grid(row=12, column=1, sticky="w")
+        ttk.Separator(parent, orient=tk.HORIZONTAL).grid(row=11, column=0, columnspan=2, sticky="we", pady=8)
+        ttk.Label(parent, text="Full ROI residual workflow (reads the ROI from tab 2)").grid(
+            row=12, column=0, columnspan=2, sticky="w"
+        )
+        ttk.Label(parent, text="minimum primary NCC for residual work").grid(row=13, column=0, sticky="w")
+        ttk.Entry(parent, textvariable=self.overlap_min_ncc_var, width=8).grid(row=13, column=1, sticky="w")
         ttk.Checkbutton(
             parent,
             text="Write residual patterns to file",
             variable=self.write_residual_patterns_var,
-        ).grid(row=13, column=0, columnspan=2, sticky="w", pady=(6, 0))
-        ttk.Label(parent, text="residual pattern file").grid(row=14, column=0, columnspan=2, sticky="w", pady=(2, 0))
-        ttk.Entry(parent, textvariable=self.residual_pattern_path_var, width=34).grid(row=15, column=0, sticky="we", pady=(2, 0))
+        ).grid(row=14, column=0, columnspan=2, sticky="w", pady=(6, 0))
+        ttk.Label(parent, text="residual pattern file").grid(row=15, column=0, columnspan=2, sticky="w", pady=(2, 0))
+        ttk.Entry(parent, textvariable=self.residual_pattern_path_var, width=34).grid(row=16, column=0, sticky="we", pady=(2, 0))
         ttk.Button(parent, text="Browse", command=self._browse_residual_pattern_output).grid(
-            row=15, column=1, sticky="we", padx=(4, 0), pady=(2, 0)
+            row=16, column=1, sticky="we", padx=(4, 0), pady=(2, 0)
         )
         ttk.Button(parent, text="Compute Residuals for ROI", command=self._compute_overlap_residual_roi).grid(
-            row=16, column=0, columnspan=2, sticky="we", pady=(6, 0)
+            row=17, column=0, columnspan=2, sticky="we", pady=(6, 0)
         )
         ttk.Button(parent, text="Index Residual ROI", command=self._index_overlap_residual_roi).grid(
-            row=17, column=0, columnspan=2, sticky="we", pady=(4, 0)
-        )
-        ttk.Button(parent, text="Refine Residual ROI", command=self._refine_overlap_residual_roi).grid(
             row=18, column=0, columnspan=2, sticky="we", pady=(4, 0)
         )
-        ttk.Label(parent, text="residual IPF white threshold (KP NCC)").grid(row=19, column=0, sticky="w")
-        ttk.Entry(parent, textvariable=self.residual_ipf_ncc_var, width=8).grid(row=19, column=1, sticky="w")
-        self.overlap_progress_bar = ttk.Progressbar(parent, variable=self.overlap_progress_var, maximum=100.0, mode="determinate")
-        self.overlap_progress_bar.grid(row=20, column=0, columnspan=2, sticky="we", pady=(8, 0))
-        ttk.Label(parent, textvariable=self.overlap_progress_status_var, wraplength=390).grid(
-            row=21, column=0, columnspan=2, sticky="w", pady=(2, 0)
+        ttk.Button(parent, text="Refine Residual ROI", command=self._refine_overlap_residual_roi).grid(
+            row=19, column=0, columnspan=2, sticky="we", pady=(4, 0)
         )
-        bounds_box = ttk.LabelFrame(parent, text="Primary fit bounds", padding=8)
-        bounds_box.grid(row=22, column=0, columnspan=2, sticky="we", pady=(10, 0))
-        ttk.Label(
-            bounds_box,
-            text="Used when Gaussian blur + gain are fitted. These defaults mirror the reference script and can be edited here.",
-            wraplength=380,
-        ).grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 6))
-        for row, (label, low_var, high_var) in enumerate(self.primary_fit_bound_specs, start=1):
-            ttk.Label(bounds_box, text=label).grid(row=row, column=0, sticky="w", padx=(0, 6))
-            ttk.Entry(bounds_box, textvariable=low_var, width=8).grid(row=row, column=1, sticky="w")
-            ttk.Entry(bounds_box, textvariable=high_var, width=8).grid(row=row, column=2, sticky="w", padx=(6, 0))
-
+        ttk.Label(parent, text="residual IPF white threshold (KP NCC)").grid(row=20, column=0, sticky="w")
+        ttk.Entry(parent, textvariable=self.residual_ipf_ncc_var, width=8).grid(row=20, column=1, sticky="w")
+        self.overlap_progress_bar = ttk.Progressbar(parent, variable=self.overlap_progress_var, maximum=100.0, mode="determinate")
+        self.overlap_progress_bar.grid(row=21, column=0, columnspan=2, sticky="we", pady=(8, 0))
+        ttk.Label(parent, textvariable=self.overlap_progress_status_var, wraplength=390).grid(
+            row=22, column=0, columnspan=2, sticky="w", pady=(2, 0)
+        )
         export_box = ttk.LabelFrame(parent, text="Export ROI indexing results", padding=8)
         export_box.grid(row=23, column=0, columnspan=2, sticky="we", pady=(10, 0))
         export_box.columnconfigure(0, weight=1)
@@ -855,6 +884,17 @@ class MultiStepOverlapGUI(tk.Tk):
         ttk.Button(export_box, text="Export Residual ROI Map", command=self._export_residual_roi_map).grid(
             row=6, column=0, columnspan=2, sticky="we", pady=(4, 0)
         )
+        bounds_box = ttk.LabelFrame(parent, text="Primary fit bounds", padding=8)
+        bounds_box.grid(row=23, column=0, columnspan=2, sticky="we", pady=(10, 0))
+        ttk.Label(
+            bounds_box,
+            text="Used when Gaussian blur + gain are fitted. These defaults mirror the reference script and can be edited here.",
+            wraplength=380,
+        ).grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 6))
+        for row, (label, low_var, high_var) in enumerate(self.primary_fit_bound_specs, start=1):
+            ttk.Label(bounds_box, text=label).grid(row=row, column=0, sticky="w", padx=(0, 6))
+            ttk.Entry(bounds_box, textvariable=low_var, width=8).grid(row=row, column=1, sticky="w")
+            ttk.Entry(bounds_box, textvariable=high_var, width=8).grid(row=row, column=2, sticky="w", padx=(6, 0))
 
     def _build_overlap_optimization_tab(self, parent: ttk.Frame) -> None:
         parent.columnconfigure(0, weight=1)
@@ -943,6 +983,78 @@ class MultiStepOverlapGUI(tk.Tk):
 
     def _set_busy(self, flag: bool) -> None:
         self.busy = bool(flag)
+        if not self.busy:
+            for kind in ("refinement", "overlap"):
+                self._stop_progress_pulse(kind)
+
+    def _progress_bar_for_kind(self, kind: str) -> ttk.Progressbar | None:
+        if kind == "refinement":
+            return self.refinement_progress_bar
+        if kind == "overlap":
+            return self.overlap_progress_bar
+        return None
+
+    def _cancel_progress_pulse_timer(self, kind: str) -> None:
+        after_id = self._progress_pulse_after_ids.pop(kind, None)
+        if after_id is not None:
+            try:
+                self.after_cancel(after_id)
+            except Exception:
+                pass
+
+    def _start_progress_pulse(self, kind: str) -> None:
+        self._progress_pulse_after_ids.pop(kind, None)
+        if not self.busy:
+            return
+        bar = self._progress_bar_for_kind(kind)
+        if bar is None or kind in self._progress_pulse_active:
+            return
+        try:
+            bar.configure(mode="indeterminate")
+            bar.start(12)
+            self._progress_pulse_active.add(kind)
+        except Exception:
+            pass
+
+    def _stop_progress_pulse(self, kind: str) -> None:
+        self._cancel_progress_pulse_timer(kind)
+        bar = self._progress_bar_for_kind(kind)
+        if kind in self._progress_pulse_active and bar is not None:
+            try:
+                bar.stop()
+            except Exception:
+                pass
+        self._progress_pulse_active.discard(kind)
+        if bar is not None:
+            try:
+                bar.configure(mode="determinate")
+            except Exception:
+                pass
+
+    def _schedule_progress_pulse(self, kind: str, *, delay_ms: int = 600) -> None:
+        self._cancel_progress_pulse_timer(kind)
+        bar = self._progress_bar_for_kind(kind)
+        if bar is None:
+            return
+        self._progress_pulse_after_ids[kind] = self.after(
+            int(delay_ms),
+            lambda kind=kind: self._start_progress_pulse(kind),
+        )
+
+    def _set_progress_state(
+        self,
+        kind: str,
+        variable: tk.DoubleVar,
+        status_var: tk.StringVar,
+        value: float,
+        message: str,
+    ) -> None:
+        clipped = float(np.clip(value, 0.0, 100.0))
+        self._stop_progress_pulse(kind)
+        variable.set(clipped)
+        status_var.set(message)
+        if clipped < 100.0:
+            self._schedule_progress_pulse(kind)
 
     def _attach_point_value_traces(self) -> None:
         vars_to_watch = (
@@ -1013,6 +1125,113 @@ class MultiStepOverlapGUI(tk.Tk):
         except Exception:
             # Keep GUI responsive during intermediate invalid edits.
             return
+
+    def _event_has_shift(self, event) -> bool:
+        key = str(getattr(event, "key", "")).lower()
+        return "shift" in key
+
+    def _step2_roi_axes(self) -> tuple[object, object] | tuple[()]:
+        axes = np.asarray(self.axes, dtype=object)
+        if axes.shape == (2, 3):
+            return axes[0, 0], axes[0, 1]
+        return ()
+
+    def _cancel_roi_drag(self) -> None:
+        if self._roi_drag_patch is not None:
+            try:
+                self._roi_drag_patch.remove()
+            except Exception:
+                pass
+        self._roi_drag_patch = None
+        self._roi_drag_axis = None
+        self._roi_drag_start = None
+        self._roi_drag_last = None
+        self._roi_drag_view_index = None
+
+    def _set_roi_bounds(self, r0: int, c0: int, nrows: int, ncols: int, *, source: str) -> str:
+        if self.session.data is None:
+            raise RuntimeError("Load input data first.")
+        rows = int(self.session.data.rows)
+        cols = int(self.session.data.cols)
+        r0 = max(0, min(int(r0), rows - 1))
+        c0 = max(0, min(int(c0), cols - 1))
+        nrows = max(1, min(int(nrows), rows - r0))
+        ncols = max(1, min(int(ncols), cols - c0))
+        self._suspend_point_trace = True
+        try:
+            self.roi_r0_var.set(r0)
+            self.roi_c0_var.set(c0)
+            self.roi_nrows_var.set(nrows)
+            self.roi_ncols_var.set(ncols)
+        finally:
+            self._suspend_point_trace = False
+        msg = f"ROI set to r0={r0}, c0={c0}, nrows={nrows}, ncols={ncols} ({source})."
+        self.status_var.set(msg)
+        self._log(msg)
+        self._refresh_plot()
+        return msg
+
+    def _maybe_begin_roi_drag(self, event, view_index: int | None) -> bool:
+        if self.session.data is None or view_index != 1 or event.button != 1:
+            return False
+        if not self._event_has_shift(event) or event.xdata is None or event.ydata is None:
+            return False
+        roi_axes = self._step2_roi_axes()
+        if not roi_axes or event.inaxes not in roi_axes:
+            return False
+        self._cancel_roi_drag()
+        self._roi_drag_view_index = 1
+        self._roi_drag_axis = event.inaxes
+        self._roi_drag_start = (float(event.xdata), float(event.ydata))
+        self._roi_drag_last = self._roi_drag_start
+        rect = Rectangle(
+            (float(event.xdata), float(event.ydata)),
+            0.0,
+            0.0,
+            fill=False,
+            edgecolor="magenta",
+            linewidth=1.5,
+            linestyle="--",
+        )
+        event.inaxes.add_patch(rect)
+        self._roi_drag_patch = rect
+        self.canvas.draw_idle()
+        return True
+
+    def _update_roi_drag(self, event) -> None:
+        if self._roi_drag_patch is None or self._roi_drag_axis is None or self._roi_drag_start is None:
+            return
+        if event.inaxes is not self._roi_drag_axis or event.xdata is None or event.ydata is None:
+            return
+        x0, y0 = self._roi_drag_start
+        x1, y1 = float(event.xdata), float(event.ydata)
+        self._roi_drag_last = (x1, y1)
+        left = min(x0, x1)
+        bottom = min(y0, y1)
+        width = max(abs(x1 - x0), 1e-9)
+        height = max(abs(y1 - y0), 1e-9)
+        self._roi_drag_patch.set_x(left)
+        self._roi_drag_patch.set_y(bottom)
+        self._roi_drag_patch.set_width(width)
+        self._roi_drag_patch.set_height(height)
+        self.canvas.draw_idle()
+
+    def _finish_roi_drag(self, event) -> bool:
+        if self._roi_drag_view_index != 1 or self._roi_drag_start is None:
+            return False
+        end = self._roi_drag_last if self._roi_drag_last is not None else self._roi_drag_start
+        if event.xdata is not None and event.ydata is not None and (
+            self._roi_drag_axis is None or event.inaxes is self._roi_drag_axis
+        ):
+            end = (float(event.xdata), float(event.ydata))
+        x0, y0 = self._roi_drag_start
+        x1, y1 = end
+        self._cancel_roi_drag()
+        c0 = int(np.clip(round(min(x0, x1)), 0, self.session.data.cols - 1))
+        c1 = int(np.clip(round(max(x0, x1)), 0, self.session.data.cols - 1))
+        r0 = int(np.clip(round(min(y0, y1)), 0, self.session.data.rows - 1))
+        r1 = int(np.clip(round(max(y0, y1)), 0, self.session.data.rows - 1))
+        return bool(self._set_roi_bounds(r0, c0, r1 - r0 + 1, c1 - c0 + 1, source="shift-drag"))
 
     def _log(self, text: str) -> None:
         targets = self.log_texts or [self.log_text]
@@ -1119,13 +1338,37 @@ class MultiStepOverlapGUI(tk.Tk):
     def _browse_residual_roi_export(self) -> None:
         self._browse_roi_export(self.residual_roi_export_path_var, residual=True)
 
-    def _browse_dictionary(self) -> None:
-        fn = filedialog.asksaveasfilename(
+    def _dictionary_filetypes(self) -> list[tuple[str, str]]:
+        return [("Binned EBSD dictionary", "*.h5 *.hdf5"), ("All files", "*.*")]
+
+    def _dictionary_dialog_options(self, *, for_save: bool = False) -> dict[str, object]:
+        options: dict[str, object] = {"filetypes": self._dictionary_filetypes()}
+        raw = self.dictionary_path_var.get().strip()
+        if not raw:
+            return options
+        candidate = Path(raw).expanduser()
+        if not candidate.is_absolute():
+            candidate = Path.cwd() / candidate
+        parent = candidate.parent
+        if parent:
+            options["initialdir"] = str(parent.resolve())
+        if candidate.name:
+            if for_save and candidate.suffix.lower() in {".h5", ".hdf5"}:
+                options["initialfile"] = candidate.stem
+            else:
+                options["initialfile"] = candidate.name
+        return options
+
+    def _choose_dictionary_save_path(self) -> str | None:
+        selected = filedialog.asksaveasfilename(
             defaultextension=".h5",
-            filetypes=[("Binned EBSD dictionary", "*.h5 *.hdf5"), ("All files", "*.*")],
+            **self._dictionary_dialog_options(for_save=True),
         )
-        if fn:
-            self.dictionary_path_var.set(str(Path(fn).resolve()))
+        if not selected:
+            return None
+        path = str(Path(selected).resolve())
+        self.dictionary_path_var.set(path)
+        return path
 
     def _roi_bounds(self) -> tuple[int, int, int, int]:
         if self.session.data is None:
@@ -1147,12 +1390,22 @@ class MultiStepOverlapGUI(tk.Tk):
         self.reindex_progress_status_var.set(message)
 
     def _set_refinement_progress(self, value: float, message: str) -> None:
-        self.refinement_progress_var.set(float(np.clip(value, 0.0, 100.0)))
-        self.refinement_progress_status_var.set(message)
+        self._set_progress_state(
+            "refinement",
+            self.refinement_progress_var,
+            self.refinement_progress_status_var,
+            value,
+            message,
+        )
 
     def _set_overlap_progress(self, value: float, message: str) -> None:
-        self.overlap_progress_var.set(float(np.clip(value, 0.0, 100.0)))
-        self.overlap_progress_status_var.set(message)
+        self._set_progress_state(
+            "overlap",
+            self.overlap_progress_var,
+            self.overlap_progress_status_var,
+            value,
+            message,
+        )
 
     def _set_overlap_optimization_progress(self, value: float, message: str) -> None:
         self.overlap_optimization_progress_var.set(float(np.clip(value, 0.0, 100.0)))
@@ -1803,19 +2056,17 @@ class MultiStepOverlapGUI(tk.Tk):
         self._run_threaded(action)
 
     def _save_dictionary(self) -> None:
-        path = self.dictionary_path_var.get().strip()
-        self._run_threaded(lambda: self.session.save_dictionary(path))
+        path = self._choose_dictionary_save_path()
+        if not path:
+            return
+        self._run_threaded(lambda path=path: self.session.save_dictionary(path))
 
     def _load_dictionary(self) -> None:
-        path = self.dictionary_path_var.get().strip()
-        if not path or not Path(path).exists():
-            selected = filedialog.askopenfilename(
-                filetypes=[("Binned EBSD dictionary", "*.h5 *.hdf5"), ("All files", "*.*")],
-            )
-            if not selected:
-                return
-            path = str(Path(selected).resolve())
-            self.dictionary_path_var.set(path)
+        selected = filedialog.askopenfilename(**self._dictionary_dialog_options())
+        if not selected:
+            return
+        path = str(Path(selected).resolve())
+        self.dictionary_path_var.set(path)
 
         def action() -> str:
             msg = self.session.load_dictionary(path)
@@ -1909,6 +2160,7 @@ class MultiStepOverlapGUI(tk.Tk):
         phase_id = int(self.phase_id_var.get())
         trust_euler = float(self.trust_euler_var.get())
         maxfev = int(self.maxfev_var.get())
+        use_full_resolution = bool(self.refine_full_resolution_var.get())
         self._set_refinement_progress(0.0, "Starting orientation refinement...")
 
         def progress(value: float, message: str) -> None:
@@ -1923,6 +2175,7 @@ class MultiStepOverlapGUI(tk.Tk):
                 phase_id=phase_id,
                 trust_euler_deg=trust_euler,
                 maxfev=maxfev,
+                use_full_resolution=use_full_resolution,
                 progress_callback=progress,
             )
 
@@ -2023,6 +2276,7 @@ class MultiStepOverlapGUI(tk.Tk):
             return
         trust_euler = float(self.residual_trust_euler_var.get())
         maxfev = int(self.residual_maxfev_var.get())
+        use_full_resolution = bool(self.residual_refine_full_resolution_var.get())
         threshold = self._residual_ncc_threshold()
         primary_ncc = self._selected_primary_ncc(index)
         if primary_ncc is not None and threshold > 0.0 and primary_ncc < threshold:
@@ -2038,6 +2292,11 @@ class MultiStepOverlapGUI(tk.Tk):
                 result,
                 trust_euler_deg=trust_euler,
                 maxfev=maxfev,
+                use_full_resolution=use_full_resolution,
+                progress_callback=lambda value, message: self.after(
+                    0,
+                    lambda v=value, m=message: self._set_overlap_progress(v, m),
+                ),
             )
             self.last_overlap = refined
             self.last_overlap_mixture = None
@@ -2170,6 +2429,7 @@ class MultiStepOverlapGUI(tk.Tk):
         selected_index = int(self.index_var.get())
         trust_euler = float(self.residual_trust_euler_var.get())
         maxfev = int(self.residual_maxfev_var.get())
+        use_full_resolution = bool(self.residual_refine_full_resolution_var.get())
         write_patterns = bool(self.write_residual_patterns_var.get())
         self._set_overlap_progress(0.0, f"Refining residuals for {indices.size} ROI point(s)...")
 
@@ -2181,6 +2441,7 @@ class MultiStepOverlapGUI(tk.Tk):
                 indices,
                 trust_euler_deg=trust_euler,
                 maxfev=maxfev,
+                use_full_resolution=use_full_resolution,
                 write_patterns=write_patterns,
                 selected_index=selected_index if np.any(indices == selected_index) else None,
                 progress_callback=progress,
@@ -2517,6 +2778,8 @@ class MultiStepOverlapGUI(tk.Tk):
         if self.workflow_notebook is not None:
             view_index = int(self.workflow_notebook.index(self.workflow_notebook.select()))
         self._activate_plot_view(view_index)
+        if self._roi_drag_patch is not None:
+            self._cancel_roi_drag()
         if not self.busy:
             self._sync_pattern_conditioning_for_refresh()
         view = self._plot_views[view_index]
@@ -2941,6 +3204,22 @@ class MultiStepOverlapGUI(tk.Tk):
             ax.set_title(title)
             ax.set_axis_off()
 
+        def _decorate_score_axis(ax) -> None:
+            ax.scatter([col], [row], marker="+", color="red", s=180, linewidths=2.0)
+            ax.add_patch(
+                Rectangle(
+                    (c0 - 0.5, r0 - 0.5),
+                    ncols,
+                    nrows,
+                    fill=False,
+                    edgecolor="cyan",
+                    linewidth=1.3,
+                )
+            )
+            ax.set_xlim(*xlim)
+            ax.set_ylim(*ylim)
+            ax.set_axis_off()
+
         primary_ipf = self.session.get_ipf_color_map(direction="z")
         primary_threshold_mask = self._primary_threshold_mask()
         primary_ipf = self._apply_white_mask(primary_ipf, primary_threshold_mask)
@@ -3084,6 +3363,8 @@ class MultiStepOverlapGUI(tk.Tk):
             else:
                 residual_score_ax.text(0.5, 0.5, "Residual score map appears after ROI indexing", ha="center", va="center")
                 residual_score_ax.set_title("Residual score map")
+
+        _decorate_score_axis(residual_score_ax)
 
         info_lines = [
             "Re-indexed IPF-Z / residual view",
@@ -3311,6 +3592,8 @@ class MultiStepOverlapGUI(tk.Tk):
             self._activate_plot_view(int(view_index))
         if event.inaxes is None:
             return
+        if active_view == 1 and self._maybe_begin_roi_drag(event, active_view):
+            return
         if active_view == 1:
             allowed_axes = [ax for ax in np.asarray(self.axes, dtype=object).flat]
         elif active_view == 3 and self.axes.shape == (2, 4):
@@ -3328,6 +3611,16 @@ class MultiStepOverlapGUI(tk.Tk):
         self.row_var.set(row)
         self.col_var.set(col)
         self._sync_index_from_row_col()
+
+    def _on_plot_motion(self, event, view_index: int | None = None) -> None:
+        if self._roi_drag_view_index is None or self._roi_drag_view_index != int(view_index or -1):
+            return
+        self._update_roi_drag(event)
+
+    def _on_plot_release(self, event, view_index: int | None = None) -> None:
+        if self._roi_drag_view_index is None or self._roi_drag_view_index != int(view_index or -1):
+            return
+        self._finish_roi_drag(event)
 
     def _populate_point_vars(self) -> None:
         if self.session.data is None:

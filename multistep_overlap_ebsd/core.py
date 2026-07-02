@@ -64,33 +64,60 @@ class UPPatternReader:
     n_patterns: int
     h: int
     w: int
+    _pattern_memmap: np.memmap | None = field(default=None, init=False, repr=False, compare=False)
 
     @property
     def bytes_per_pattern(self) -> int:
         return int(self.h * self.w * np.dtype(self.dtype).itemsize)
 
+    def _patterns(self) -> np.memmap:
+        if self._pattern_memmap is None:
+            self._pattern_memmap = np.memmap(
+                self.path,
+                dtype=self.dtype,
+                mode="r",
+                offset=int(self.pattern_offset),
+                shape=(int(self.n_patterns), int(self.h), int(self.w)),
+            )
+        return self._pattern_memmap
+
     def read_pattern(self, index: int) -> np.ndarray:
         idx = int(index)
         if idx < 0 or idx >= int(self.n_patterns):
             raise IndexError(f"UP pattern index out of bounds: {idx} (N={self.n_patterns}).")
-        n_px = int(self.h * self.w)
-        offset = int(self.pattern_offset + idx * self.bytes_per_pattern)
-        with open(self.path, "rb") as f:
-            f.seek(offset)
-            arr = np.fromfile(f, dtype=self.dtype, count=n_px)
-        if arr.size != n_px:
-            raise IOError(
-                f"Failed to read full pattern #{idx} from {self.path}: expected {n_px} values, got {arr.size}."
-            )
-        return arr.reshape(self.h, self.w).astype(np.float32, copy=False)
+        return np.asarray(self._patterns()[idx], dtype=np.float32)
 
     def read_patterns(self, indices: np.ndarray) -> np.ndarray:
         idx = np.asarray(indices, dtype=np.int64).ravel()
         if idx.size == 0:
             raise ValueError("No pattern indices requested.")
+        if np.any(idx < 0) or np.any(idx >= int(self.n_patterns)):
+            bad = int(idx[np.where((idx < 0) | (idx >= int(self.n_patterns)))[0][0]])
+            raise IndexError(f"UP pattern index out of bounds: {bad} (N={self.n_patterns}).")
+        if idx.size == 1:
+            return self.read_pattern(int(idx[0]))[np.newaxis, ...]
+        if np.all(idx == idx[0]):
+            pattern = self.read_pattern(int(idx[0]))
+            return np.repeat(pattern[np.newaxis, ...], idx.size, axis=0)
+
+        patterns = self._patterns()
+        order = np.argsort(idx, kind="stable")
+        sorted_idx = idx[order]
         out = np.empty((idx.size, self.h, self.w), dtype=np.float32)
-        for i, pidx in enumerate(idx.tolist()):
-            out[i] = self.read_pattern(int(pidx))
+        sorted_out = out if np.array_equal(order, np.arange(idx.size, dtype=np.int64)) else np.empty_like(out)
+
+        run_start = 0
+        while run_start < sorted_idx.size:
+            run_stop = run_start + 1
+            while run_stop < sorted_idx.size and int(sorted_idx[run_stop]) == int(sorted_idx[run_stop - 1]) + 1:
+                run_stop += 1
+            first = int(sorted_idx[run_start])
+            count = int(run_stop - run_start)
+            sorted_out[run_start:run_stop] = np.asarray(patterns[first : first + count], dtype=np.float32)
+            run_start = run_stop
+
+        if sorted_out is not out:
+            out[order] = sorted_out
         return out
 
 
@@ -131,6 +158,20 @@ class LoadedInputData:
     @property
     def count(self) -> int:
         return int(self.rows * self.cols)
+
+
+@dataclass(frozen=True)
+class PatternSelection:
+    kind: Literal["point", "repeated_point", "roi", "full", "sparse"]
+    indices: np.ndarray
+    r0: int = 0
+    r1: int = 0
+    c0: int = 0
+    c1: int = 0
+
+    @property
+    def size(self) -> int:
+        return int(self.indices.size)
 
 
 @dataclass
@@ -1761,6 +1802,44 @@ class WorkflowSession:
         grid_r, grid_c = np.meshgrid(rows, cols, indexing="ij")
         return (grid_r * self.data.cols + grid_c).ravel().astype(np.int64)
 
+    def _pattern_selection_from_indices(self, indices: np.ndarray) -> PatternSelection:
+        if self.data is None:
+            raise RuntimeError("Load input data first.")
+        idx = np.asarray(indices, dtype=np.int64).ravel()
+        if idx.size == 0:
+            raise ValueError("No pattern indices requested.")
+        if np.any(idx < 0) or np.any(idx >= int(self.data.count)):
+            bad = int(idx[np.where((idx < 0) | (idx >= int(self.data.count)))[0][0]])
+            raise IndexError(f"Pattern index out of bounds: {bad} (N={self.data.count}).")
+
+        if idx.size == 1:
+            row, col = self.row_col_from_index(int(idx[0]))
+            return PatternSelection("point", idx.copy(), row, row + 1, col, col + 1)
+        if np.all(idx == idx[0]):
+            row, col = self.row_col_from_index(int(idx[0]))
+            return PatternSelection("repeated_point", idx.copy(), row, row + 1, col, col + 1)
+        if idx.size == int(self.data.count) and np.array_equal(idx, np.arange(self.data.count, dtype=np.int64)):
+            return PatternSelection("full", idx.copy(), 0, int(self.data.rows), 0, int(self.data.cols))
+
+        cols = int(self.data.cols)
+        rows = idx // cols
+        cols_idx = idx % cols
+        r0 = int(np.min(rows))
+        r1 = int(np.max(rows)) + 1
+        c0 = int(np.min(cols_idx))
+        c1 = int(np.max(cols_idx)) + 1
+        rect_size = int((r1 - r0) * (c1 - c0))
+        if idx.size == rect_size:
+            expected = np.concatenate(
+                [
+                    np.arange(row * cols + c0, row * cols + c1, dtype=np.int64)
+                    for row in range(r0, r1)
+                ]
+            )
+            if np.array_equal(idx, expected):
+                return PatternSelection("roi", idx.copy(), r0, r1, c0, c1)
+        return PatternSelection("sparse", idx.copy(), r0, r1, c0, c1)
+
     def _invalidate_orientation_cache(self) -> None:
         self._orientation_color_cache.clear()
 
@@ -2638,6 +2717,53 @@ class WorkflowSession:
             sig.axes_manager.navigation_axes[0].scale = 1.0
             sig.axes_manager.navigation_axes[0].units = "px"
 
+    def _signal_from_pattern_data(self, patterns):
+        import kikuchipy as kp
+
+        work = patterns
+        ndim = getattr(work, "ndim", None)
+        if ndim == 2:
+            work = work[np.newaxis, ...]
+        if hasattr(work, "chunks") or hasattr(work, "compute"):
+            sig = kp.signals.LazyEBSD(work)
+        else:
+            sig = kp.signals.EBSD(np.asarray(work))
+        self._configure_signal_navigation_axis(sig)
+        return sig
+
+    def _signal_from_up_selection(self, selection: PatternSelection):
+        if self.data is None or self.data.up_pattern_reader is None:
+            raise RuntimeError("UP selection requested without a loaded UP reader.")
+        reader = self.data.up_pattern_reader
+        if selection.kind == "point":
+            return self._signal_from_pattern_data(reader.read_pattern(int(selection.indices[0])))
+        if selection.kind == "repeated_point":
+            pattern = reader.read_pattern(int(selection.indices[0]))
+            patterns = np.repeat(pattern[np.newaxis, ...], selection.size, axis=0)
+            return self._signal_from_pattern_data(patterns)
+        return self._signal_from_pattern_data(reader.read_patterns(selection.indices))
+
+    def _signal_from_h5_selection(self, selection: PatternSelection):
+        if self.data is None or self.data.signal is None:
+            raise RuntimeError("H5OINA selection requested without loaded signal data.")
+        data = self.data.signal.data
+        flat = data.reshape((-1, self.data.h, self.data.w))
+        if selection.kind == "point":
+            row, col = self.row_col_from_index(int(selection.indices[0]))
+            return self._signal_from_pattern_data(data[row, col])
+        if selection.kind == "repeated_point":
+            pattern = flat[int(selection.indices[0])]
+            if hasattr(pattern, "compute"):
+                pattern = pattern.compute()
+            repeated = np.repeat(np.asarray(pattern, dtype=np.float32)[np.newaxis, ...], selection.size, axis=0)
+            return self._signal_from_pattern_data(repeated)
+        if selection.kind == "roi":
+            roi = data[selection.r0 : selection.r1, selection.c0 : selection.c1].reshape((-1, self.data.h, self.data.w))
+            return self._signal_from_pattern_data(roi)
+        if selection.kind == "full":
+            return self._signal_from_pattern_data(flat)
+        return self._signal_from_pattern_data(flat[selection.indices.tolist()])
+
     def _materialize_signal_batch(self, sig):
         data = sig.data
         if hasattr(data, "compute"):
@@ -2663,35 +2789,15 @@ class WorkflowSession:
         software_binning: int = 1,
         crop_extent: tuple[int, int, int, int] | None = None,
     ):
-        import kikuchipy as kp
-
         if self.data is None:
             raise RuntimeError("Load input data first.")
+        selection = self._pattern_selection_from_indices(indices)
         if self.data.source_type == "up_ang" and self.data.up_pattern_reader is not None:
-            idx = np.asarray(indices, dtype=np.int64).ravel()
-            pats = self.data.up_pattern_reader.read_patterns(idx)
-            if pats.ndim == 2:
-                pats = pats[np.newaxis, ...]
-            sig = kp.signals.EBSD(pats)
-            self._configure_signal_navigation_axis(sig)
-            sig = self._apply_dynamic_background_to_signal(sig)
-            self._configure_signal_navigation_axis(sig)
+            sig = self._signal_from_up_selection(selection)
         else:
-            flat = self.data.signal.data.reshape((-1, self.data.h, self.data.w))
-            if int(indices.size) == 1:
-                sub = flat[int(indices[0])]
-            else:
-                sub = flat[indices.tolist()]
-            if hasattr(sub, "chunks") or hasattr(sub, "compute"):
-                sig = kp.signals.LazyEBSD(sub)
-            else:
-                pats = np.asarray(sub)
-                if pats.ndim == 2:
-                    pats = pats[np.newaxis, ...]
-                sig = kp.signals.EBSD(pats)
-            self._configure_signal_navigation_axis(sig)
-            sig = self._apply_dynamic_background_to_signal(sig)
-            self._configure_signal_navigation_axis(sig)
+            sig = self._signal_from_h5_selection(selection)
+        sig = self._apply_dynamic_background_to_signal(sig)
+        self._configure_signal_navigation_axis(sig)
 
         sig = self._apply_software_binning_to_signal(
             sig,
@@ -2701,6 +2807,39 @@ class WorkflowSession:
         if self.dynamic_bg_config.enabled:
             sig = self._materialize_signal_batch(sig)
         return sig
+
+    def _refinement_signal_from_indices(
+        self,
+        indices: np.ndarray,
+        *,
+        software_binning: int = 1,
+        crop_extent: tuple[int, int, int, int] | None = None,
+    ):
+        # Iterative Kikuchipy refinement is more stable when it works from an
+        # in-memory batch instead of a lazy on-disk signal.
+        sig = self._signal_from_indices(
+            indices,
+            software_binning=software_binning,
+            crop_extent=crop_extent,
+        )
+        return self._materialize_signal_batch(sig)
+
+    def _residual_refinement_signal_from_patterns(
+        self,
+        patterns,
+        *,
+        software_binning: int = 1,
+        crop_extent: tuple[int, int, int, int] | None = None,
+    ):
+        # Residual refinement benefits from the same in-memory stabilization as
+        # the primary Kikuchipy refinement path.
+        sig = self._signal_from_pattern_data(np.asarray(patterns, dtype=np.float32))
+        sig = self._apply_software_binning_to_signal(
+            sig,
+            software_binning=software_binning,
+            crop_extent=crop_extent,
+        )
+        return self._materialize_signal_batch(sig)
 
     def _apply_software_binning_to_signal(
         self,
@@ -2877,7 +3016,7 @@ class WorkflowSession:
             keep_n=max(1, int(keep_n)),
             n_per_iteration=n_per_iteration,
             signal_mask=signal_mask,
-            rechunk=False,
+            rechunk=self._dictionary_rechunk_enabled(signal),
         )
         euler_arr = np.asarray(xmap.rotations.to_euler(), dtype=np.float64)
         if euler_arr.ndim == 3:
@@ -2917,6 +3056,18 @@ class WorkflowSession:
             ),
         )
 
+    @staticmethod
+    def _dictionary_rechunk_enabled(signal) -> bool:
+        data = getattr(signal, "data", None)
+        if not hasattr(data, "chunks"):
+            return False
+        axes_manager = getattr(signal, "axes_manager", None)
+        nav_size = getattr(axes_manager, "navigation_size", 1)
+        try:
+            return int(nav_size) > 1
+        except Exception:
+            return True
+
     def _dictionary_n_per_iteration(
         self,
         cache: DictionaryCache,
@@ -2930,6 +3081,74 @@ class WorkflowSession:
         target_bytes = 2 * 1024**3
         n = int(target_bytes / max(1, valid_pixels) / np.dtype(np.float32).itemsize)
         return max(8192, min(int(cache.rotation_count), n))
+
+    def _kikuchipy_refinement_binning_settings(
+        self,
+        phase_id: int,
+        *,
+        use_full_resolution: bool = False,
+    ) -> tuple[int, tuple[int, int, int, int] | None, np.ndarray | None, str]:
+        if self.data is None:
+            raise RuntimeError("Load input data first.")
+        if use_full_resolution:
+            return 1, None, self._signal_mask_for_full_pattern(), "full-resolution patterns"
+        cache = self.dictionary_cache
+        if cache is not None and cache.phase_id == int(phase_id):
+            return (
+                int(cache.software_binning),
+                cache.crop_extent,
+                self._signal_mask_for_dictionary_cache(cache),
+                f"dictionary binning={int(cache.software_binning)}",
+            )
+        return 1, None, self._signal_mask_for_full_pattern(), "full-resolution patterns"
+
+    def _kikuchipy_detector_for_indices(
+        self,
+        indices: np.ndarray,
+        *,
+        software_binning: int = 1,
+        crop_extent: tuple[int, int, int, int] | None = None,
+    ):
+        import kikuchipy as kp
+
+        if self.data is None or self.current_pc_bruker is None:
+            raise RuntimeError("Session state is not initialized.")
+        idx = np.asarray(indices, dtype=np.int64).ravel()
+        if idx.size == 0:
+            raise ValueError("No points selected.")
+
+        factor = int(software_binning)
+        if factor < 1:
+            raise ValueError("Software binning must be a positive integer.")
+        if crop_extent is None:
+            crop_extent = (0, self.data.h, 0, self.data.w) if factor == 1 else self._binning_crop_extent(factor)
+        top, bottom, left, right = crop_extent
+        pattern_shape = ((bottom - top) // factor, (right - left) // factor)
+        detector_full = kp.detectors.EBSDDetector(
+            shape=(self.data.h, self.data.w),
+            pc=self.current_pc_bruker[idx],
+            convention="bruker",
+            px_size=float(self.data.detector_px_size or 1.0),
+            binning=int(round(float(self.data.detector_binning or 1.0))),
+            sample_tilt=float(self.data.sample_tilt_deg),
+            tilt=float(self.data.detector_tilt_deg),
+            azimuthal=float(self.data.azimuthal_deg),
+            twist=float(self.data.twist_deg),
+        )
+        if (top, bottom, left, right) == (0, self.data.h, 0, self.data.w) and factor == 1:
+            return detector_full
+        detector_cropped = detector_full.crop(crop_extent)
+        return kp.detectors.EBSDDetector(
+            shape=pattern_shape,
+            pc=np.asarray(detector_cropped.pc, dtype=np.float64).reshape(-1, 3),
+            convention="bruker",
+            px_size=float(self.data.detector_px_size or 1.0),
+            binning=int(round(float(self.data.detector_binning or 1.0))) * factor,
+            sample_tilt=float(self.data.sample_tilt_deg),
+            tilt=float(self.data.detector_tilt_deg),
+            azimuthal=float(self.data.azimuthal_deg),
+            twist=float(self.data.twist_deg),
+        )
 
     def _binning_crop_extent(self, software_binning: int) -> tuple[int, int, int, int]:
         if self.data is None:
@@ -3028,7 +3247,7 @@ class WorkflowSession:
         else:
             work_indices = indices
 
-        sig = self._signal_from_indices(work_indices)
+        sig = self._refinement_signal_from_indices(work_indices)
         rot = Rotation.from_euler(self._eulers_to_kikuchipy_frame(self.current_eulers_rad[work_indices]), degrees=False)
         phase_ids = np.full(work_indices.size, int(phase_id), dtype=np.int32)
         phase_list = self._phase_list_for_current_master(phase_id)
@@ -3840,6 +4059,7 @@ class WorkflowSession:
         phase_id: int,
         trust_euler_deg: float = 1.0,
         maxfev: int = 50,
+        use_full_resolution: bool = False,
         progress_callback: Callable[[float, str], None] | None = None,
     ) -> str:
         """Run Kikuchipy orientation-only refinement after dictionary indexing."""
@@ -3868,12 +4088,30 @@ class WorkflowSession:
         if progress_callback is not None:
             progress_callback(0.0, f"Preparing to refine {selected.size} orientation(s)...")
 
-        signal_mask = self._signal_mask_for_full_pattern()
-        batch_size = min(256, max(1, int(selected.size)))
-        if use_candidates:
-            batch_size = max(1, min(batch_size, max(1, 256 // candidate_count)))
-        for start in range(0, selected.size, batch_size):
+        software_binning, crop_extent, signal_mask, refinement_note = self._kikuchipy_refinement_binning_settings(
+            int(phase_id),
+            use_full_resolution=bool(use_full_resolution),
+        )
+        if self.data is None:
+            raise RuntimeError("Load input data first.")
+        if crop_extent is None:
+            crop_extent = (0, self.data.h, 0, self.data.w)
+        top, bottom, left, right = crop_extent
+        pattern_h = (bottom - top) // int(software_binning)
+        pattern_w = (right - left) // int(software_binning)
+        bytes_per_pattern = max(1, int(pattern_h * pattern_w * np.dtype(np.float32).itemsize))
+        candidate_factor = max(1, candidate_count)
+        memory_cap = max(1, int((256 * 1024**2) / (bytes_per_pattern * candidate_factor)))
+        batch_cap = 1024
+        batch_size = max(1, min(int(selected.size), batch_cap, memory_cap))
+        total_batches = max(1, int(np.ceil(selected.size / batch_size)))
+        for batch_number, start in enumerate(range(0, selected.size, batch_size), start=1):
             batch_indices = selected[start : start + batch_size]
+            if progress_callback is not None:
+                progress_callback(
+                    100.0 * start / selected.size,
+                    f"Refining batch {batch_number}/{total_batches} ({batch_indices.size} point(s), {refinement_note})...",
+                )
             if use_candidates:
                 candidate_batch = np.asarray(candidate_store[batch_indices], dtype=np.float64).reshape(
                     batch_indices.size, candidate_count, 3
@@ -3883,7 +4121,11 @@ class WorkflowSession:
                 if not np.all(valid_candidates):
                     candidate_batch = np.where(valid_candidates[..., np.newaxis], candidate_batch, fallback)
                 work_indices = np.repeat(batch_indices, candidate_count)
-                signal = self._signal_from_indices(work_indices)
+                signal = self._signal_from_indices(
+                    work_indices,
+                    software_binning=software_binning,
+                    crop_extent=crop_extent,
+                )
                 initial = candidate_batch.reshape(-1, 3)
                 xmap = CrystalMap(
                     rotations=Rotation.from_euler(self._eulers_to_kikuchipy_frame(initial), degrees=False),
@@ -3892,14 +4134,10 @@ class WorkflowSession:
                     phase_list=self._phase_list_for_current_master(int(phase_id)),
                     scan_unit="px",
                 )
-                detector = kp.detectors.EBSDDetector(
-                    shape=(self.data.h, self.data.w),
-                    pc=np.repeat(self.current_pc_bruker[batch_indices], candidate_count, axis=0),
-                    convention="bruker",
-                    sample_tilt=float(self.data.sample_tilt_deg),
-                    tilt=float(self.data.detector_tilt_deg),
-                    azimuthal=float(self.data.azimuthal_deg),
-                    twist=float(self.data.twist_deg),
+                detector = self._kikuchipy_detector_for_indices(
+                    work_indices,
+                    software_binning=software_binning,
+                    crop_extent=crop_extent,
                 )
                 refined = signal.refine_orientation(
                     xmap=xmap,
@@ -3911,7 +4149,7 @@ class WorkflowSession:
                     method="minimize",
                     method_kwargs=dict(method="Nelder-Mead", options=dict(maxfev=int(maxfev), disp=False)),
                     compute=True,
-                    rechunk=False,
+                    rechunk=self._dictionary_rechunk_enabled(signal),
                 )
                 refined_eulers = np.asarray(refined.rotations.to_euler(), dtype=np.float64).reshape(
                     batch_indices.size, candidate_count, 3
@@ -3936,7 +4174,11 @@ class WorkflowSession:
                     if batch_indices.size == 1
                     else batch_indices
                 )
-                signal = self._signal_from_indices(work_indices)
+                signal = self._signal_from_indices(
+                    work_indices,
+                    software_binning=software_binning,
+                    crop_extent=crop_extent,
+                )
                 xmap = CrystalMap(
                     rotations=Rotation.from_euler(
                         self._eulers_to_kikuchipy_frame(self.current_eulers_rad[work_indices]),
@@ -3947,14 +4189,10 @@ class WorkflowSession:
                     phase_list=self._phase_list_for_current_master(int(phase_id)),
                     scan_unit="px",
                 )
-                detector = kp.detectors.EBSDDetector(
-                    shape=(self.data.h, self.data.w),
-                    pc=self.current_pc_bruker[work_indices],
-                    convention="bruker",
-                    sample_tilt=float(self.data.sample_tilt_deg),
-                    tilt=float(self.data.detector_tilt_deg),
-                    azimuthal=float(self.data.azimuthal_deg),
-                    twist=float(self.data.twist_deg),
+                detector = self._kikuchipy_detector_for_indices(
+                    work_indices,
+                    software_binning=software_binning,
+                    crop_extent=crop_extent,
                 )
                 refined = signal.refine_orientation(
                     xmap=xmap,
@@ -3966,7 +4204,7 @@ class WorkflowSession:
                     method="minimize",
                     method_kwargs=dict(method="Nelder-Mead", options=dict(maxfev=int(maxfev), disp=False)),
                     compute=True,
-                    rechunk=False,
+                    rechunk=self._dictionary_rechunk_enabled(signal),
                 )
                 eulers = np.asarray(refined.rotations.to_euler(), dtype=np.float64).reshape(-1, 3)[: batch_indices.size]
                 self.current_eulers_rad[batch_indices] = self._eulers_from_kikuchipy_frame(eulers)
@@ -3988,7 +4226,7 @@ class WorkflowSession:
         self._invalidate_residual_cache()
         return (
             f"Refined {selected.size} indexed orientation(s) with Kikuchipy (Nelder-Mead, "
-            f"batch_size={batch_size})."
+            f"batch_size={batch_size}, {refinement_note})."
         )
 
     # ----------------------- Overlap analysis ---------------------- #
@@ -4324,8 +4562,10 @@ class WorkflowSession:
         *,
         trust_euler_deg: float = 2.0,
         maxfev: int = 50,
+        use_full_resolution: bool = False,
+        progress_callback: Callable[[float, str], None] | None = None,
     ) -> OverlapPointResult:
-        """Refine the residual dictionary match against the full-resolution residual."""
+        """Refine the residual dictionary match at dictionary or full resolution."""
         import kikuchipy as kp
         from orix.crystal_map import CrystalMap
         from orix.quaternion import Rotation
@@ -4340,6 +4580,8 @@ class WorkflowSession:
         cache = self.dictionary_cache
         if cache is None:
             raise RuntimeError("Generate or load the dictionary before residual refinement.")
+        if progress_callback is not None:
+            progress_callback(5.0, "Preparing selected-point residual refinement...")
         if result.residual is None or result.secondary_simulated is None:
             result = self._materialize_residual_point_result(result)
 
@@ -4347,6 +4589,14 @@ class WorkflowSession:
         candidate_store = self.residual_candidate_eulers_rad
         candidate_count = int(candidate_store.shape[1]) if candidate_store is not None else 1
         use_candidates = candidate_store is not None and candidate_count > 1
+        software_binning, crop_extent, signal_mask, refinement_note = self._kikuchipy_refinement_binning_settings(
+            cache.phase_id,
+            use_full_resolution=bool(use_full_resolution),
+        )
+        if self.data is None:
+            raise RuntimeError("Load input data first.")
+        if crop_extent is None:
+            crop_extent = (0, self.data.h, 0, self.data.w)
 
         if use_candidates:
             candidate_batch = np.asarray(candidate_store[idx], dtype=np.float64).reshape(candidate_count, 3)
@@ -4356,11 +4606,11 @@ class WorkflowSession:
                 candidate_batch = np.where(valid[:, np.newaxis], candidate_batch, fallback)
 
             work = np.repeat(np.asarray(result.residual, dtype=np.float32)[np.newaxis, ...], candidate_count, axis=0)
-            signal = kp.signals.EBSD(work.astype(np.float32, copy=False))
-            if len(signal.axes_manager.navigation_axes) >= 1:
-                signal.axes_manager.navigation_axes[0].name = "x"
-                signal.axes_manager.navigation_axes[0].scale = 1.0
-                signal.axes_manager.navigation_axes[0].units = "px"
+            signal = self._residual_refinement_signal_from_patterns(
+                work,
+                software_binning=software_binning,
+                crop_extent=crop_extent,
+            )
 
             xmap = CrystalMap(
                 rotations=Rotation.from_euler(self._eulers_to_kikuchipy_frame(candidate_batch), degrees=False),
@@ -4369,16 +4619,16 @@ class WorkflowSession:
                 phase_list=self._phase_list_for_current_master(cache.phase_id),
                 scan_unit="px",
             )
-            detector = kp.detectors.EBSDDetector(
-                shape=(self.data.h, self.data.w),
-                pc=np.repeat(self.current_pc_bruker[idx].reshape(1, 3), candidate_count, axis=0),
-                convention="bruker",
-                sample_tilt=float(self.data.sample_tilt_deg),
-                tilt=float(self.data.detector_tilt_deg),
-                azimuthal=float(self.data.azimuthal_deg),
-                twist=float(self.data.twist_deg),
+            detector = self._kikuchipy_detector_for_indices(
+                np.repeat(np.asarray([idx], dtype=np.int64), candidate_count),
+                software_binning=software_binning,
+                crop_extent=crop_extent,
             )
-            signal_mask = self._signal_mask_for_full_pattern()
+            if progress_callback is not None:
+                progress_callback(
+                    25.0,
+                    f"Running Kikuchipy residual refinement ({candidate_count} keep_n candidate(s), {refinement_note})...",
+                )
             refined = signal.refine_orientation(
                 xmap=xmap,
                 detector=detector,
@@ -4389,7 +4639,7 @@ class WorkflowSession:
                 method="minimize",
                 method_kwargs=dict(method="Nelder-Mead", options=dict(maxfev=int(maxfev), disp=False)),
                 compute=True,
-                rechunk=False,
+                rechunk=self._dictionary_rechunk_enabled(signal),
             )
             refined_euler_arr = np.asarray(refined.rotations.to_euler(), dtype=np.float64).reshape(candidate_count, 3)
             refined_scores = np.asarray(refined.prop.get("scores", np.full(candidate_count, np.nan)), dtype=np.float64).reshape(-1)
@@ -4408,20 +4658,21 @@ class WorkflowSession:
             if np.isfinite(best_score):
                 result.secondary_refinement_note = (
                     f"Refinement considered {candidate_count} keep_n candidate(s); selected Kikuchipy best score "
-                    f"{best_score:.4f}, full-resolution NCC={best_full_score:.4f}."
+                    f"{best_score:.4f}, full-resolution NCC={best_full_score:.4f}, using {refinement_note}."
                 )
             else:
                 result.secondary_refinement_note = (
-                    f"Refinement considered {candidate_count} keep_n candidate(s); full-resolution NCC={best_full_score:.4f}."
+                    f"Refinement considered {candidate_count} keep_n candidate(s); full-resolution NCC={best_full_score:.4f}, "
+                    f"using {refinement_note}."
                 )
             self._clear_residual_candidate_rows(np.asarray([idx], dtype=np.int64))
         else:
             work = np.stack((result.residual, result.residual), axis=0).astype(np.float32, copy=False)
-            signal = kp.signals.EBSD(work)
-            if len(signal.axes_manager.navigation_axes) >= 1:
-                signal.axes_manager.navigation_axes[0].name = "x"
-                signal.axes_manager.navigation_axes[0].scale = 1.0
-                signal.axes_manager.navigation_axes[0].units = "px"
+            signal = self._residual_refinement_signal_from_patterns(
+                work,
+                software_binning=software_binning,
+                crop_extent=crop_extent,
+            )
             initial = np.repeat(np.asarray(result.secondary_euler_rad, dtype=np.float64).reshape(1, 3), 2, axis=0)
             xmap = CrystalMap(
                 rotations=Rotation.from_euler(self._eulers_to_kikuchipy_frame(initial), degrees=False),
@@ -4430,16 +4681,13 @@ class WorkflowSession:
                 phase_list=self._phase_list_for_current_master(cache.phase_id),
                 scan_unit="px",
             )
-            detector = kp.detectors.EBSDDetector(
-                shape=(self.data.h, self.data.w),
-                pc=np.repeat(self.current_pc_bruker[idx].reshape(1, 3), 2, axis=0),
-                convention="bruker",
-                sample_tilt=float(self.data.sample_tilt_deg),
-                tilt=float(self.data.detector_tilt_deg),
-                azimuthal=float(self.data.azimuthal_deg),
-                twist=float(self.data.twist_deg),
+            detector = self._kikuchipy_detector_for_indices(
+                np.repeat(np.asarray([idx], dtype=np.int64), 2),
+                software_binning=software_binning,
+                crop_extent=crop_extent,
             )
-            signal_mask = self._signal_mask_for_full_pattern()
+            if progress_callback is not None:
+                progress_callback(25.0, f"Running Kikuchipy residual refinement ({refinement_note})...")
             refined = signal.refine_orientation(
                 xmap=xmap,
                 detector=detector,
@@ -4450,23 +4698,27 @@ class WorkflowSession:
                 method="minimize",
                 method_kwargs=dict(method="Nelder-Mead", options=dict(maxfev=int(maxfev), disp=False)),
                 compute=True,
-                rechunk=False,
+                rechunk=self._dictionary_rechunk_enabled(signal),
             )
             refined_kp_euler = np.asarray(refined.rotations.to_euler(), dtype=np.float64).reshape(-1, 3)[0]
+            refined_scores = np.asarray(refined.prop.get("scores", np.full(2, np.nan)), dtype=np.float64).reshape(-1)
+            refined_kp_score = float(refined_scores[0]) if refined_scores.size > 0 else float("nan")
             refined_euler = self._eulers_from_kikuchipy_frame(refined_kp_euler.reshape(1, 3))[0]
             refined_sim = self._normalize_pattern_for_overlap(
                 self._simulate_pattern_for_euler(idx, refined_euler)
             )
-            refined_score = self._pattern_ncc_for_overlap(result.residual, refined_sim)
+            refined_full_score = self._pattern_ncc_for_overlap(result.residual, refined_sim)
             result.secondary_euler_rad = refined_euler
             result.secondary_simulated = refined_sim
-            result.secondary_ncc_kp = refined_score if np.isfinite(refined_score) else result.secondary_ncc_kp
-            result.secondary_ncc_full = refined_score
+            result.secondary_ncc_kp = refined_kp_score if np.isfinite(refined_kp_score) else result.secondary_ncc_kp
+            result.secondary_ncc_full = refined_full_score
             result.secondary_refinement_note = (
-                f"Residual refinement complete; full-resolution NCC={refined_score:.4f}."
-                if np.isfinite(refined_score)
-                else "Residual refinement complete."
+                f"Residual refinement complete; full-resolution NCC={refined_full_score:.4f}, using {refinement_note}."
+                if np.isfinite(refined_full_score)
+                else f"Residual refinement complete using {refinement_note}."
             )
+        if progress_callback is not None:
+            progress_callback(85.0, "Applying refined residual orientation...")
         result.secondary_refined = True
         self.residual_point_results[int(result.index)] = result
         self._ensure_residual_state()
@@ -4487,6 +4739,7 @@ class WorkflowSession:
         *,
         trust_euler_deg: float,
         maxfev: int,
+        use_full_resolution: bool = False,
         residual_results: dict[int, OverlapPointResult] | None = None,
     ) -> list[OverlapPointResult]:
         import kikuchipy as kp
@@ -4506,11 +4759,20 @@ class WorkflowSession:
             raise ValueError("No points selected.")
 
         residual_results = self.residual_point_results if residual_results is None else residual_results
+        software_binning, crop_extent, signal_mask, refinement_note = self._kikuchipy_refinement_binning_settings(
+            cache.phase_id,
+            use_full_resolution=bool(use_full_resolution),
+        )
+        if self.data is None:
+            raise RuntimeError("Load input data first.")
+        if crop_extent is None:
+            crop_extent = (0, self.data.h, 0, self.data.w)
         signal = self._residual_signal_from_indices(
             selected,
             residual_results=residual_results,
-            apply_dictionary_binning=False,
+            apply_dictionary_binning=not bool(use_full_resolution),
         )
+        signal = self._materialize_signal_batch(signal)
         patterns = signal.data
         if hasattr(patterns, "compute"):
             patterns = patterns.compute()
@@ -4523,7 +4785,6 @@ class WorkflowSession:
         use_candidates = candidate_store is not None and candidate_count > 1
 
         initial_eulers: list[np.ndarray] = []
-        pcs: list[np.ndarray] = []
         batch_results: list[OverlapPointResult] = []
         for idx in selected.tolist():
             result = residual_results.get(int(idx))
@@ -4543,7 +4804,6 @@ class WorkflowSession:
                 raise RuntimeError(f"Residual at idx={int(idx)} has not been indexed yet.")
             batch_results.append(result)
             initial_eulers.append(np.asarray(result.secondary_euler_rad, dtype=np.float64).reshape(3))
-            pcs.append(np.asarray(self.current_pc_bruker[int(idx)], dtype=np.float64).reshape(3))
 
         if patterns.shape[0] != len(batch_results):
             raise RuntimeError(
@@ -4553,7 +4813,6 @@ class WorkflowSession:
         if len(batch_results) == 1 and not use_candidates:
             patterns = np.repeat(patterns, 2, axis=0)
             initial_eulers = [initial_eulers[0], initial_eulers[0]]
-            pcs = [pcs[0], pcs[0]]
 
         if use_candidates:
             candidate_batch = np.asarray(candidate_store[selected], dtype=np.float64).reshape(
@@ -4568,7 +4827,7 @@ class WorkflowSession:
 
             work_patterns = np.repeat(patterns, candidate_count, axis=0)
             work_initial = candidate_batch.reshape(-1, 3)
-            work_pcs = np.repeat(np.asarray(pcs, dtype=np.float64).reshape(-1, 3), candidate_count, axis=0)
+            work_indices = np.repeat(selected, candidate_count)
 
             signal = kp.signals.EBSD(work_patterns.astype(np.float32, copy=False))
             if len(signal.axes_manager.navigation_axes) >= 1:
@@ -4584,16 +4843,11 @@ class WorkflowSession:
                 phase_list=self._phase_list_for_current_master(cache.phase_id),
                 scan_unit="px",
             )
-            detector = kp.detectors.EBSDDetector(
-                shape=(self.data.h, self.data.w),
-                pc=work_pcs,
-                convention="bruker",
-                sample_tilt=float(self.data.sample_tilt_deg),
-                tilt=float(self.data.detector_tilt_deg),
-                azimuthal=float(self.data.azimuthal_deg),
-                twist=float(self.data.twist_deg),
+            detector = self._kikuchipy_detector_for_indices(
+                work_indices,
+                software_binning=software_binning,
+                crop_extent=crop_extent,
             )
-            signal_mask = self._signal_mask_for_full_pattern()
             refined = signal.refine_orientation(
                 xmap=xmap,
                 detector=detector,
@@ -4604,7 +4858,7 @@ class WorkflowSession:
                 method="minimize",
                 method_kwargs=dict(method="Nelder-Mead", options=dict(maxfev=int(maxfev), disp=False)),
                 compute=True,
-                rechunk=False,
+                rechunk=self._dictionary_rechunk_enabled(signal),
             )
 
             refined_euler_arr = np.asarray(refined.rotations.to_euler(), dtype=np.float64).reshape(
@@ -4637,9 +4891,9 @@ class WorkflowSession:
                 result.secondary_ncc_full = None
                 result.secondary_refinement_note = (
                     f"Residual dictionary refinement considered {candidate_count} keep_n candidate(s); selected Kikuchipy "
-                    f"best score {best_kp_score:.4f}."
+                    f"best score {best_kp_score:.4f} using {refinement_note}."
                     if np.isfinite(best_kp_score)
-                    else f"Residual dictionary refinement considered {candidate_count} keep_n candidate(s)."
+                    else f"Residual dictionary refinement considered {candidate_count} keep_n candidate(s) using {refinement_note}."
                 )
                 result.secondary_refined = True
                 updated.append(result)
@@ -4647,6 +4901,11 @@ class WorkflowSession:
             self._clear_residual_candidate_rows(selected)
             return updated
 
+        work_indices = (
+            np.repeat(selected, 2)
+            if len(batch_results) == 1
+            else selected
+        )
         signal = kp.signals.EBSD(patterns.astype(np.float32, copy=False))
         if len(signal.axes_manager.navigation_axes) >= 1:
             nav = signal.axes_manager.navigation_axes[0]
@@ -4662,16 +4921,11 @@ class WorkflowSession:
             phase_list=self._phase_list_for_current_master(cache.phase_id),
             scan_unit="px",
         )
-        detector = kp.detectors.EBSDDetector(
-            shape=(self.data.h, self.data.w),
-            pc=np.asarray(pcs, dtype=np.float64).reshape(-1, 3),
-            convention="bruker",
-            sample_tilt=float(self.data.sample_tilt_deg),
-            tilt=float(self.data.detector_tilt_deg),
-            azimuthal=float(self.data.azimuthal_deg),
-            twist=float(self.data.twist_deg),
+        detector = self._kikuchipy_detector_for_indices(
+            work_indices,
+            software_binning=software_binning,
+            crop_extent=crop_extent,
         )
-        signal_mask = self._signal_mask_for_full_pattern()
         refined = signal.refine_orientation(
             xmap=xmap,
             detector=detector,
@@ -4682,7 +4936,7 @@ class WorkflowSession:
             method="minimize",
             method_kwargs=dict(method="Nelder-Mead", options=dict(maxfev=int(maxfev), disp=False)),
             compute=True,
-            rechunk=False,
+            rechunk=self._dictionary_rechunk_enabled(signal),
         )
 
         refined_euler_arr = np.asarray(refined.rotations.to_euler(), dtype=np.float64).reshape(-1, 3)
@@ -4713,9 +4967,9 @@ class WorkflowSession:
             result.secondary_refined = True
             result.secondary_refinement_note = (
                 f"Residual dictionary refinement considered {candidate_count} keep_n candidate(s); selected Kikuchipy "
-                f"best score {best_kp_score:.4f}."
+                f"best score {best_kp_score:.4f} using {refinement_note}."
                 if np.isfinite(best_kp_score)
-                else f"Residual dictionary refinement considered {candidate_count} keep_n candidate(s)."
+                else f"Residual dictionary refinement considered {candidate_count} keep_n candidate(s) using {refinement_note}."
             )
             updated.append(result)
 
@@ -4957,6 +5211,7 @@ class WorkflowSession:
         *,
         trust_euler_deg: float = 2.0,
         maxfev: int = 50,
+        use_full_resolution: bool = False,
         write_patterns: bool = False,
         selected_index: int | None = None,
         residual_results: dict[int, OverlapPointResult] | None = None,
@@ -5001,18 +5256,36 @@ class WorkflowSession:
                 progress_callback=None,
             )
 
-        bytes_per_pattern = max(1, int(self.data.h * self.data.w * np.dtype(np.float32).itemsize))
+        software_binning, crop_extent, _signal_mask, _refinement_note = self._kikuchipy_refinement_binning_settings(
+            cache.phase_id,
+            use_full_resolution=bool(use_full_resolution),
+        )
+        if self.data is None:
+            raise RuntimeError("Load input data first.")
+        if crop_extent is None:
+            crop_extent = (0, self.data.h, 0, self.data.w)
+        top, bottom, left, right = crop_extent
+        pattern_h = (bottom - top) // int(software_binning)
+        pattern_w = (right - left) // int(software_binning)
+        bytes_per_pattern = max(1, int(pattern_h * pattern_w * np.dtype(np.float32).itemsize))
         candidate_factor = max(1, candidate_count)
-        batch_cap = max(1, 256 // candidate_factor)
-        memory_cap = max(1, int((128 * 1024**2) / (bytes_per_pattern * candidate_factor)))
+        memory_cap = max(1, int((256 * 1024**2) / (bytes_per_pattern * candidate_factor)))
+        batch_cap = 1024
         batch_size = max(1, min(int(selected.size), batch_cap, memory_cap))
+        total_batches = max(1, int(np.ceil(selected.size / batch_size)))
 
-        for start in range(0, selected.size, batch_size):
+        for batch_number, start in enumerate(range(0, selected.size, batch_size), start=1):
             batch_indices = selected[start : start + batch_size]
+            if progress_callback is not None:
+                progress_callback(
+                    100.0 * start / selected.size,
+                    f"Refining residual batch {batch_number}/{total_batches} ({batch_indices.size} point(s), {_refinement_note})...",
+                )
             batch_results = self._batch_refine_residual_points(
                 batch_indices,
                 trust_euler_deg=float(trust_euler_deg),
                 maxfev=int(maxfev),
+                use_full_resolution=use_full_resolution,
                 residual_results=residual_results,
             )
             for result in batch_results:
@@ -5043,7 +5316,7 @@ class WorkflowSession:
         self._invalidate_residual_color_cache()
         self._invalidate_overlap_mixture_cache()
         candidate_note = f" using keep_n={candidate_count}" if candidate_count > 1 else ""
-        return f"Residual-refined {selected.size} point(s) in ROI{candidate_note}."
+        return f"Residual-refined {selected.size} point(s) in ROI{candidate_note} using {_refinement_note}."
 
     def fit_overlap_mixture_point(
         self,
