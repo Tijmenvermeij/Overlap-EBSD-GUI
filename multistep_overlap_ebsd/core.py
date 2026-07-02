@@ -16,15 +16,111 @@ from scipy.optimize import differential_evolution, minimize
 from .legacy_projector import XProjector, load_master_hemis, ncc, normalize_zmuv
 
 MAP_LAYER_CANDIDATES: dict[str, list[str]] = {
-    "BC": ["1/EBSD/Data/Band Contrast"],
-    "BS": ["1/EBSD/Data/Band Slope"],
-    "IQ": ["1/EBSD/Data/Pattern Quality", "1/EBSD/Data/Image Quality"],
-    "CI": ["1/EBSD/Data/Confidence Index", "1/EBSD/Data/CI"],
-    "NCC": ["1/Data Processing/Pattern Matching/Data/Cross Correlation Coefficient"],
-    "MAD": ["1/EBSD/Data/Mean Angular Deviation", "1/Data Processing/Data/Mean Angular Deviation"],
-    "Phase": ["1/EBSD/Data/Phase", "1/Data Processing/Data/Phase"],
+    "BC": ["EBSD/Data/Band Contrast"],
+    "BS": ["EBSD/Data/Band Slope"],
+    "IQ": ["EBSD/Data/Pattern Quality", "EBSD/Data/Image Quality"],
+    "CI": ["EBSD/Data/Confidence Index", "EBSD/Data/CI"],
+    "NCC": ["Data Processing/Pattern Matching/Data/Cross Correlation Coefficient"],
+    "MAD": ["EBSD/Data/Mean Angular Deviation", "Data Processing/Data/Mean Angular Deviation"],
+    "Phase": ["EBSD/Data/Phase", "Data Processing/Data/Phase"],
+}
+H5OINA_DATASET_CANDIDATES: dict[str, list[str]] = {
+    "processed_patterns": ["EBSD/Data/Processed Patterns"],
+    "euler": ["Data Processing/Data/Euler", "EBSD/Data/Euler"],
+    "phase": ["Data Processing/Data/Phase", "EBSD/Data/Phase"],
+    "pcx": ["Data Processing/Data/Pattern Center X", "EBSD/Data/Pattern Center X"],
+    "pcy": ["Data Processing/Data/Pattern Center Y", "EBSD/Data/Pattern Center Y"],
+    "pcz": ["Data Processing/Data/Detector Distance", "EBSD/Data/Detector Distance"],
+    "x": ["EBSD/Data/X", "EBSD/Data/Beam Position X"],
+    "y": ["EBSD/Data/Y", "EBSD/Data/Beam Position Y"],
+    "beam_kv": ["EBSD/Header/Beam Voltage", "Electron Image/Header/Beam Voltage"],
+    "tilt_angle": ["EBSD/Header/Tilt Angle", "Electron Image/Header/Tilt Angle"],
+    "detector_orientation_euler": ["EBSD/Header/Detector Orientation Euler"],
+    "phase_symmetries": ["Data Processing/Header/Phases", "EBSD/Header/Phases"],
 }
 ORIENTATION_LAYER_LABEL = "IPF-Z (Euler)"
+
+
+def _h5_group_sort_key(name: str) -> tuple[int, int | str]:
+    try:
+        return (0, int(name))
+    except (TypeError, ValueError):
+        return (1, str(name))
+
+
+def _h5oina_analysis_roots(h5_file: h5py.File) -> list[str]:
+    roots: list[str] = []
+    if "EBSD" in h5_file or "Data Processing" in h5_file:
+        roots.append("")
+    for key in sorted(h5_file.keys(), key=_h5_group_sort_key):
+        try:
+            obj = h5_file[key]
+        except Exception:
+            continue
+        if isinstance(obj, h5py.Group) and (f"{key}/EBSD" in h5_file or f"{key}/Data Processing" in h5_file):
+            roots.append(str(key))
+    return roots or [""]
+
+
+def _h5oina_matching_roots(
+    h5_file: h5py.File,
+    *,
+    rows: int,
+    cols: int,
+    h: int,
+    w: int,
+    roots: list[str] | None = None,
+) -> list[str]:
+    matches: list[str] = []
+    search_roots = _h5oina_analysis_roots(h5_file) if roots is None else list(roots)
+    expected = int(rows * cols)
+    for root in search_roots:
+        path = _h5oina_first_path(
+            h5_file,
+            H5OINA_DATASET_CANDIDATES["processed_patterns"],
+            roots=[root],
+        )
+        if path is None:
+            continue
+        shape = tuple(int(v) for v in h5_file[path].shape)
+        if shape == (expected, int(h), int(w)) or shape == (int(rows), int(cols), int(h), int(w)):
+            matches.append(root)
+    return matches
+
+
+def _h5oina_existing_paths(
+    h5_file: h5py.File,
+    candidates: list[str],
+    *,
+    roots: list[str] | None = None,
+) -> list[str]:
+    paths: list[str] = []
+    search_roots = _h5oina_analysis_roots(h5_file) if roots is None else list(roots)
+    for root in search_roots:
+        prefix = f"{root}/" if root else ""
+        for suffix in candidates:
+            path = f"{prefix}{suffix}"
+            if path in h5_file and path not in paths:
+                paths.append(path)
+    return paths
+
+
+def _h5oina_first_path(
+    h5_file: h5py.File,
+    candidates: list[str],
+    *,
+    roots: list[str] | None = None,
+    label: str | None = None,
+    required: bool = False,
+) -> str | None:
+    paths = _h5oina_existing_paths(h5_file, candidates, roots=roots)
+    if paths:
+        return paths[0]
+    if required:
+        name = label or "dataset"
+        options = ", ".join(candidates)
+        raise RuntimeError(f"H5OINA file is missing the required {name} dataset. Tried: {options}.")
+    return None
 
 
 @dataclass
@@ -124,6 +220,7 @@ class UPPatternReader:
 @dataclass
 class LoadedInputData:
     source_type: Literal["h5oina", "up_ang"]
+    h5_analysis_root: str | None
     pattern_path: str
     orientation_path: str | None
     rows: int
@@ -1263,7 +1360,16 @@ class ResidualPatternWriter:
             out.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(src, out)
             h5 = h5py.File(out, "r+")
-            patterns_ds = h5["1/EBSD/Data/Processed Patterns"]
+            roots = [source_data.h5_analysis_root] if source_data.h5_analysis_root is not None else None
+            patterns_path = _h5oina_first_path(
+                h5,
+                H5OINA_DATASET_CANDIDATES["processed_patterns"],
+                roots=roots,
+                label="processed patterns",
+                required=True,
+            )
+            assert patterns_path is not None
+            patterns_ds = h5[patterns_path]
             return cls(
                 output_path=out,
                 source_type="h5oina",
@@ -1334,28 +1440,28 @@ class ResidualPatternWriter:
                     self.up_file = None
 
 
-def _h5_phase_symmetries(h5_file: h5py.File) -> dict[int, object]:
+def _h5_phase_symmetries(h5_file: h5py.File, roots: list[str] | None = None) -> dict[int, object]:
     """Read phase symmetry from indexed H5OINA metadata, not the master pattern."""
     from orix.quaternion.symmetry import get_point_group
 
     out: dict[int, object] = {}
-    root_path = "1/Data Processing/Header/Phases"
-    if root_path not in h5_file:
-        root_path = "1/EBSD/Header/Phases"
-    if root_path not in h5_file:
-        return out
-    for key, group in h5_file[root_path].items():
-        try:
-            phase_id = int(key)
-        except (TypeError, ValueError):
-            continue
-        if "Space Group" not in group:
-            continue
-        try:
-            space_group = int(np.ravel(group["Space Group"][()])[0])
-            out[phase_id] = get_point_group(space_group, proper=False)
-        except Exception:
-            continue
+    for root_path in _h5oina_existing_paths(
+        h5_file,
+        H5OINA_DATASET_CANDIDATES["phase_symmetries"],
+        roots=roots,
+    ):
+        for key, group in h5_file[root_path].items():
+            try:
+                phase_id = int(key)
+            except (TypeError, ValueError):
+                continue
+            if "Space Group" not in group:
+                continue
+            try:
+                space_group = int(np.ravel(group["Space Group"][()])[0])
+                out[phase_id] = get_point_group(space_group, proper=False)
+            except Exception:
+                continue
     return out
 
 
@@ -2371,33 +2477,109 @@ class WorkflowSession:
         if ext == ".h5oina":
             s = kp.load(p, lazy=True)
             rows, cols, h, w = map(int, s.data.shape)
+            expected = rows * cols
             with h5py.File(p, "r") as f:
-                eulers = f["1/Data Processing/Data/Euler"][()].reshape(-1, 3).astype(np.float64)
-                phases = f["1/Data Processing/Data/Phase"][()].ravel().astype(np.int32)
-                x = f["1/EBSD/Data/X"][()].ravel().astype(np.float64) if "1/EBSD/Data/X" in f else np.tile(np.arange(cols), rows).astype(np.float64)
-                y = f["1/EBSD/Data/Y"][()].ravel().astype(np.float64) if "1/EBSD/Data/Y" in f else np.repeat(np.arange(rows), cols).astype(np.float64)
-                beam_kv = float(f["1/EBSD/Header/Beam Voltage"][()][0]) if "1/EBSD/Header/Beam Voltage" in f else None
-                tilt = float(f["1/EBSD/Header/Tilt Angle"][()][0]) if "1/EBSD/Header/Tilt Angle" in f else 0.0
-                det_euler = f["1/EBSD/Header/Detector Orientation Euler"][()][0] if "1/EBSD/Header/Detector Orientation Euler" in f else np.zeros(3)
+                roots = _h5oina_matching_roots(f, rows=rows, cols=cols, h=h, w=w)
+                if not roots:
+                    roots = _h5oina_analysis_roots(f)
+                selected_root = roots[0] if roots else None
+                xmap = getattr(s, "xmap", None)
+
+                eulers: np.ndarray | None = None
+                phases: np.ndarray | None = None
+                x: np.ndarray | None = None
+                y: np.ndarray | None = None
+                if xmap is not None:
+                    try:
+                        xmap_eulers = np.asarray(xmap.rotations.to_euler(), dtype=np.float64).reshape(-1, 3)
+                        if xmap_eulers.shape[0] == expected:
+                            eulers = xmap_eulers
+                    except Exception:
+                        eulers = None
+                    try:
+                        xmap_phases = np.asarray(xmap.phase_id, dtype=np.int32).ravel()
+                        if xmap_phases.size == expected:
+                            phases = xmap_phases
+                    except Exception:
+                        phases = None
+                    try:
+                        xmap_x = np.asarray(xmap.x, dtype=np.float64).ravel()
+                        if xmap_x.size == expected:
+                            x = xmap_x
+                    except Exception:
+                        x = None
+                    try:
+                        xmap_y = np.asarray(xmap.y, dtype=np.float64).ravel()
+                        if xmap_y.size == expected:
+                            y = xmap_y
+                    except Exception:
+                        y = None
+
+                if eulers is None:
+                    euler_path = _h5oina_first_path(
+                        f,
+                        H5OINA_DATASET_CANDIDATES["euler"],
+                        roots=roots,
+                        label="Euler",
+                        required=True,
+                    )
+                    assert euler_path is not None
+                    eulers = np.asarray(f[euler_path][()], dtype=np.float64).reshape(-1, 3)
+                if phases is None:
+                    phase_path = _h5oina_first_path(
+                        f,
+                        H5OINA_DATASET_CANDIDATES["phase"],
+                        roots=roots,
+                        label="phase",
+                        required=True,
+                    )
+                    assert phase_path is not None
+                    phases = np.asarray(f[phase_path][()], dtype=np.int32).ravel()
+                if x is None:
+                    x_path = _h5oina_first_path(f, H5OINA_DATASET_CANDIDATES["x"], roots=roots)
+                    if x_path is not None:
+                        x = np.asarray(f[x_path][()], dtype=np.float64).ravel()
+                    else:
+                        x = np.tile(np.arange(cols), rows).astype(np.float64)
+                if y is None:
+                    y_path = _h5oina_first_path(f, H5OINA_DATASET_CANDIDATES["y"], roots=roots)
+                    if y_path is not None:
+                        y = np.asarray(f[y_path][()], dtype=np.float64).ravel()
+                    else:
+                        y = np.repeat(np.arange(rows), cols).astype(np.float64)
+
+                beam_kv_path = _h5oina_first_path(f, H5OINA_DATASET_CANDIDATES["beam_kv"], roots=roots)
+                beam_kv = float(np.ravel(f[beam_kv_path][()])[0]) if beam_kv_path is not None else None
+                tilt_path = _h5oina_first_path(f, H5OINA_DATASET_CANDIDATES["tilt_angle"], roots=roots)
+                tilt = float(np.ravel(f[tilt_path][()])[0]) if tilt_path is not None else float(s.detector.sample_tilt)
+                det_euler_path = _h5oina_first_path(
+                    f,
+                    H5OINA_DATASET_CANDIDATES["detector_orientation_euler"],
+                    roots=roots,
+                )
+                if det_euler_path is not None:
+                    det_euler = np.asarray(f[det_euler_path][()], dtype=np.float64).reshape(-1, 3)[0]
+                else:
+                    det_euler = np.zeros(3, dtype=np.float64)
                 det_rot = euler2mat(float(det_euler[0]), float(det_euler[1]), float(det_euler[2]), axes="rzxz")
                 stage_rot = euler2mat(0.0, tilt, 0.0, axes="rzxz")
                 rot_sd = stage_rot.T @ det_rot
 
                 map_layers: dict[str, np.ndarray] = {}
                 for label, candidates in MAP_LAYER_CANDIDATES.items():
-                    for ds_path in candidates:
-                        if ds_path in f:
-                            arr = np.ravel(f[ds_path][()])
-                            if arr.size >= rows * cols:
-                                map_layers[label] = arr[: rows * cols].reshape(rows, cols).astype(np.float32)
-                                break
-                phase_symmetries = _h5_phase_symmetries(f)
+                    ds_path = _h5oina_first_path(f, candidates, roots=roots)
+                    if ds_path is not None:
+                        arr = np.ravel(f[ds_path][()])
+                        if arr.size >= expected:
+                            map_layers[label] = arr[:expected].reshape(rows, cols).astype(np.float32)
+                phase_symmetries = _h5_phase_symmetries(f, roots=roots)
 
             det = s.detector
             pc_bruker = np.asarray(det.pc_bruker(), dtype=np.float64).reshape(rows, cols, 3)
             pc_custom = np.asarray(det.pc_oxford(), dtype=np.float64).reshape(rows, cols, 3)
             self.data = LoadedInputData(
                 source_type="h5oina",
+                h5_analysis_root=selected_root,
                 pattern_path=p,
                 orientation_path=None,
                 rows=rows,
@@ -2526,6 +2708,7 @@ class WorkflowSession:
             }
             self.data = LoadedInputData(
                 source_type="up_ang",
+                h5_analysis_root=None,
                 pattern_path=p,
                 orientation_path=ang,
                 rows=rows,
@@ -6163,20 +6346,23 @@ class WorkflowSession:
         if self.data.source_type == "h5oina":
             shutil.copy2(self.data.pattern_path, out)
             with h5py.File(out, "r+") as f:
-                e_ds = f["1/Data Processing/Data/Euler"]
-                p_ds = f["1/Data Processing/Data/Phase"]
-                x_ds = f["1/Data Processing/Data/Pattern Center X"]
-                y_ds = f["1/Data Processing/Data/Pattern Center Y"]
-                z_ds = f["1/Data Processing/Data/Detector Distance"]
-
-                e_shape = e_ds.shape
-                p_shape = p_ds.shape
-                e_ds[...] = self.current_eulers_rad.reshape(e_shape).astype(e_ds.dtype, copy=False)
-                p_ds[...] = self.current_phases.reshape(p_shape).astype(p_ds.dtype, copy=False)
                 pc_map = self.current_pc_custom.reshape(self.data.rows, self.data.cols, 3)
-                x_ds[...] = pc_map[..., 0].reshape(x_ds.shape).astype(x_ds.dtype, copy=False)
-                y_ds[...] = pc_map[..., 1].reshape(y_ds.shape).astype(y_ds.dtype, copy=False)
-                z_ds[...] = pc_map[..., 2].reshape(z_ds.shape).astype(z_ds.dtype, copy=False)
+                roots = [self.data.h5_analysis_root] if self.data.h5_analysis_root is not None else _h5oina_analysis_roots(f)
+
+                def _write_h5_fields(candidates: list[str], values: np.ndarray, *, label: str) -> None:
+                    paths = _h5oina_existing_paths(f, candidates, roots=roots)
+                    if not paths:
+                        raise RuntimeError(f"H5OINA export could not find any {label} dataset to update.")
+                    flat = np.asarray(values)
+                    for path in paths:
+                        ds = f[path]
+                        ds[...] = flat.reshape(ds.shape).astype(ds.dtype, copy=False)
+
+                _write_h5_fields(H5OINA_DATASET_CANDIDATES["euler"], self.current_eulers_rad, label="Euler")
+                _write_h5_fields(H5OINA_DATASET_CANDIDATES["phase"], self.current_phases, label="phase")
+                _write_h5_fields(H5OINA_DATASET_CANDIDATES["pcx"], pc_map[..., 0], label="pattern-center X")
+                _write_h5_fields(H5OINA_DATASET_CANDIDATES["pcy"], pc_map[..., 1], label="pattern-center Y")
+                _write_h5_fields(H5OINA_DATASET_CANDIDATES["pcz"], pc_map[..., 2], label="detector distance")
             return f"Saved re-indexed H5OINA to {out}"
 
         if self.data.source_type == "up_ang":
@@ -6265,13 +6451,14 @@ class WorkflowSession:
 
     def _h5oina_quality_dataset_paths(self, h5: h5py.File) -> list[str]:
         paths: list[str] = []
+        roots = [self.data.h5_analysis_root] if self.data is not None and self.data.h5_analysis_root is not None else _h5oina_analysis_roots(h5)
         for key in ("MAD", "NCC"):
-            for candidate in MAP_LAYER_CANDIDATES.get(key, []):
-                if candidate in h5 and candidate not in paths:
+            for candidate in _h5oina_existing_paths(h5, MAP_LAYER_CANDIDATES.get(key, []), roots=roots):
+                if candidate not in paths:
                     paths.append(candidate)
         if not paths:
-            for candidate in MAP_LAYER_CANDIDATES.get("CI", []):
-                if candidate in h5 and candidate not in paths:
+            for candidate in _h5oina_existing_paths(h5, MAP_LAYER_CANDIDATES.get("CI", []), roots=roots):
+                if candidate not in paths:
                     paths.append(candidate)
         if not paths:
             raise RuntimeError("No suitable quality dataset (MAD/NCC/CI) found in the H5OINA file.")
@@ -6375,8 +6562,13 @@ class WorkflowSession:
         if self.data.source_type == "h5oina":
             shutil.copy2(source_path, out)
             with h5py.File(out, "r+") as h5:
-                e_ds = h5["1/Data Processing/Data/Euler"]
-                phase_paths = [candidate for candidate in MAP_LAYER_CANDIDATES.get("Phase", []) if candidate in h5]
+                roots = [self.data.h5_analysis_root] if self.data.h5_analysis_root is not None else _h5oina_analysis_roots(h5)
+                euler_paths = _h5oina_existing_paths(h5, H5OINA_DATASET_CANDIDATES["euler"], roots=roots)
+                if not euler_paths:
+                    raise RuntimeError("H5OINA export could not find any Euler dataset to update.")
+                phase_paths = _h5oina_existing_paths(h5, MAP_LAYER_CANDIDATES.get("Phase", []), roots=roots)
+                if not phase_paths:
+                    raise RuntimeError("H5OINA export could not find any phase dataset to update.")
                 quality_paths = self._h5oina_quality_dataset_paths(h5)
                 row_eulers = roi_eulers.reshape(roi_rows, roi_cols, 3)
                 row_quality = roi_quality.reshape(roi_rows, roi_cols)
@@ -6423,13 +6615,15 @@ class WorkflowSession:
                             return
                     raise RuntimeError(f"Unsupported H5OINA dataset shape {ds.shape} for ROI export.")
 
-                e_ds[...] = 0
+                for e_path in euler_paths:
+                    h5[e_path][...] = 0
                 for q_path in quality_paths:
                     h5[q_path][...] = 0
                 for p_path in phase_paths:
                     h5[p_path][...] = 0
 
-                _write_h5_roi_dataset(e_ds, row_eulers, is_euler=True)
+                for e_path in euler_paths:
+                    _write_h5_roi_dataset(h5[e_path], row_eulers, is_euler=True)
                 for q_path in quality_paths:
                     _write_h5_roi_dataset(h5[q_path], row_quality, is_euler=False)
                 for p_path in phase_paths:
