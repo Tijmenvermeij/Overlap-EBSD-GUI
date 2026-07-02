@@ -2108,6 +2108,20 @@ class WorkflowSession:
             return arr.copy()
         return _left_multiply_eulers_zxz(arr, angle_rad=np.deg2rad(-90.0))
 
+    def _phase_is_unindexed(self, phase_id: int | np.integer | None) -> bool:
+        if phase_id is None:
+            return False
+        value = int(phase_id)
+        if self.data is not None and self.data.source_type == "up_ang":
+            return value < 0
+        return value <= 0
+
+    def _phase_unindexed_mask(self, phases: np.ndarray) -> np.ndarray:
+        arr = np.asarray(phases, dtype=np.int32)
+        if self.data is not None and self.data.source_type == "up_ang":
+            return arr < 0
+        return arr <= 0
+
     def available_layers(self) -> list[str]:
         if self.data is None:
             return []
@@ -2169,7 +2183,7 @@ class WorkflowSession:
         metadata_symmetries = self.data.phase_symmetries
         fallback_sym = next(iter(metadata_symmetries.values())) if len(metadata_symmetries) == 1 else symmetry.C1
         for phase_id in np.unique(phase_ids).tolist():
-            if phase_id <= 0:
+            if self._phase_is_unindexed(phase_id):
                 continue
             mask = (phase_ids == int(phase_id)) & valid_euler
             if not np.any(mask):
@@ -3883,7 +3897,7 @@ class WorkflowSession:
         idx = int(index)
         row, col = self.row_col_from_index(idx)
         phase = int(self.current_phases[idx]) if self.current_phases is not None else None
-        if phase is not None and phase <= 0:
+        if self._phase_is_unindexed(phase):
             e_rad = np.full(3, np.nan, dtype=np.float64)
             e_deg = np.full(3, np.nan, dtype=np.float64)
         else:
@@ -4014,7 +4028,7 @@ class WorkflowSession:
             raise ValueError("No indices selected.")
         phase_id = int(phase_id)
         selected_phases = np.asarray(self.current_phases[indices], dtype=np.int32)
-        valid = (selected_phases == phase_id) | (selected_phases <= 0)
+        valid = (selected_phases == phase_id) | self._phase_unindexed_mask(selected_phases)
         if not np.any(valid):
             if indices.size == 1:
                 actual_phase = int(selected_phases[0])
@@ -6060,7 +6074,7 @@ class WorkflowSession:
         ):
             raise RuntimeError("Session state is not initialized.")
         idx = int(index)
-        if int(self.current_phases[idx]) <= 0:
+        if self._phase_is_unindexed(self.current_phases[idx]):
             raise RuntimeError("Selected point has no indexed orientation yet.")
         if self.master.kind == "kikuchipy" and self.master.mp_signal is not None:
             import kikuchipy as kp
@@ -6118,7 +6132,7 @@ class WorkflowSession:
             raise RuntimeError("Session state is not initialized.")
 
         idx = int(index)
-        if euler_rad_override is None and int(self.current_phases[idx]) <= 0:
+        if euler_rad_override is None and self._phase_is_unindexed(self.current_phases[idx]):
             raise RuntimeError("Selected point has no indexed orientation yet.")
         e_use = (
             np.asarray(euler_rad_override, dtype=np.float64).reshape(3)
