@@ -2101,7 +2101,7 @@ class WorkflowSession:
         metadata_symmetries = self.data.phase_symmetries
         fallback_sym = next(iter(metadata_symmetries.values())) if len(metadata_symmetries) == 1 else symmetry.C1
         for phase_id in np.unique(phase_ids).tolist():
-            if phase_id < 0:
+            if phase_id <= 0:
                 continue
             mask = (phase_ids == int(phase_id)) & valid_euler
             if not np.any(mask):
@@ -3806,15 +3806,20 @@ class WorkflowSession:
             raise RuntimeError("Session state is not initialized.")
         idx = int(index)
         row, col = self.row_col_from_index(idx)
-        e_rad = self.current_eulers_rad[idx].astype(np.float64, copy=True)
-        e_deg = np.rad2deg(e_rad)
+        phase = int(self.current_phases[idx]) if self.current_phases is not None else None
+        if phase is not None and phase <= 0:
+            e_rad = np.full(3, np.nan, dtype=np.float64)
+            e_deg = np.full(3, np.nan, dtype=np.float64)
+        else:
+            e_rad = self.current_eulers_rad[idx].astype(np.float64, copy=True)
+            e_deg = np.rad2deg(e_rad)
         pc_custom = self.current_pc_custom[idx].astype(np.float64, copy=True)
         pc_bruker = self.current_pc_bruker[idx].astype(np.float64, copy=True)
         return {
             "index": idx,
             "row": row,
             "col": col,
-            "phase": int(self.current_phases[idx]) if self.current_phases is not None else None,
+            "phase": phase,
             "euler_rad": e_rad,
             "euler_deg": e_deg,
             "pc_custom": pc_custom,
@@ -3923,7 +3928,7 @@ class WorkflowSession:
     ) -> str:
         if self.data is None or self.master is None:
             raise RuntimeError("Load both input data and master pattern first.")
-        if self.current_eulers_rad is None or self.current_pc_bruker is None:
+        if self.current_eulers_rad is None or self.current_pc_bruker is None or self.current_phases is None:
             raise RuntimeError("Session state is not initialized.")
 
         keep_n = max(1, int(keep_n))
@@ -3931,10 +3936,12 @@ class WorkflowSession:
         indices = np.asarray(indices, dtype=np.int64).ravel()
         if indices.size == 0:
             raise ValueError("No indices selected.")
-        valid = self.current_phases[indices] == int(phase_id)
+        phase_id = int(phase_id)
+        selected_phases = np.asarray(self.current_phases[indices], dtype=np.int32)
+        valid = (selected_phases == phase_id) | (selected_phases <= 0)
         if not np.any(valid):
             if indices.size == 1:
-                actual_phase = int(self.current_phases[int(indices[0])])
+                actual_phase = int(selected_phases[0])
                 phase_id = actual_phase
                 valid = np.array([True], dtype=bool)
                 self.last_action_note = (
@@ -3942,7 +3949,7 @@ class WorkflowSession:
                     f"used phase {actual_phase} for indexing."
                 )
             else:
-                available = np.unique(self.current_phases[indices]).tolist()
+                available = np.unique(selected_phases).tolist()
                 raise ValueError(
                     f"No selected points match phase ID {phase_id}. "
                     f"Phases present in selection: {available}"
@@ -3960,6 +3967,7 @@ class WorkflowSession:
             )
         return self._dictionary_index_legacy(
             indices,
+            phase_id=phase_id,
             keep_n=keep_n,
             resolution_deg=resolution_deg,
             progress_callback=progress_callback,
@@ -3978,6 +3986,7 @@ class WorkflowSession:
         assert self.master is not None and self.master.mp_signal is not None and self.master.phase is not None
         assert self.current_eulers_rad is not None
         assert self.current_pc_bruker is not None
+        assert self.current_phases is not None
 
         cache = self.dictionary_cache
         if cache is None:
@@ -4039,6 +4048,7 @@ class WorkflowSession:
             if self.indexed_candidate_eulers_rad is not None:
                 self.indexed_candidate_eulers_rad[batch_indices] = candidate_eulers[: batch_indices.size]
             self.current_eulers_rad[batch_indices] = self._eulers_from_kikuchipy_frame(eulers_new)
+            self.current_phases[batch_indices] = int(phase_id)
             if self.last_scores_map is not None:
                 for idx, score in zip(batch_indices.tolist(), scores.tolist()):
                     row, col = self.row_col_from_index(idx)
@@ -4181,6 +4191,7 @@ class WorkflowSession:
     def _dictionary_index_legacy(
         self,
         indices: np.ndarray,
+        phase_id: int,
         keep_n: int,
         resolution_deg: float,
         progress_callback: Callable[[float, str], None] | None = None,
@@ -4192,6 +4203,7 @@ class WorkflowSession:
         assert self.master is not None and self.master.projector is not None
         assert self.current_pc_custom is not None
         assert self.current_eulers_rad is not None
+        assert self.current_phases is not None
 
         rots = sampling.get_sample_fundamental(resolution=float(resolution_deg), point_group=Oh)
         euler_dict = np.asarray(rots.to_euler(), dtype=np.float64).reshape(-1, 3)
@@ -4220,6 +4232,7 @@ class WorkflowSession:
             top = np.argpartition(-scores, kth=min(k - 1, scores.size - 1))[:k]
             best = int(top[np.argmax(scores[top])])
             self.current_eulers_rad[idx] = euler_dict[best]
+            self.current_phases[idx] = int(phase_id)
             if self.last_scores_map is not None:
                 r, c = self.row_col_from_index(idx)
                 self.last_scores_map[r, c] = float(scores[best])
@@ -5963,9 +5976,16 @@ class WorkflowSession:
     def preview_simulated_pattern(self, index: int) -> np.ndarray:
         if self.data is None or self.master is None:
             raise RuntimeError("Load both input data and master pattern first.")
-        if self.current_eulers_rad is None or self.current_pc_bruker is None or self.current_pc_custom is None:
+        if (
+            self.current_eulers_rad is None
+            or self.current_pc_bruker is None
+            or self.current_pc_custom is None
+            or self.current_phases is None
+        ):
             raise RuntimeError("Session state is not initialized.")
         idx = int(index)
+        if int(self.current_phases[idx]) <= 0:
+            raise RuntimeError("Selected point has no indexed orientation yet.")
         if self.master.kind == "kikuchipy" and self.master.mp_signal is not None:
             import kikuchipy as kp
             from orix.quaternion import Rotation
@@ -6013,15 +6033,24 @@ class WorkflowSession:
     ) -> tuple[np.ndarray, float, np.ndarray, float, float]:
         if self.data is None or self.master is None:
             raise RuntimeError("Load both input data and master pattern first.")
-        if self.current_eulers_rad is None or self.current_pc_bruker is None or self.current_pc_custom is None:
+        if (
+            self.current_eulers_rad is None
+            or self.current_pc_bruker is None
+            or self.current_pc_custom is None
+            or self.current_phases is None
+        ):
             raise RuntimeError("Session state is not initialized.")
 
         idx = int(index)
+        if euler_rad_override is None and int(self.current_phases[idx]) <= 0:
+            raise RuntimeError("Selected point has no indexed orientation yet.")
         e_use = (
             np.asarray(euler_rad_override, dtype=np.float64).reshape(3)
             if euler_rad_override is not None
             else self.current_eulers_rad[idx].astype(np.float64, copy=True)
         )
+        if not np.all(np.isfinite(e_use)):
+            raise RuntimeError("Selected point has no finite orientation yet.")
         if pc_custom_override is not None:
             pc_c = np.asarray(pc_custom_override, dtype=np.float64).reshape(3)
             pc_b = _convert_pc_map(
