@@ -13,7 +13,14 @@ from matplotlib.patches import Rectangle
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
-from .core import ORIENTATION_LAYER_LABEL, GeometryConfig, OverlapMixtureResult, OverlapPointResult, WorkflowSession
+from .core import (
+    ORIENTATION_LAYER_LABEL,
+    ORIENTATION_LAYER_LABELS,
+    GeometryConfig,
+    OverlapMixtureResult,
+    OverlapPointResult,
+    WorkflowSession,
+)
 
 PLOT_TITLE_FONTSIZE = 9
 PLOT_TEXT_FONTSIZE = 8
@@ -117,6 +124,7 @@ class MultiStepOverlapGUI(tk.Tk):
         self.residual_ipf_ncc_var = tk.StringVar(value="0.15")
         self.overlap_mixture_residual_ncc_var = tk.StringVar(value=self.residual_ipf_ncc_var.get())
         self.write_residual_patterns_var = tk.BooleanVar(value=False)
+        self.include_residual_patterns_export_var = tk.BooleanVar(value=False)
         self.residual_pattern_path_var = tk.StringVar(value=str((cwd / "residual_patterns.h5oina").resolve()))
         self.primary_fit_bound_specs = [
             ("Gaussian sigma", tk.DoubleVar(value=0.1), tk.DoubleVar(value=5.0)),
@@ -437,7 +445,13 @@ class MultiStepOverlapGUI(tk.Tk):
             combo = ttk.Combobox(top, textvariable=self.map_layer_var, values=[ORIENTATION_LAYER_LABEL], state="disabled", width=1)
         else:
             ttk.Label(top, text="Map layer").pack(side=tk.LEFT)
-            combo = ttk.Combobox(top, textvariable=self.map_layer_var, values=[ORIENTATION_LAYER_LABEL, "Phase"], state="readonly", width=20)
+            combo = ttk.Combobox(
+                top,
+                textvariable=self.map_layer_var,
+                values=[*ORIENTATION_LAYER_LABELS, "Phase"],
+                state="readonly",
+                width=20,
+            )
             combo.pack(side=tk.LEFT, padx=4)
             combo.bind("<<ComboboxSelected>>", lambda _e: self._refresh_plot())
         ttk.Button(top, text="Refresh", command=self._refresh_plot).pack(side=tk.LEFT, padx=4)
@@ -881,15 +895,26 @@ class MultiStepOverlapGUI(tk.Tk):
         ttk.Button(export_box, text="Browse", command=self._browse_residual_roi_export).grid(
             row=5, column=1, sticky="we", padx=(4, 0), pady=(2, 0)
         )
+        ttk.Checkbutton(
+            export_box,
+            text="Include residual patterns with export",
+            variable=self.include_residual_patterns_export_var,
+        ).grid(row=6, column=0, columnspan=2, sticky="w", pady=(4, 0))
+        ttk.Label(
+            export_box,
+            text="H5OINA: Processed Patterns; ANG: companion .up1",
+            wraplength=340,
+        ).grid(row=7, column=0, columnspan=2, sticky="w")
         ttk.Button(export_box, text="Export Residual ROI Map", command=self._export_residual_roi_map).grid(
-            row=6, column=0, columnspan=2, sticky="we", pady=(4, 0)
+            row=8, column=0, columnspan=2, sticky="we", pady=(4, 0)
         )
         bounds_box = ttk.LabelFrame(parent, text="Primary fit bounds", padding=8)
-        bounds_box.grid(row=23, column=0, columnspan=2, sticky="we", pady=(10, 0))
+        bounds_box.grid(row=24, column=0, columnspan=2, sticky="we", pady=(8, 0))
+        bounds_box.columnconfigure(0, weight=1)
         ttk.Label(
             bounds_box,
             text="Used when Gaussian blur + gain are fitted. These defaults mirror the reference script and can be edited here.",
-            wraplength=380,
+            wraplength=360,
         ).grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 6))
         for row, (label, low_var, high_var) in enumerate(self.primary_fit_bound_specs, start=1):
             ttk.Label(bounds_box, text=label).grid(row=row, column=0, sticky="w", padx=(0, 6))
@@ -958,7 +983,7 @@ class MultiStepOverlapGUI(tk.Tk):
         self.map_layer_combo = ttk.Combobox(
             top_bar,
             textvariable=self.map_layer_var,
-            values=[ORIENTATION_LAYER_LABEL, "Phase"],
+            values=[*ORIENTATION_LAYER_LABELS, "Phase"],
             state="readonly",
             width=18,
         )
@@ -1508,7 +1533,7 @@ class MultiStepOverlapGUI(tk.Tk):
     def _index_quality_layer_choices(self) -> list[str]:
         if self.session.data is None:
             return ["CI", "BC", "IQ", "BS", "DP", "NCC", "MAD", "Phase"]
-        unavailable = {ORIENTATION_LAYER_LABEL, "X", "Y"}
+        unavailable = {*ORIENTATION_LAYER_LABELS, "X", "Y"}
         layers = [layer for layer in self.session.available_layers() if layer not in unavailable]
         if not layers:
             layers = ["Phase"]
@@ -2623,6 +2648,7 @@ class MultiStepOverlapGUI(tk.Tk):
         bounds = self._roi_bounds()
         output_path = self.residual_roi_export_path_var.get().strip() or self._default_roi_export_path(residual=True)
         threshold = self._residual_ncc_threshold()
+        include_patterns = bool(self.include_residual_patterns_export_var.get())
         self._set_overlap_progress(0.0, "Exporting residual ROI map...")
 
         def action() -> str:
@@ -2630,6 +2656,7 @@ class MultiStepOverlapGUI(tk.Tk):
                 bounds,
                 output_path,
                 primary_ncc_threshold=threshold,
+                include_residual_patterns=include_patterns,
             )
             self.after(0, lambda: self._set_overlap_progress(100.0, "Residual ROI export complete."))
             return msg

@@ -26,6 +26,7 @@ MAP_LAYER_CANDIDATES: dict[str, list[str]] = {
 }
 H5OINA_DATASET_CANDIDATES: dict[str, list[str]] = {
     "processed_patterns": ["EBSD/Data/Processed Patterns"],
+    "unprocessed_patterns": ["EBSD/Data/Unprocessed Patterns", "EBSD/Data/Raw Patterns"],
     "euler": ["Data Processing/Data/Euler", "EBSD/Data/Euler"],
     "phase": ["Data Processing/Data/Phase", "EBSD/Data/Phase"],
     "pcx": ["Data Processing/Data/Pattern Center X", "EBSD/Data/Pattern Center X"],
@@ -38,7 +39,21 @@ H5OINA_DATASET_CANDIDATES: dict[str, list[str]] = {
     "detector_orientation_euler": ["EBSD/Header/Detector Orientation Euler"],
     "phase_symmetries": ["Data Processing/Header/Phases", "EBSD/Header/Phases"],
 }
+H5OINA_NCC_DATASET = "Data Processing/Pattern Matching/Data/Cross Correlation Coefficient"
+H5OINA_EXPORT_DATA_GROUP = "Data Processing/Overlap EBSD Indexing/Data"
+H5OINA_PATTERN_DATASET_NAMES = {
+    "processed patterns",
+    "unprocessed patterns",
+    "raw patterns",
+}
 ORIENTATION_LAYER_LABEL = "IPF-Z (Euler)"
+IPF_X_LAYER_LABEL = "IPF-X (Euler)"
+IPF_Y_LAYER_LABEL = "IPF-Y (Euler)"
+ORIENTATION_LAYER_LABELS = (
+    ORIENTATION_LAYER_LABEL,
+    IPF_X_LAYER_LABEL,
+    IPF_Y_LAYER_LABEL,
+)
 
 
 def _h5_group_sort_key(name: str) -> tuple[int, int | str]:
@@ -121,6 +136,98 @@ def _h5oina_first_path(
         options = ", ".join(candidates)
         raise RuntimeError(f"H5OINA file is missing the required {name} dataset. Tried: {options}.")
     return None
+
+
+def _is_h5oina_pattern_dataset(path: str) -> bool:
+    """Return whether *path* is a top-level EBSD pattern stack.
+
+    Master-pattern datasets elsewhere in the file deliberately do not match.
+    """
+    parts = [part.strip().lower() for part in str(path).strip("/").split("/")]
+    return len(parts) >= 3 and parts[-3:-1] == ["ebsd", "data"] and parts[-1] in H5OINA_PATTERN_DATASET_NAMES
+
+
+def _copy_h5oina_for_map_export(
+    source_path: Path,
+    output_path: Path,
+    *,
+    included_processed_path: str | None = None,
+) -> None:
+    """Copy H5OINA metadata/map data while omitting large pattern stacks.
+
+    If ``included_processed_path`` is supplied, that one Processed Patterns
+    dataset is copied with its original shape, type, chunks, compression and
+    attributes. All other processed/unprocessed stacks remain omitted.
+    """
+    source = Path(source_path).expanduser().resolve()
+    output = Path(output_path).expanduser().resolve()
+    if source == output:
+        raise ValueError("H5OINA export path must be different from the source file.")
+    include = None if included_processed_path is None else str(included_processed_path).strip("/")
+
+    with h5py.File(source, "r") as src, h5py.File(output, "w") as dst:
+        for key, value in src.attrs.items():
+            dst.attrs[key] = value
+
+        def copy_group(src_group: h5py.Group, dst_group: h5py.Group, prefix: str) -> None:
+            for name in src_group.keys():
+                path = f"{prefix}/{name}" if prefix else str(name)
+                is_pattern = _is_h5oina_pattern_dataset(path)
+                if is_pattern and path != include:
+                    continue
+                link = src_group.get(name, getlink=True)
+                if is_pattern:
+                    src_group.copy(
+                        name,
+                        dst_group,
+                        name=name,
+                        expand_soft=True,
+                        expand_external=True,
+                    )
+                    continue
+                if isinstance(link, (h5py.SoftLink, h5py.ExternalLink)):
+                    dst_group[name] = link
+                    continue
+                obj = src_group[name]
+                if isinstance(obj, h5py.Group):
+                    child = dst_group.create_group(name)
+                    for attr_name, attr_value in obj.attrs.items():
+                        child.attrs[attr_name] = attr_value
+                    copy_group(obj, child, path)
+                    continue
+                src_group.copy(name, dst_group, name=name)
+
+        copy_group(src, dst, "")
+
+
+def _h5_pattern_at(ds: h5py.Dataset, index: int, *, rows: int, cols: int) -> np.ndarray:
+    idx = int(index)
+    if ds.ndim == 3 and int(ds.shape[0]) == int(rows * cols):
+        return np.asarray(ds[idx])
+    if ds.ndim == 4 and tuple(int(v) for v in ds.shape[:2]) == (int(rows), int(cols)):
+        row, col = divmod(idx, int(cols))
+        return np.asarray(ds[row, col])
+    raise RuntimeError(f"Unsupported H5OINA Processed Patterns shape {ds.shape}.")
+
+
+def _write_h5_pattern_at(
+    ds: h5py.Dataset,
+    index: int,
+    pattern: np.ndarray,
+    *,
+    rows: int,
+    cols: int,
+) -> None:
+    idx = int(index)
+    arr = np.asarray(pattern, dtype=ds.dtype)
+    if ds.ndim == 3 and int(ds.shape[0]) == int(rows * cols):
+        ds[idx] = arr
+        return
+    if ds.ndim == 4 and tuple(int(v) for v in ds.shape[:2]) == (int(rows), int(cols)):
+        row, col = divmod(idx, int(cols))
+        ds[row, col] = arr
+        return
+    raise RuntimeError(f"Unsupported H5OINA Processed Patterns shape {ds.shape}.")
 
 
 def _is_hexagonal_lattice_angles(angles: np.ndarray) -> bool:
@@ -1154,6 +1261,21 @@ def _residual_to_uint8(residual_z: np.ndarray, zlim: float = 3.0, *, hist_norm: 
     return lut[scaled]
 
 
+def _stored_pattern_to_uint8(pattern: np.ndarray, source_dtype: np.dtype) -> np.ndarray:
+    arr = np.asarray(pattern)
+    if np.dtype(source_dtype) == np.dtype(np.uint16):
+        arr = np.rint(arr.astype(np.float32) / 257.0)
+    return np.clip(arr, 0, 255).astype(np.uint8)
+
+
+def _uint8_pattern_for_dtype(pattern_u8: np.ndarray, dtype: np.dtype) -> np.ndarray:
+    arr = np.asarray(pattern_u8, dtype=np.uint8)
+    target = np.dtype(dtype)
+    if target == np.dtype(np.uint16):
+        return (arr.astype(np.uint16) * 257).astype(np.uint16, copy=False)
+    return arr.astype(target, copy=False)
+
+
 def _write_up_pattern_at(
     out_path: str,
     reader: UPPatternReader,
@@ -1178,6 +1300,48 @@ def _write_up_pattern_at(
     else:
         file_obj.seek(reader.pattern_offset + idx * reader.bytes_per_pattern)
         arr_write.tofile(file_obj)
+
+
+def _copy_patterns_to_up1(source_reader: UPPatternReader, output_path: Path) -> UPPatternReader:
+    """Create a valid UP1 containing all original source patterns."""
+    source = Path(source_reader.path).expanduser().resolve()
+    output = Path(output_path).expanduser().resolve()
+    if source == output:
+        raise ValueError("Residual UP1 export path must be different from the source pattern file.")
+    output.parent.mkdir(parents=True, exist_ok=True)
+
+    if np.dtype(source_reader.dtype) == np.dtype(np.uint8):
+        shutil.copy2(source, output)
+    else:
+        # The header and optional version >=3 metadata are independent of the
+        # pattern word size. Preserve them byte-for-byte and convert only the
+        # pattern payload from UP2 uint16 to UP1 uint8.
+        with open(source, "rb") as src, open(output, "wb") as dst:
+            header = src.read(int(source_reader.pattern_offset))
+            if len(header) != int(source_reader.pattern_offset):
+                raise RuntimeError(f"Could not read the complete UP header from {source}.")
+            dst.write(header)
+            patterns = np.memmap(
+                source,
+                dtype=np.uint16,
+                mode="r",
+                offset=int(source_reader.pattern_offset),
+                shape=(int(source_reader.n_patterns), int(source_reader.h), int(source_reader.w)),
+            )
+            batch_size = max(1, int((32 * 1024**2) / max(1, source_reader.h * source_reader.w * 2)))
+            for start in range(0, int(source_reader.n_patterns), batch_size):
+                stop = min(int(source_reader.n_patterns), start + batch_size)
+                converted = np.rint(np.asarray(patterns[start:stop], dtype=np.float32) / 257.0)
+                np.clip(converted, 0.0, 255.0).astype(np.uint8).tofile(dst)
+
+    return UPPatternReader(
+        path=str(output),
+        dtype=np.dtype(np.uint8),
+        pattern_offset=int(source_reader.pattern_offset),
+        n_patterns=int(source_reader.n_patterns),
+        h=int(source_reader.h),
+        w=int(source_reader.w),
+    )
 
 
 _RESIDUAL_ROI_WORKER_STATE: dict[str, object] | None = None
@@ -1479,7 +1643,9 @@ class ResidualPatternWriter:
                 arr_write = arr_u8
             else:
                 arr_write = arr_u8.astype(self.dtype, copy=False)
-            self.patterns_ds[int(index)] = arr_write
+            rows = int(self.patterns_ds.shape[0]) if self.patterns_ds.ndim == 4 else 1
+            cols = int(self.patterns_ds.shape[1]) if self.patterns_ds.ndim == 4 else int(self.patterns_ds.shape[0])
+            _write_h5_pattern_at(self.patterns_ds, int(index), arr_write, rows=rows, cols=cols)
             return
         if self.source_type == "up_ang":
             if self.up_reader is None or self.up_file is None or self.pattern_offset is None:
@@ -2128,16 +2294,27 @@ class WorkflowSession:
         layers = list(self.data.map_layers.keys())
         if not layers:
             layers = ["Phase"]
-        if ORIENTATION_LAYER_LABEL not in layers:
-            layers.append(ORIENTATION_LAYER_LABEL)
+        for label in ORIENTATION_LAYER_LABELS:
+            if label not in layers:
+                layers.append(label)
         return layers
 
     def get_layer_map(self, label: str) -> np.ndarray:
         if self.data is None:
             raise RuntimeError("Load input data first.")
         key = str(label).strip()
-        if key.upper() in {ORIENTATION_LAYER_LABEL.upper(), "IPF", "IPF-Z"}:
-            return self.get_ipf_color_map(direction="z")
+        ipf_directions = {
+            ORIENTATION_LAYER_LABEL.upper(): "z",
+            IPF_X_LAYER_LABEL.upper(): "x",
+            IPF_Y_LAYER_LABEL.upper(): "y",
+            "IPF": "z",
+            "IPF-Z": "z",
+            "IPF-X": "x",
+            "IPF-Y": "y",
+        }
+        ipf_direction = ipf_directions.get(key.upper())
+        if ipf_direction is not None:
+            return self.get_ipf_color_map(direction=ipf_direction)
         if key in self.data.map_layers:
             return self.data.map_layers[key]
         if key.lower() == "phase" and self.current_phases is not None:
@@ -2696,8 +2873,11 @@ class WorkflowSession:
                 up_pattern_reader=None,
             )
             self.initial_eulers_rad = eulers.copy()
-            self.current_eulers_rad = self.data.eulers_rad
-            self.current_phases = self.data.phases
+            # Keep the loaded source arrays immutable.  In particular, the
+            # preliminary IPF uses ``data.phases`` as its original indexed
+            # mask, while dictionary indexing updates ``current_phases``.
+            self.current_eulers_rad = self.data.eulers_rad.copy()
+            self.current_phases = self.data.phases.copy()
             self.current_pc_bruker = pc_bruker.reshape(-1, 3).copy()
             self.current_pc_custom = pc_custom.reshape(-1, 3).copy()
             self._invalidate_orientation_cache()
@@ -2833,8 +3013,10 @@ class WorkflowSession:
                 up_pattern_reader=up_reader,
             )
             self.initial_eulers_rad = eulers.copy()
-            self.current_eulers_rad = self.data.eulers_rad
-            self.current_phases = self.data.phases
+            # Keep the preliminary orientation/phase data independent from
+            # the mutable re-indexing state (see the H5OINA path above).
+            self.current_eulers_rad = self.data.eulers_rad.copy()
+            self.current_phases = self.data.phases.copy()
             self.current_pc_bruker = pc_bruker.copy()
             self.current_pc_custom = pc_custom.copy()
             self._invalidate_orientation_cache()
@@ -3185,6 +3367,7 @@ class WorkflowSession:
         residual_results: dict[int, OverlapPointResult] | None = None,
         apply_dictionary_binning: bool = True,
     ):
+        import dask.array as da
         import kikuchipy as kp
 
         if self.data is None:
@@ -3199,6 +3382,26 @@ class WorkflowSession:
         cache = self.dictionary_cache
         residual_results = self.residual_point_results if residual_results is None else residual_results
 
+        def signal_from_patterns(patterns: np.ndarray):
+            arr = np.asarray(patterns, dtype=np.float32)
+            if arr.ndim == 2:
+                arr = arr[np.newaxis, ...]
+            # Keep residual ROI indexing on a chunked LazyEBSD signal so
+            # KikuchiPy can use the same lazy/chunked execution path as the
+            # normal H5OINA ROI indexing route.
+            bytes_per_pattern = max(1, int(arr.shape[1] * arr.shape[2] * np.dtype(np.float32).itemsize))
+            chunk_memory_cap = max(1, int((16 * 1024**2) / bytes_per_pattern))
+            chunk_nav = max(1, min(int(arr.shape[0]), 64, chunk_memory_cap))
+            darr = da.from_array(arr, chunks=(chunk_nav, arr.shape[1], arr.shape[2]))
+            sig = self._signal_from_pattern_data(darr)
+            if not apply_dictionary_binning:
+                return sig
+            return self._apply_software_binning_to_signal(
+                sig,
+                software_binning=cache.software_binning,
+                crop_extent=cache.crop_extent,
+            )
+
         can_use_memory = True
         memory_patterns: list[np.ndarray] = []
         for pidx in idx.tolist():
@@ -3209,22 +3412,7 @@ class WorkflowSession:
             memory_patterns.append(np.asarray(result.residual, dtype=np.float32))
 
         if can_use_memory:
-            patterns = np.stack(memory_patterns, axis=0)
-            if patterns.ndim == 2:
-                patterns = patterns[np.newaxis, ...]
-            sig = kp.signals.EBSD(patterns)
-            if len(sig.axes_manager.navigation_axes) >= 1:
-                nav = sig.axes_manager.navigation_axes[0]
-                nav.name = "x"
-                nav.scale = 1.0
-                nav.units = "px"
-            if not apply_dictionary_binning:
-                return sig
-            return self._apply_software_binning_to_signal(
-                sig,
-                software_binning=cache.software_binning,
-                crop_extent=cache.crop_extent,
-            )
+            return signal_from_patterns(np.stack(memory_patterns, axis=0))
 
         source = self._load_residual_pattern_source()
         if source is not None:
@@ -3262,19 +3450,7 @@ class WorkflowSession:
                 result = self._materialize_residual_point_result(result)
                 residual_results[int(pidx)] = result
             fallback_patterns.append(np.asarray(result.residual, dtype=np.float32))
-        sig = kp.signals.EBSD(np.stack(fallback_patterns, axis=0))
-        if len(sig.axes_manager.navigation_axes) >= 1:
-            nav = sig.axes_manager.navigation_axes[0]
-            nav.name = "x"
-            nav.scale = 1.0
-            nav.units = "px"
-        if not apply_dictionary_binning:
-            return sig
-        return self._apply_software_binning_to_signal(
-            sig,
-            software_binning=cache.software_binning,
-            crop_extent=cache.crop_extent,
-        )
+        return signal_from_patterns(np.stack(fallback_patterns, axis=0))
 
     def _dictionary_index_kikuchipy_signal(
         self,
@@ -3285,6 +3461,7 @@ class WorkflowSession:
         signal_mask: np.ndarray | None,
         n_per_iteration: int | None = None,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        """Return the best Euler angles in Kikuchipy's frame and candidates in the app frame."""
         xmap = signal.dictionary_indexing(
             dictionary=cache.signal,
             metric="ncc",
@@ -3310,7 +3487,7 @@ class WorkflowSession:
             candidate_eulers_kp.shape
         )
         return (
-            candidate_eulers[:, 0, :],
+            candidate_eulers_kp[:, 0, :],
             candidate_scores[:, 0],
             candidate_eulers,
             candidate_scores,
@@ -5399,9 +5576,29 @@ class WorkflowSession:
                         initializer=_init_residual_roi_worker,
                         initargs=initargs,
                     ) as pool:
-                        futures = [pool.submit(_compute_residual_roi_batch, build_payload(batch)) for batch in batches]
+                        # Do not materialize every experimental-pattern batch up
+                        # front.  Large ROIs can otherwise queue thousands of
+                        # full-pattern payloads before this thread reaches the
+                        # completion loop, consuming substantial memory while
+                        # leaving the GUI progress bar at zero.
+                        batch_iter = iter(batches)
+                        max_in_flight = max(1, worker_count * 2)
+                        futures: set[object] = set()
+
+                        def submit_next_batch() -> bool:
+                            try:
+                                batch = next(batch_iter)
+                            except StopIteration:
+                                return False
+                            futures.add(pool.submit(_compute_residual_roi_batch, build_payload(batch)))
+                            return True
+
+                        for _ in range(min(max_in_flight, len(batches))):
+                            submit_next_batch()
                         completed = 0
-                        for future in as_completed(futures):
+                        while futures:
+                            future = next(as_completed(tuple(futures)))
+                            futures.remove(future)
                             batch_results = future.result()
                             for result in batch_results:
                                 store_result(result)
@@ -5411,6 +5608,8 @@ class WorkflowSession:
                                     100.0 * completed / selected.size,
                                     f"Computed residual {completed}/{selected.size} point(s)...",
                                 )
+                            while len(futures) < max_in_flight and submit_next_batch():
+                                pass
                 except Exception:
                     if progress_callback is not None:
                         progress_callback(0.0, "Residual batching failed; falling back to serial processing...")
@@ -6036,9 +6235,28 @@ class WorkflowSession:
                         initializer=_init_residual_roi_worker,
                         initargs=initargs,
                     ) as pool:
-                        futures = [pool.submit(_compute_overlap_mixture_roi_batch, build_payload(batch)) for batch in batches]
+                        # Keep large ROI fits bounded just like the residual
+                        # computation above.  Eagerly materializing all source
+                        # patterns delays progress reporting and can exhaust
+                        # memory before completed fits are consumed.
+                        batch_iter = iter(batches)
+                        max_in_flight = max(1, worker_count * 2)
+                        futures: set[object] = set()
+
+                        def submit_next_batch() -> bool:
+                            try:
+                                batch = next(batch_iter)
+                            except StopIteration:
+                                return False
+                            futures.add(pool.submit(_compute_overlap_mixture_roi_batch, build_payload(batch)))
+                            return True
+
+                        for _ in range(min(max_in_flight, len(batches))):
+                            submit_next_batch()
                         completed = 0
-                        for future in as_completed(futures):
+                        while futures:
+                            future = next(as_completed(tuple(futures)))
+                            futures.remove(future)
                             batch_results = future.result()
                             for result in batch_results:
                                 store_result(result)
@@ -6048,6 +6266,8 @@ class WorkflowSession:
                                     100.0 * completed / selected.size,
                                     f"Fitted overlap mixture {completed}/{selected.size} point(s)...",
                                 )
+                            while len(futures) < max_in_flight and submit_next_batch():
+                                pass
                 except Exception:
                     if progress_callback is not None:
                         progress_callback(0.0, "Overlap mixture batching failed; falling back to serial processing...")
@@ -6576,20 +6796,111 @@ class WorkflowSession:
 
         raise RuntimeError(f"Unsupported source type '{self.data.source_type}' for export.")
 
-    def _h5oina_quality_dataset_paths(self, h5: h5py.File) -> list[str]:
-        paths: list[str] = []
-        roots = [self.data.h5_analysis_root] if self.data is not None and self.data.h5_analysis_root is not None else _h5oina_analysis_roots(h5)
-        for key in ("MAD", "NCC"):
-            for candidate in _h5oina_existing_paths(h5, MAP_LAYER_CANDIDATES.get(key, []), roots=roots):
-                if candidate not in paths:
-                    paths.append(candidate)
-        if not paths:
-            for candidate in _h5oina_existing_paths(h5, MAP_LAYER_CANDIDATES.get("CI", []), roots=roots):
-                if candidate not in paths:
-                    paths.append(candidate)
-        if not paths:
-            raise RuntimeError("No suitable quality dataset (MAD/NCC/CI) found in the H5OINA file.")
-        return paths
+    @staticmethod
+    def _write_h5_roi_dataset(
+        ds: h5py.Dataset,
+        values: np.ndarray,
+        *,
+        is_euler: bool,
+        rows: int,
+        cols: int,
+        r0: int,
+        r1: int,
+        c0: int,
+        c1: int,
+    ) -> None:
+        roi_rows = int(r1 - r0)
+        roi_cols = int(c1 - c0)
+        if is_euler:
+            if ds.shape[:2] == (rows, cols) and len(ds.shape) >= 3 and int(ds.shape[-1]) == 3:
+                ds[r0:r1, c0:c1, :] = values.astype(ds.dtype, copy=False)
+                return
+            if len(ds.shape) == 2 and ds.shape[0] == rows * cols and int(ds.shape[1]) == 3:
+                flat_values = values.reshape(-1, 3)
+                offset = 0
+                for rr in range(roi_rows):
+                    start = (r0 + rr) * cols + c0
+                    stop = start + roi_cols
+                    ds[start:stop, :] = flat_values[offset : offset + roi_cols].astype(ds.dtype, copy=False)
+                    offset += roi_cols
+                return
+        else:
+            if ds.shape[:2] == (rows, cols):
+                if len(ds.shape) == 2:
+                    ds[r0:r1, c0:c1] = values.astype(ds.dtype, copy=False)
+                else:
+                    ds[r0:r1, c0:c1, ...] = values.astype(ds.dtype, copy=False)
+                return
+            if len(ds.shape) == 1 and ds.shape[0] == rows * cols:
+                flat_values = values.reshape(-1)
+                offset = 0
+                for rr in range(roi_rows):
+                    start = (r0 + rr) * cols + c0
+                    stop = start + roi_cols
+                    ds[start:stop] = flat_values[offset : offset + roi_cols].astype(ds.dtype, copy=False)
+                    offset += roi_cols
+                return
+            if len(ds.shape) == 2 and ds.shape[0] == rows * cols and ds.shape[1] == 1:
+                flat_values = values.reshape(-1)
+                offset = 0
+                for rr in range(roi_rows):
+                    start = (r0 + rr) * cols + c0
+                    stop = start + roi_cols
+                    ds[start:stop, 0] = flat_values[offset : offset + roi_cols].astype(ds.dtype, copy=False)
+                    offset += roi_cols
+                return
+        raise RuntimeError(f"Unsupported H5OINA dataset shape {ds.shape} for ROI export.")
+
+    def _residual_pattern_indices(self) -> np.ndarray:
+        if self.data is None:
+            return np.empty(0, dtype=np.int64)
+        indices = sorted(
+            int(idx)
+            for idx in self.residual_point_results.keys()
+            if 0 <= int(idx) < int(self.data.count)
+        )
+        return np.asarray(indices, dtype=np.int64)
+
+    def _residual_pattern_u8(
+        self,
+        index: int,
+        *,
+        stored_h5_patterns: h5py.Dataset | None = None,
+        stored_up_reader: UPPatternReader | None = None,
+    ) -> np.ndarray:
+        if self.data is None:
+            raise RuntimeError("Load input data first.")
+        idx = int(index)
+        result = self.residual_point_results.get(idx)
+        if result is None:
+            raise RuntimeError(f"No residual pattern is registered for point {idx}.")
+        if result.residual is not None:
+            return _residual_to_uint8(result.residual)
+        if stored_h5_patterns is not None:
+            stored = _h5_pattern_at(stored_h5_patterns, idx, rows=self.data.rows, cols=self.data.cols)
+            return _stored_pattern_to_uint8(stored, stored_h5_patterns.dtype)
+        if stored_up_reader is not None:
+            stored = stored_up_reader.read_pattern(idx)
+            return _stored_pattern_to_uint8(stored, stored_up_reader.dtype)
+        materialized = self._materialize_residual_point_result(result)
+        self.residual_point_results[idx] = materialized
+        if materialized.residual is None:
+            raise RuntimeError(f"Residual pattern could not be materialized for point {idx}.")
+        return _residual_to_uint8(materialized.residual)
+
+    @staticmethod
+    def _replace_h5_export_dataset(
+        group: h5py.Group,
+        name: str,
+        values: np.ndarray,
+        *,
+        description: str,
+    ) -> h5py.Dataset:
+        if name in group:
+            del group[name]
+        ds = group.create_dataset(name, data=np.asarray(values).reshape(-1))
+        ds.attrs["Description"] = str(description)
+        return ds
 
     def _export_roi_result_map(
         self,
@@ -6598,6 +6909,7 @@ class WorkflowSession:
         *,
         residual: bool,
         primary_ncc_threshold: float = 0.15,
+        include_residual_patterns: bool = False,
     ) -> str:
         if self.data is None:
             raise RuntimeError("Load input data first.")
@@ -6634,6 +6946,13 @@ class WorkflowSession:
             raise FileNotFoundError(str(source_path))
         out.parent.mkdir(parents=True, exist_ok=True)
 
+        roi_mask = np.zeros((rows, cols), dtype=np.uint8)
+        roi_mask[r0:r1, c0:c1] = 1
+        residual_pattern_indices = self._residual_pattern_indices() if residual else np.empty(0, dtype=np.int64)
+        residual_pattern_mask = np.zeros((rows, cols), dtype=np.uint8)
+        if residual_pattern_indices.size > 0:
+            residual_pattern_mask.reshape(-1)[residual_pattern_indices] = 1
+
         if residual:
             if self.residual_eulers_rad is None or self.last_residual_scores_map is None:
                 raise RuntimeError("Run residual ROI indexing before exporting the residual map.")
@@ -6654,21 +6973,24 @@ class WorkflowSession:
             roi_euler_block = euler_grid[r0:r1, c0:c1]
             roi_quality_block = quality_grid[r0:r1, c0:c1]
             roi_phase_block = phase_grid[r0:r1, c0:c1]
-            if np.any(below_primary):
-                roi_euler_block[below_primary] = 0.0
-                roi_quality_block[below_primary] = 0.0
-                roi_phase_block[below_primary] = 0
-            missing = ~np.all(np.isfinite(roi_euler_block), axis=-1) & ~below_primary
-            if np.any(missing):
-                first = np.argwhere(missing)[0]
-                raise RuntimeError(
-                    "Residual export needs a residual orientation for every ROI point above the primary NCC threshold; "
-                    f"missing at row={r0 + int(first[0])}, col={c0 + int(first[1])}."
-                )
+            missing = ~np.all(np.isfinite(roi_euler_block), axis=-1)
+            unavailable = below_primary | missing
+            if np.any(unavailable):
+                roi_euler_block[unavailable] = 0.0
+                roi_quality_block[unavailable] = 0.0
+                roi_phase_block[unavailable] = 0
+            # A score without a corresponding residual pattern is misleading
+            # for pattern-bearing exports. Keep it explicitly at zero.
+            roi_has_pattern = residual_pattern_mask[r0:r1, c0:c1].astype(bool)
+            roi_quality_block[~roi_has_pattern] = 0.0
             roi_eulers = np.asarray(roi_euler_block, dtype=np.float64)
             roi_quality = np.asarray(roi_quality_block, dtype=np.float64)
             roi_phase = np.asarray(roi_phase_block, dtype=np.int32)
-            zero_note = f" Points below the primary NCC threshold ({float(primary_ncc_threshold):.4f}) were exported as zero orientation."
+            zero_count = int(np.count_nonzero(unavailable))
+            zero_note = (
+                f" {zero_count} point(s) below the primary NCC threshold ({float(primary_ncc_threshold):.4f}) "
+                "or without a residual orientation were exported as zero orientation."
+            )
         else:
             if self.current_eulers_rad is None or self.last_scores_map is None or self.current_phases is None:
                 raise RuntimeError("Run primary ROI indexing before exporting the primary map.")
@@ -6687,7 +7009,30 @@ class WorkflowSession:
             zero_note = ""
 
         if self.data.source_type == "h5oina":
-            shutil.copy2(source_path, out)
+            source_roots = [self.data.h5_analysis_root] if self.data.h5_analysis_root is not None else None
+            included_processed_path: str | None = None
+            if residual and include_residual_patterns:
+                with h5py.File(source_path, "r") as source_h5:
+                    included_processed_path = _h5oina_first_path(
+                        source_h5,
+                        H5OINA_DATASET_CANDIDATES["processed_patterns"],
+                        roots=source_roots,
+                        label="processed patterns",
+                        required=True,
+                    )
+            residual_store_path = (
+                Path(self.residual_pattern_output_path).expanduser().resolve()
+                if residual and include_residual_patterns and self.residual_pattern_output_path
+                else None
+            )
+            if residual_store_path is not None and residual_store_path == out:
+                raise ValueError("Residual ROI export path must be different from the residual-pattern working file.")
+
+            _copy_h5oina_for_map_export(
+                source_path,
+                out,
+                included_processed_path=included_processed_path,
+            )
             with h5py.File(out, "r+") as h5:
                 roots = [self.data.h5_analysis_root] if self.data.h5_analysis_root is not None else _h5oina_analysis_roots(h5)
                 euler_paths = _h5oina_existing_paths(h5, H5OINA_DATASET_CANDIDATES["euler"], roots=roots)
@@ -6696,7 +7041,13 @@ class WorkflowSession:
                 phase_paths = _h5oina_existing_paths(h5, MAP_LAYER_CANDIDATES.get("Phase", []), roots=roots)
                 if not phase_paths:
                     raise RuntimeError("H5OINA export could not find any phase dataset to update.")
-                quality_paths = self._h5oina_quality_dataset_paths(h5)
+                root = roots[0] if roots else ""
+                ncc_path = f"{root}/{H5OINA_NCC_DATASET}" if root else H5OINA_NCC_DATASET
+                ncc_parent_path, ncc_name = ncc_path.rsplit("/", 1)
+                ncc_parent = h5.require_group(ncc_parent_path)
+                if ncc_name not in ncc_parent:
+                    ncc_parent.create_dataset(ncc_name, shape=(rows * cols,), dtype=np.float32)
+                ncc_ds = ncc_parent[ncc_name]
                 row_phase = roi_phase.reshape(roi_rows, roi_cols)
                 row_eulers = _apply_phase_euler_corrections(
                     roi_eulers.reshape(-1, 3),
@@ -6706,65 +7057,141 @@ class WorkflowSession:
                 ).reshape(roi_rows, roi_cols, 3)
                 row_quality = roi_quality.reshape(roi_rows, roi_cols)
 
-                def _write_h5_roi_dataset(ds: h5py.Dataset, values: np.ndarray, *, is_euler: bool) -> None:
-                    if is_euler:
-                        if ds.shape[:2] == (rows, cols) and len(ds.shape) >= 3 and int(ds.shape[-1]) == 3:
-                            ds[r0:r1, c0:c1, :] = values.astype(ds.dtype, copy=False)
-                            return
-                        if len(ds.shape) == 2 and ds.shape[0] == rows * cols and int(ds.shape[1]) == 3:
-                            flat_values = values.reshape(-1, 3)
-                            offset = 0
-                            for rr in range(roi_rows):
-                                start = (r0 + rr) * cols + c0
-                                stop = start + roi_cols
-                                ds[start:stop, :] = flat_values[offset : offset + roi_cols].astype(ds.dtype, copy=False)
-                                offset += roi_cols
-                            return
-                    else:
-                        if ds.shape[:2] == (rows, cols):
-                            if len(ds.shape) == 2:
-                                ds[r0:r1, c0:c1] = values.astype(ds.dtype, copy=False)
-                            else:
-                                ds[r0:r1, c0:c1, ...] = values.astype(ds.dtype, copy=False)
-                            return
-                        if len(ds.shape) == 1 and ds.shape[0] == rows * cols:
-                            flat_values = values.reshape(-1)
-                            offset = 0
-                            for rr in range(roi_rows):
-                                start = (r0 + rr) * cols + c0
-                                stop = start + roi_cols
-                                ds[start:stop] = flat_values[offset : offset + roi_cols].astype(ds.dtype, copy=False)
-                                offset += roi_cols
-                            return
-                        if len(ds.shape) == 2 and ds.shape[0] == rows * cols and ds.shape[1] == 1:
-                            flat_values = values.reshape(-1)
-                            offset = 0
-                            for rr in range(roi_rows):
-                                start = (r0 + rr) * cols + c0
-                                stop = start + roi_cols
-                                ds[start:stop, 0] = flat_values[offset : offset + roi_cols].astype(ds.dtype, copy=False)
-                                offset += roi_cols
-                            return
-                    raise RuntimeError(f"Unsupported H5OINA dataset shape {ds.shape} for ROI export.")
-
                 for e_path in euler_paths:
                     h5[e_path][...] = 0
-                for q_path in quality_paths:
-                    h5[q_path][...] = 0
+                ncc_ds[...] = 0
                 for p_path in phase_paths:
                     h5[p_path][...] = 0
 
                 for e_path in euler_paths:
-                    _write_h5_roi_dataset(h5[e_path], row_eulers, is_euler=True)
-                for q_path in quality_paths:
-                    _write_h5_roi_dataset(h5[q_path], row_quality, is_euler=False)
+                    self._write_h5_roi_dataset(
+                        h5[e_path], row_eulers, is_euler=True,
+                        rows=rows, cols=cols, r0=r0, r1=r1, c0=c0, c1=c1,
+                    )
+                self._write_h5_roi_dataset(
+                    ncc_ds, row_quality, is_euler=False,
+                    rows=rows, cols=cols, r0=r0, r1=r1, c0=c0, c1=c1,
+                )
                 for p_path in phase_paths:
-                    _write_h5_roi_dataset(h5[p_path], row_phase, is_euler=False)
-            return f"Exported {'residual' if residual else 'primary'} ROI map to {out}.{zero_note}"
+                    self._write_h5_roi_dataset(
+                        h5[p_path], row_phase, is_euler=False,
+                        rows=rows, cols=cols, r0=r0, r1=r1, c0=c0, c1=c1,
+                    )
+
+                primary_ncc = np.zeros((rows, cols), dtype=np.float32)
+                primary_source = np.asarray(self.last_scores_map, dtype=np.float32).reshape(rows, cols)
+                primary_ncc[r0:r1, c0:c1] = np.nan_to_num(primary_source[r0:r1, c0:c1], nan=0.0)
+                exported_ncc = np.zeros((rows, cols), dtype=np.float32)
+                exported_ncc[r0:r1, c0:c1] = row_quality.astype(np.float32, copy=False)
+                export_group_path = f"{root}/{H5OINA_EXPORT_DATA_GROUP}" if root else H5OINA_EXPORT_DATA_GROUP
+                export_group = h5.require_group(export_group_path)
+                export_group.attrs["Export Type"] = "residual" if residual else "primary"
+                export_group.attrs["Residual Patterns Included"] = np.uint8(bool(residual and include_residual_patterns))
+                if residual:
+                    export_group.attrs["Primary NCC Threshold"] = float(primary_ncc_threshold)
+                self._replace_h5_export_dataset(
+                    export_group, "ROI Mask", roi_mask,
+                    description="1 for points inside the exported ROI; 0 outside.",
+                )
+                self._replace_h5_export_dataset(
+                    export_group, "Primary NCC", primary_ncc,
+                    description="Primary dictionary/refinement NCC; 0 outside the exported ROI.",
+                )
+                if residual:
+                    self._replace_h5_export_dataset(
+                        export_group, "Residual NCC", exported_ncc,
+                        description="Residual dictionary/refinement NCC; 0 when no residual pattern/orientation is available.",
+                    )
+                    self._replace_h5_export_dataset(
+                        export_group, "Residual Pattern Available", residual_pattern_mask * roi_mask,
+                        description="1 where a computed residual pattern is available in the exported ROI.",
+                    )
+
+                    fit_ncc = np.zeros((rows, cols), dtype=np.float32)
+                    fit_scale = np.zeros((rows, cols), dtype=np.float32)
+                    fit_sigma = np.zeros((rows, cols), dtype=np.float32)
+                    residual_primary_ncc = np.zeros((rows, cols), dtype=np.float32)
+                    for idx, result in self.residual_point_results.items():
+                        rr, cc = divmod(int(idx), cols)
+                        if not (r0 <= rr < r1 and c0 <= cc < c1):
+                            continue
+                        fit_ncc[rr, cc] = float(result.ncc_es)
+                        fit_scale[rr, cc] = float(result.scale)
+                        fit_sigma[rr, cc] = float(result.fitted_sigma)
+                        residual_primary_ncc[rr, cc] = float(result.ncc_residual_sim)
+                    self._replace_h5_export_dataset(
+                        export_group, "Primary Fit NCC", fit_ncc,
+                        description="NCC of the fitted primary simulated pattern used to form the residual.",
+                    )
+                    self._replace_h5_export_dataset(
+                        export_group, "Primary Fit Scale", fit_scale,
+                        description="Scale applied to the fitted primary simulation before residual subtraction.",
+                    )
+                    self._replace_h5_export_dataset(
+                        export_group, "Primary Fit Sigma", fit_sigma,
+                        description="Gaussian sigma fitted to the primary simulation, in pattern pixels.",
+                    )
+                    self._replace_h5_export_dataset(
+                        export_group, "Residual to Primary NCC", residual_primary_ncc,
+                        description="NCC between the residual and fitted primary simulation.",
+                    )
+                    for name, values, description in (
+                        ("Primary Fraction", self.overlap_primary_fraction_map, "Primary fraction from overlap-mixture fitting."),
+                        ("Residual Fraction", self.overlap_secondary_fraction_map, "Residual/secondary fraction from overlap-mixture fitting."),
+                        ("Mixture NCC", self.overlap_mixture_ncc_map, "NCC of the fitted two-orientation mixture."),
+                    ):
+                        if values is None:
+                            continue
+                        metric = np.zeros((rows, cols), dtype=np.float32)
+                        source_metric = np.asarray(values, dtype=np.float32).reshape(rows, cols)
+                        metric[r0:r1, c0:c1] = np.nan_to_num(source_metric[r0:r1, c0:c1], nan=0.0)
+                        self._replace_h5_export_dataset(export_group, name, metric, description=description)
+
+                if residual and include_residual_patterns:
+                    assert included_processed_path is not None
+                    target_patterns = h5[included_processed_path]
+                    stored_h5: h5py.File | None = None
+                    stored_patterns: h5py.Dataset | None = None
+                    try:
+                        if residual_store_path is not None and residual_store_path.exists():
+                            stored_h5 = h5py.File(residual_store_path, "r")
+                            stored_path = _h5oina_first_path(
+                                stored_h5,
+                                H5OINA_DATASET_CANDIDATES["processed_patterns"],
+                                roots=source_roots,
+                            )
+                            if stored_path is not None:
+                                stored_patterns = stored_h5[stored_path]
+                        for idx in residual_pattern_indices.tolist():
+                            rr, cc = divmod(int(idx), cols)
+                            if not (r0 <= rr < r1 and c0 <= cc < c1):
+                                continue
+                            residual_u8 = self._residual_pattern_u8(
+                                int(idx),
+                                stored_h5_patterns=stored_patterns,
+                            )
+                            _write_h5_pattern_at(
+                                target_patterns,
+                                int(idx),
+                                _uint8_pattern_for_dtype(residual_u8, target_patterns.dtype),
+                                rows=rows,
+                                cols=cols,
+                            )
+                    finally:
+                        if stored_h5 is not None:
+                            stored_h5.close()
+            pattern_note = (
+                " Residual patterns were stored in EBSD/Data/Processed Patterns; original processed patterns were retained at points without a residual."
+                if residual and include_residual_patterns
+                else " Processed and unprocessed pattern stacks were omitted."
+            )
+            return f"Exported {'residual' if residual else 'primary'} ROI map to {out}.{zero_note}{pattern_note}"
 
         # ANG export: rewrite only the ROI rows while preserving the original file layout.
         if self.data.orientation_path is None:
             raise RuntimeError("Missing ANG source metadata in session.")
+        if out == source_path:
+            raise ValueError("ANG export path must be different from the source orientation file.")
         eulers_to_write = roi_eulers.copy()
         if self.data.ang_angles_were_degrees:
             eulers_to_write = np.rad2deg(eulers_to_write)
@@ -6786,7 +7213,7 @@ class WorkflowSession:
                 if r0 <= row < r1 and c0 <= col < c1:
                     lr = row - r0
                     lc = col - c0
-                    if residual and below_primary[lr, lc]:
+                    if residual and unavailable[lr, lc]:
                         vals[0:3] = 0.0
                         vals[5] = 0.0
                         vals[6] = 0.0
@@ -6809,7 +7236,45 @@ class WorkflowSession:
                 dst.write(" ".join(row_out) + "\n")
                 data_idx += 1
 
-        return f"Exported {'residual' if residual else 'primary'} ROI map to {out}.{zero_note}"
+        pattern_note = ""
+        if residual and include_residual_patterns:
+            source_reader = self.data.up_pattern_reader
+            if source_reader is None:
+                raise RuntimeError("Residual UP1 export requires a loaded source pattern reader.")
+            up1_path = out.with_suffix(".up1")
+            residual_store_path = (
+                Path(self.residual_pattern_output_path).expanduser().resolve()
+                if self.residual_pattern_output_path
+                else None
+            )
+            if residual_store_path is not None and residual_store_path == up1_path:
+                raise ValueError("Residual UP1 export path must be different from the residual-pattern working file.")
+            target_reader = _copy_patterns_to_up1(source_reader, up1_path)
+            stored_reader: UPPatternReader | None = None
+            if residual_store_path is not None and residual_store_path.exists():
+                if residual_store_path.suffix.lower() in {".up1", ".up2"}:
+                    stored_reader = _open_edax_up_reader(str(residual_store_path))
+            with open(up1_path, "r+b") as up_file:
+                for idx in residual_pattern_indices.tolist():
+                    rr, cc = divmod(int(idx), cols)
+                    if not (r0 <= rr < r1 and c0 <= cc < c1):
+                        continue
+                    residual_u8 = self._residual_pattern_u8(
+                        int(idx),
+                        stored_up_reader=stored_reader,
+                    )
+                    _write_up_pattern_at(
+                        str(up1_path),
+                        target_reader,
+                        int(idx),
+                        residual_u8,
+                        file_obj=up_file,
+                    )
+            pattern_note = (
+                f" Residual patterns were saved to {up1_path}; original patterns were retained at locations without residuals."
+            )
+
+        return f"Exported {'residual' if residual else 'primary'} ROI map to {out}.{zero_note}{pattern_note}"
 
     def export_primary_roi_results(self, bounds: tuple[int, int, int, int], output_path: str) -> str:
         return self._export_roi_result_map(bounds, output_path, residual=False)
@@ -6820,10 +7285,12 @@ class WorkflowSession:
         output_path: str,
         *,
         primary_ncc_threshold: float = 0.15,
+        include_residual_patterns: bool = False,
     ) -> str:
         return self._export_roi_result_map(
             bounds,
             output_path,
             residual=True,
             primary_ncc_threshold=float(primary_ncc_threshold),
+            include_residual_patterns=bool(include_residual_patterns),
         )
