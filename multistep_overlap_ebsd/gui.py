@@ -127,14 +127,19 @@ class MultiStepOverlapGUI(tk.Tk):
         self.residual_maxfev_var = tk.IntVar(value=25)
         self.residual_refine_full_resolution_var = tk.BooleanVar(value=False)
         self.residual_keep_n_var = tk.IntVar(value=1)
+        self.step3_parallel_cores_var = tk.IntVar(value=0)
         self.overlap_mixture_trust_euler_var = tk.DoubleVar(value=1.0)
         self.overlap_mixture_maxfev_var = tk.IntVar(value=80)
+        self.step4_parallel_cores_var = tk.IntVar(value=0)
         self.overlap_min_ncc_var = tk.StringVar(value="0.15")
         self.residual_ipf_ncc_var = tk.StringVar(value="0.15")
         self.overlap_mixture_residual_ncc_var = tk.StringVar(value=self.residual_ipf_ncc_var.get())
         self.write_residual_patterns_var = tk.BooleanVar(value=False)
         self.include_residual_patterns_export_var = tk.BooleanVar(value=False)
         self.residual_pattern_path_var = tk.StringVar(value=str((cwd / "residual_patterns.h5oina").resolve()))
+        self.overlap_optimization_export_path_var = tk.StringVar(
+            value=str((cwd / "overlap_optimization_results.h5").resolve())
+        )
         self.primary_fit_bound_specs = [
             ("Gaussian sigma", tk.DoubleVar(value=0.1), tk.DoubleVar(value=5.0)),
             ("Gain min", tk.DoubleVar(value=-1.5), tk.DoubleVar(value=4.5)),
@@ -248,7 +253,7 @@ class MultiStepOverlapGUI(tk.Tk):
     def _build_indexing_workspace(self, parent: ttk.Frame) -> None:
         left, right = self._workspace_panes(parent)
         controls = self._scrollable_controls(left)
-        self._build_selection_controls(controls, include_roi=True)
+        self._build_roi_controls(controls)
         indexing = ttk.LabelFrame(controls, text="Kikuchipy Dictionary Indexing", padding=8)
         indexing.pack(fill=tk.X, pady=4)
         self._build_index_tab(indexing)
@@ -282,6 +287,7 @@ class MultiStepOverlapGUI(tk.Tk):
             wraplength=390,
         ).grid(row=5, column=0, columnspan=2, sticky="w", pady=(2, 0))
         refinement.columnconfigure(0, weight=1)
+        self._build_selection_controls(controls, include_roi=False)
         self._build_info_and_log(controls, log_height=8)
         self._build_plot_area(right, 1)
 
@@ -415,6 +421,26 @@ class MultiStepOverlapGUI(tk.Tk):
                 text="ROI edits update the maps automatically. Hold Shift and drag on any map to draw an ROI.",
                 wraplength=380,
             ).grid(row=8, column=0, columnspan=3, sticky="w", pady=(4, 0))
+
+    def _build_roi_controls(self, parent: ttk.Frame) -> None:
+        box = ttk.LabelFrame(parent, text="ROI Selection", padding=8)
+        box.pack(fill=tk.X, pady=4)
+        ttk.Label(box, text="r0, c0, nrows, ncols").grid(row=0, column=0, columnspan=3, sticky="w")
+        roi = ttk.Frame(box)
+        roi.grid(row=1, column=0, columnspan=3, sticky="w")
+        for variable in (self.roi_r0_var, self.roi_c0_var, self.roi_nrows_var, self.roi_ncols_var):
+            ttk.Entry(roi, textvariable=variable, width=7).pack(side=tk.LEFT, padx=2)
+        ttk.Button(box, text="Center ROI on Selected Point", command=self._center_roi_on_selected).grid(
+            row=2, column=0, columnspan=3, sticky="we", pady=(4, 0)
+        )
+        ttk.Button(box, text="Use Full Map", command=self._use_full_map_roi).grid(
+            row=3, column=0, columnspan=3, sticky="we", pady=(4, 0)
+        )
+        ttk.Label(
+            box,
+            text="ROI edits update automatically. Hold Shift and drag on any map to draw an ROI.",
+            wraplength=380,
+        ).grid(row=4, column=0, columnspan=3, sticky="w", pady=(4, 0))
 
     def _build_point_editor_controls(self, parent: ttk.Frame) -> None:
         box = ttk.LabelFrame(parent, text="Selected Point Orientation and PC", padding=8)
@@ -886,36 +912,38 @@ class MultiStepOverlapGUI(tk.Tk):
         ttk.Label(parent, text="Full ROI residual workflow (reads the ROI from tab 2)").grid(
             row=12, column=0, columnspan=2, sticky="w"
         )
-        ttk.Label(parent, text="minimum primary NCC for residual work").grid(row=13, column=0, sticky="w")
-        ttk.Entry(parent, textvariable=self.overlap_min_ncc_var, width=8).grid(row=13, column=1, sticky="w")
+        ttk.Label(parent, text="residual-fit worker cores (0=all)").grid(row=13, column=0, sticky="w")
+        ttk.Entry(parent, textvariable=self.step3_parallel_cores_var, width=8).grid(row=13, column=1, sticky="w")
+        ttk.Label(parent, text="minimum primary NCC for residual work").grid(row=14, column=0, sticky="w")
+        ttk.Entry(parent, textvariable=self.overlap_min_ncc_var, width=8).grid(row=14, column=1, sticky="w")
         ttk.Checkbutton(
             parent,
             text="Write residual patterns to file",
             variable=self.write_residual_patterns_var,
-        ).grid(row=14, column=0, columnspan=2, sticky="w", pady=(6, 0))
-        ttk.Label(parent, text="residual pattern file").grid(row=15, column=0, columnspan=2, sticky="w", pady=(2, 0))
-        ttk.Entry(parent, textvariable=self.residual_pattern_path_var, width=34).grid(row=16, column=0, sticky="we", pady=(2, 0))
+        ).grid(row=15, column=0, columnspan=2, sticky="w", pady=(6, 0))
+        ttk.Label(parent, text="residual pattern file").grid(row=16, column=0, columnspan=2, sticky="w", pady=(2, 0))
+        ttk.Entry(parent, textvariable=self.residual_pattern_path_var, width=34).grid(row=17, column=0, sticky="we", pady=(2, 0))
         ttk.Button(parent, text="Browse", command=self._browse_residual_pattern_output).grid(
-            row=16, column=1, sticky="we", padx=(4, 0), pady=(2, 0)
+            row=17, column=1, sticky="we", padx=(4, 0), pady=(2, 0)
         )
         ttk.Button(parent, text="Compute Residuals for ROI", command=self._compute_overlap_residual_roi).grid(
-            row=17, column=0, columnspan=2, sticky="we", pady=(6, 0)
+            row=18, column=0, columnspan=2, sticky="we", pady=(6, 0)
         )
         ttk.Button(parent, text="Index Residual ROI", command=self._index_overlap_residual_roi).grid(
-            row=18, column=0, columnspan=2, sticky="we", pady=(4, 0)
-        )
-        ttk.Button(parent, text="Refine Residual ROI", command=self._refine_overlap_residual_roi).grid(
             row=19, column=0, columnspan=2, sticky="we", pady=(4, 0)
         )
-        ttk.Label(parent, text="residual IPF white threshold (KP NCC)").grid(row=20, column=0, sticky="w")
-        ttk.Entry(parent, textvariable=self.residual_ipf_ncc_var, width=8).grid(row=20, column=1, sticky="w")
+        ttk.Button(parent, text="Refine Residual ROI", command=self._refine_overlap_residual_roi).grid(
+            row=20, column=0, columnspan=2, sticky="we", pady=(4, 0)
+        )
+        ttk.Label(parent, text="residual IPF white threshold (KP NCC)").grid(row=21, column=0, sticky="w")
+        ttk.Entry(parent, textvariable=self.residual_ipf_ncc_var, width=8).grid(row=21, column=1, sticky="w")
         self.overlap_progress_bar = ttk.Progressbar(parent, variable=self.overlap_progress_var, maximum=100.0, mode="determinate")
-        self.overlap_progress_bar.grid(row=21, column=0, columnspan=2, sticky="we", pady=(8, 0))
+        self.overlap_progress_bar.grid(row=22, column=0, columnspan=2, sticky="we", pady=(8, 0))
         ttk.Label(parent, textvariable=self.overlap_progress_status_var, wraplength=390).grid(
-            row=22, column=0, columnspan=2, sticky="w", pady=(2, 0)
+            row=23, column=0, columnspan=2, sticky="w", pady=(2, 0)
         )
         export_box = ttk.LabelFrame(parent, text="Export ROI indexing results", padding=8)
-        export_box.grid(row=23, column=0, columnspan=2, sticky="we", pady=(10, 0))
+        export_box.grid(row=24, column=0, columnspan=2, sticky="we", pady=(10, 0))
         export_box.columnconfigure(0, weight=1)
         ttk.Label(export_box, text="primary ROI export").grid(row=0, column=0, columnspan=2, sticky="w")
         ttk.Entry(export_box, textvariable=self.primary_roi_export_path_var, width=34).grid(
@@ -949,7 +977,7 @@ class MultiStepOverlapGUI(tk.Tk):
             row=8, column=0, columnspan=2, sticky="we", pady=(4, 0)
         )
         bounds_box = ttk.LabelFrame(parent, text="Primary fit bounds", padding=8)
-        bounds_box.grid(row=24, column=0, columnspan=2, sticky="we", pady=(8, 0))
+        bounds_box.grid(row=25, column=0, columnspan=2, sticky="we", pady=(8, 0))
         bounds_box.columnconfigure(0, weight=1)
         ttk.Label(
             bounds_box,
@@ -974,22 +1002,24 @@ class MultiStepOverlapGUI(tk.Tk):
         ttk.Entry(parent, textvariable=self.overlap_mixture_trust_euler_var, width=8).grid(row=3, column=1, sticky="w")
         ttk.Label(parent, text="orientation max evaluations").grid(row=4, column=0, sticky="w")
         ttk.Entry(parent, textvariable=self.overlap_mixture_maxfev_var, width=8).grid(row=4, column=1, sticky="w")
+        ttk.Label(parent, text="mixture-fit worker cores (0=all)").grid(row=5, column=0, sticky="w")
+        ttk.Entry(parent, textvariable=self.step4_parallel_cores_var, width=8).grid(row=5, column=1, sticky="w")
         ttk.Button(parent, text="Fit Selected Point Mixture", command=self._fit_overlap_mixture).grid(
-            row=5,
+            row=6,
             column=0,
             columnspan=2,
             sticky="we",
             pady=(8, 0),
         )
         ttk.Button(parent, text="Fit Mixture for ROI", command=self._fit_overlap_mixture_roi).grid(
-            row=6,
+            row=7,
             column=0,
             columnspan=2,
             sticky="we",
             pady=(4, 0),
         )
         ttk.Button(parent, text="Refine Selected Mixture Orientations", command=self._refine_overlap_mixture_orientations).grid(
-            row=7,
+            row=8,
             column=0,
             columnspan=2,
             sticky="we",
@@ -1000,17 +1030,35 @@ class MultiStepOverlapGUI(tk.Tk):
             variable=self.overlap_optimization_progress_var,
             maximum=100.0,
             mode="determinate",
-        ).grid(row=8, column=0, columnspan=2, sticky="we", pady=(8, 0))
+        ).grid(row=9, column=0, columnspan=2, sticky="we", pady=(8, 0))
         ttk.Label(parent, textvariable=self.overlap_optimization_status_var, wraplength=390).grid(
-            row=9,
+            row=10,
             column=0,
             columnspan=2,
             sticky="w",
             pady=(2, 0),
         )
 
+        export_box = ttk.LabelFrame(parent, text="Export Step 4 results", padding=8)
+        export_box.grid(row=11, column=0, columnspan=2, sticky="we", pady=(10, 0))
+        export_box.columnconfigure(0, weight=1)
+        ttk.Entry(export_box, textvariable=self.overlap_optimization_export_path_var, width=34).grid(
+            row=0, column=0, sticky="we"
+        )
+        ttk.Button(export_box, text="Browse", command=self._browse_overlap_optimization_export).grid(
+            row=0, column=1, sticky="we", padx=(4, 0)
+        )
+        ttk.Button(export_box, text="Export Full-Map HDF5 Results", command=self._export_overlap_optimization_results).grid(
+            row=1, column=0, columnspan=2, sticky="we", pady=(4, 0)
+        )
+        ttk.Label(
+            export_box,
+            text="All datasets retain the original scan dimensions; points without Step 4 results are marked by a mask and NaN values.",
+            wraplength=360,
+        ).grid(row=2, column=0, columnspan=2, sticky="w", pady=(4, 0))
+
         bounds_box = ttk.LabelFrame(parent, text="Primary fit bounds", padding=8)
-        bounds_box.grid(row=10, column=0, columnspan=2, sticky="we", pady=(10, 0))
+        bounds_box.grid(row=12, column=0, columnspan=2, sticky="we", pady=(10, 0))
         for row, (label, low_var, high_var) in enumerate(self.primary_fit_bound_specs):
             ttk.Label(bounds_box, text=label).grid(row=row, column=0, sticky="w", padx=(0, 6))
             ttk.Entry(bounds_box, textvariable=low_var, width=8).grid(row=row, column=1, sticky="w")
@@ -1421,6 +1469,29 @@ class MultiStepOverlapGUI(tk.Tk):
         if source is not None and source.name:
             return str(source.with_name(f"{self._source_stem(source)}_{tag}_roi{suffix}").resolve())
         return str((Path.cwd() / f"{tag}_roi{suffix}").resolve())
+
+    def _default_overlap_optimization_export_path(self) -> str:
+        source_path = (
+            self.session.data.pattern_path
+            if self.session.data is not None
+            else self.pattern_path_var.get().strip()
+        )
+        source = Path(source_path).expanduser().resolve() if source_path else Path.cwd() / "overlap_ebsd"
+        return str(source.with_name(f"{self._source_stem(source)}_step4_results.h5"))
+
+    def _browse_overlap_optimization_export(self) -> None:
+        current = Path(
+            self.overlap_optimization_export_path_var.get().strip()
+            or self._default_overlap_optimization_export_path()
+        )
+        fn = filedialog.asksaveasfilename(
+            defaultextension=".h5",
+            initialfile=current.name,
+            initialdir=str(current.parent),
+            filetypes=[("Step 4 HDF5 results", "*.h5"), ("HDF5 files", "*.h5 *.hdf5"), ("All files", "*.*")],
+        )
+        if fn:
+            self.overlap_optimization_export_path_var.set(str(self._path_with_single_suffix(fn, ".h5")))
 
     def _browse_roi_export(self, var: tk.StringVar, *, residual: bool) -> None:
         current = Path(var.get().strip() or self._default_roi_export_path(residual=residual))
@@ -1911,6 +1982,7 @@ class MultiStepOverlapGUI(tk.Tk):
                 self.residual_pattern_path_var.set(self._default_residual_pattern_path())
                 self.primary_roi_export_path_var.set(self._default_roi_export_path(residual=False))
                 self.residual_roi_export_path_var.set(self._default_roi_export_path(residual=True))
+                self.overlap_optimization_export_path_var.set(self._default_overlap_optimization_export_path())
                 self._refresh_default_workflow_path()
                 if self.session.data.detector_px_size is not None:
                     self.detector_px_size_var.set(float(self.session.data.detector_px_size))
@@ -1974,6 +2046,11 @@ class MultiStepOverlapGUI(tk.Tk):
             self.primary_roi_export_path_var.set(self._default_roi_export_path(residual=False))
         if not self.residual_roi_export_path_var.get().strip():
             self.residual_roi_export_path_var.set(self._default_roi_export_path(residual=True))
+        if (
+            "step4_export_path" not in self.session.restored_ui_state
+            or not self.overlap_optimization_export_path_var.get().strip()
+        ):
+            self.overlap_optimization_export_path_var.set(self._default_overlap_optimization_export_path())
         self._update_mode_controls()
 
     def _load_master(self) -> None:
@@ -2009,6 +2086,7 @@ class MultiStepOverlapGUI(tk.Tk):
             "dictionary_binning": self.di_binning_var,
             "dictionary_keep_n": self.dictionary_keep_n_var,
             "residual_keep_n": self.residual_keep_n_var,
+            "step3_parallel_cores": self.step3_parallel_cores_var,
             "blur_sigma": self.blur_sigma_var,
             "fit_blur_gain": self.fit_blur_gain_var,
             "gain_fit_maxiter": self.gain_fit_maxiter_var,
@@ -2023,9 +2101,11 @@ class MultiStepOverlapGUI(tk.Tk):
             "residual_pattern_path": self.residual_pattern_path_var,
             "primary_roi_export_path": self.primary_roi_export_path_var,
             "residual_roi_export_path": self.residual_roi_export_path_var,
+            "step4_export_path": self.overlap_optimization_export_path_var,
             "mixture_trust_euler": self.overlap_mixture_trust_euler_var,
             "mixture_maxfev": self.overlap_mixture_maxfev_var,
             "mixture_residual_ncc": self.overlap_mixture_residual_ncc_var,
+            "step4_parallel_cores": self.step4_parallel_cores_var,
             "use_scan_pc_shift": self.use_scan_pc_shift_var,
             "detector_px_size": self.detector_px_size_var,
             "detector_binning": self.detector_binning_var,
@@ -2057,6 +2137,7 @@ class MultiStepOverlapGUI(tk.Tk):
             "dictionary_binning": self.di_binning_var,
             "dictionary_keep_n": self.dictionary_keep_n_var,
             "residual_keep_n": self.residual_keep_n_var,
+            "step3_parallel_cores": self.step3_parallel_cores_var,
             "blur_sigma": self.blur_sigma_var,
             "fit_blur_gain": self.fit_blur_gain_var,
             "gain_fit_maxiter": self.gain_fit_maxiter_var,
@@ -2071,9 +2152,11 @@ class MultiStepOverlapGUI(tk.Tk):
             "residual_pattern_path": self.residual_pattern_path_var,
             "primary_roi_export_path": self.primary_roi_export_path_var,
             "residual_roi_export_path": self.residual_roi_export_path_var,
+            "step4_export_path": self.overlap_optimization_export_path_var,
             "mixture_trust_euler": self.overlap_mixture_trust_euler_var,
             "mixture_maxfev": self.overlap_mixture_maxfev_var,
             "mixture_residual_ncc": self.overlap_mixture_residual_ncc_var,
+            "step4_parallel_cores": self.step4_parallel_cores_var,
             "use_scan_pc_shift": self.use_scan_pc_shift_var,
             "detector_px_size": self.detector_px_size_var,
             "detector_binning": self.detector_binning_var,
@@ -2610,6 +2693,7 @@ class MultiStepOverlapGUI(tk.Tk):
         fit_blur_gain = bool(self.fit_blur_gain_var.get())
         fit_maxiter = int(self.gain_fit_maxiter_var.get())
         fit_popsize = int(self.gain_fit_popsize_var.get())
+        parallel_cores = int(self.step3_parallel_cores_var.get())
         write_patterns = bool(self.write_residual_patterns_var.get())
         residual_output_path = self.residual_pattern_path_var.get().strip()
         if write_patterns and not residual_output_path:
@@ -2634,6 +2718,7 @@ class MultiStepOverlapGUI(tk.Tk):
                 fit_bounds=fit_bounds,
                 write_patterns=write_patterns,
                 residual_output_path=residual_output_path if write_patterns else None,
+                parallel_cores=parallel_cores,
                 selected_index=selected_index if np.any(indices == selected_index) else None,
                 progress_callback=progress,
             )
@@ -2860,6 +2945,7 @@ class MultiStepOverlapGUI(tk.Tk):
         selected_index = int(self.index_var.get())
         fit_maxiter = int(self.gain_fit_maxiter_var.get())
         fit_popsize = int(self.gain_fit_popsize_var.get())
+        parallel_cores = int(self.step4_parallel_cores_var.get())
         try:
             fit_bounds = self._primary_fit_bounds()
         except Exception as exc:
@@ -2876,6 +2962,7 @@ class MultiStepOverlapGUI(tk.Tk):
                 fit_maxiter=fit_maxiter,
                 fit_popsize=fit_popsize,
                 fit_bounds=fit_bounds,
+                parallel_cores=parallel_cores,
                 selected_index=selected_index if np.any(indices == selected_index) else None,
                 progress_callback=progress,
             )
@@ -2889,6 +2976,47 @@ class MultiStepOverlapGUI(tk.Tk):
                 else ""
             )
             return f"{msg}{threshold_note} ROI bounds r0={bounds[0]}, c0={bounds[1]}, nrows={bounds[2]}, ncols={bounds[3]}."
+
+        self._run_threaded(action)
+
+    def _export_overlap_optimization_results(self) -> None:
+        if self.session.data is None:
+            messagebox.showerror("Error", "Load input data first.")
+            return
+        bounds = self._roi_bounds()
+        raw_path = (
+            self.overlap_optimization_export_path_var.get().strip()
+            or self._default_overlap_optimization_export_path()
+        )
+        output_path = str(self._path_with_single_suffix(raw_path, ".h5"))
+        self.overlap_optimization_export_path_var.set(output_path)
+        try:
+            settings = {
+                "fit_max_iterations": int(self.gain_fit_maxiter_var.get()),
+                "fit_population_size": int(self.gain_fit_popsize_var.get()),
+                "minimum_primary_ncc": float(self._residual_ncc_threshold()),
+                "minimum_residual_ncc": float(self._overlap_mixture_residual_ncc_threshold()),
+                "orientation_trust_deg": float(self.overlap_mixture_trust_euler_var.get()),
+                "orientation_max_evaluations": int(self.overlap_mixture_maxfev_var.get()),
+                "parallel_worker_cores": int(self.step4_parallel_cores_var.get()),
+                "primary_fit_bounds": self._primary_fit_bounds(),
+            }
+        except Exception as exc:
+            messagebox.showerror("Invalid export settings", str(exc))
+            return
+        self._set_overlap_optimization_progress(0.0, "Exporting full-map Step 4 HDF5 results...")
+
+        def action() -> str:
+            msg = self.session.export_overlap_optimization_results(
+                output_path,
+                bounds,
+                settings=settings,
+            )
+            self.after(
+                0,
+                lambda: self._set_overlap_optimization_progress(100.0, "Step 4 HDF5 export complete."),
+            )
+            return msg
 
         self._run_threaded(action)
 

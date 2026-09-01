@@ -4,7 +4,9 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
+import h5py
 import numpy as np
 
 from multistep_overlap_ebsd.core import (
@@ -158,6 +160,94 @@ class WorkflowStateTests(unittest.TestCase):
             ".h5oina",
         )
         self.assertEqual(path.name, "primary_roi.h5oina")
+
+    def test_parallel_core_count_zero_means_all_available(self) -> None:
+        with patch("multistep_overlap_ebsd.core.os.cpu_count", return_value=8):
+            self.assertEqual(WorkflowSession._parallel_worker_count(0, 20), 8)
+            self.assertEqual(WorkflowSession._parallel_worker_count(4, 20), 4)
+            self.assertEqual(WorkflowSession._parallel_worker_count(16, 20), 8)
+            self.assertEqual(WorkflowSession._parallel_worker_count(0, 3), 3)
+            with self.assertRaises(ValueError):
+                WorkflowSession._parallel_worker_count(-1, 20)
+
+    def test_step4_hdf5_export_keeps_full_scan_shape_for_small_roi(self) -> None:
+        session = WorkflowSession()
+        session.data = SimpleNamespace(
+            **vars(self._data()),
+            x_coords=np.arange(6, dtype=np.float64),
+            y_coords=np.repeat(np.arange(2, dtype=np.float64), 3),
+            scan_unit="um",
+            step_x=0.5,
+            step_y=0.75,
+            pc_output_convention="oxford",
+        )
+        session.master = SimpleNamespace(path="/tmp/master.h5")
+        session.current_eulers_rad = np.zeros((6, 3), dtype=np.float64)
+        session.residual_eulers_rad = np.full((6, 3), np.nan, dtype=np.float64)
+        session.current_phases = np.ones(6, dtype=np.int32)
+        session.residual_phases = np.ones(6, dtype=np.int32)
+        session.current_pc_custom = np.full((6, 3), 0.5, dtype=np.float64)
+        session.last_scores_map = np.full((2, 3), np.nan, dtype=np.float32)
+        session.last_residual_scores_map = np.full((2, 3), np.nan, dtype=np.float32)
+
+        def result(index: int, primary_fraction: float) -> OverlapMixtureResult:
+            row, col = divmod(index, 3)
+            return OverlapMixtureResult(
+                index=index,
+                row=row,
+                col=col,
+                primary_fraction=primary_fraction,
+                secondary_fraction=1.0 - primary_fraction,
+                primary_coefficient=0.7,
+                secondary_coefficient=0.3,
+                ncc_mixture=0.92,
+                residual_rms=0.04,
+                old_primary_ncc=0.8,
+                old_secondary_ncc=0.75,
+                experimental=None,
+                primary_simulated=None,
+                secondary_simulated=None,
+                combined_simulated=None,
+                residual=None,
+                fitted_sigma=1.2,
+                gain_params=(1.0, 2.0, 3.0),
+                ellipse_params=(1.0, 1.1, 0.0, 0.1),
+                component_correlation=0.2,
+                primary_euler_rad=np.array([0.1, 0.2, 0.3]),
+                secondary_euler_rad=np.array([0.4, 0.5, 0.6]),
+                orientation_refined=True,
+                orientation_refinement_note="accepted",
+                initial_mixture_ncc=0.88,
+                primary_euler_delta_deg=(0.1, 0.0, 0.0),
+                secondary_euler_delta_deg=(0.0, 0.2, 0.0),
+            )
+
+        # One accumulated point lies outside the currently selected 1x1 ROI;
+        # both must remain represented in the exported full-map datasets.
+        session.overlap_mixture_results = {0: result(0, 0.6), 4: result(4, 0.7)}
+        output = self.root / "step4.h5.h5"
+        session.export_overlap_optimization_results(
+            str(output),
+            (1, 1, 1, 1),
+            settings={"parallel_worker_cores": 0},
+        )
+        actual = self.root / "step4.h5"
+        self.assertTrue(actual.exists())
+        with h5py.File(actual, "r") as h5:
+            self.assertEqual(h5.attrs["format"], "overlap-ebsd-step4-results-v1")
+            self.assertEqual(h5["Maps/primary_fraction"].shape, (2, 3))
+            self.assertEqual(h5["Maps/primary_euler_rad"].shape, (2, 3, 3))
+            self.assertEqual(h5["Maps/gain_params"].shape, (2, 3, 3))
+            np.testing.assert_array_equal(
+                h5["Maps/computed_mask"][()],
+                np.array([[1, 0, 0], [0, 1, 0]], dtype=np.uint8),
+            )
+            np.testing.assert_array_equal(
+                h5["Scan/requested_roi_mask"][()],
+                np.array([[0, 0, 0], [0, 1, 0]], dtype=np.uint8),
+            )
+            self.assertTrue(np.isnan(h5["Maps/primary_fraction"][0, 1]))
+            self.assertEqual(h5["Point Results/index"].shape, (2,))
 
 
 if __name__ == "__main__":

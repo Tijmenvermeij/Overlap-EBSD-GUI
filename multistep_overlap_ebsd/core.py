@@ -6,6 +6,7 @@ import shutil
 import tempfile
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass, field, replace
+from datetime import datetime, timezone
 from multiprocessing import get_context
 from pathlib import Path
 from typing import Callable, Literal
@@ -22,6 +23,7 @@ DICTIONARY_FORMAT_V2 = "overlap-ebsd-kikuchipy-dictionary-v2"
 DICTIONARY_PATTERN_DTYPE = np.dtype(np.uint8)
 DICTIONARY_H5_CHUNK_PATTERNS = 128
 DICTIONARY_LAZY_CHUNK_PATTERNS = 8192
+STEP4_RESULTS_FORMAT = "overlap-ebsd-step4-results-v1"
 
 
 class _H5DatasetArray:
@@ -2111,6 +2113,15 @@ class WorkflowSession:
             Path(cache.storage_path).unlink(missing_ok=True)
         except OSError:
             pass
+
+    @staticmethod
+    def _parallel_worker_count(requested_cores: int, point_count: int) -> int:
+        requested = int(requested_cores)
+        if requested < 0:
+            raise ValueError("Parallel worker cores must be 0 (all) or a positive integer.")
+        available = max(1, int(os.cpu_count() or 1))
+        wanted = available if requested == 0 else min(requested, available)
+        return max(1, min(wanted, max(1, int(point_count))))
 
     # -------------------- Index mapping helpers -------------------- #
 
@@ -5602,6 +5613,7 @@ class WorkflowSession:
         fit_bounds: list[tuple[float, float]] | None = None,
         write_patterns: bool = False,
         residual_output_path: str | None = None,
+        parallel_cores: int = 0,
         selected_index: int | None = None,
         progress_callback: Callable[[float, str], None] | None = None,
     ) -> str:
@@ -5682,13 +5694,13 @@ class WorkflowSession:
                 pc_custom=np.ascontiguousarray(pc_custom),
             )
 
-        use_parallel = selected.size >= 4 and (os.cpu_count() or 1) > 1
+        worker_count = self._parallel_worker_count(parallel_cores, int(selected.size))
+        use_parallel = selected.size >= 4 and worker_count > 1
         if use_parallel:
             bytes_per_pattern = max(
                 1,
                 int(self.data.h * self.data.w * np.dtype(np.float32).itemsize),
             )
-            worker_count = max(1, min(int(os.cpu_count() or 1), int(selected.size)))
             batch_target = max(1, int(np.ceil(selected.size / max(1, worker_count * 2))))
             memory_target = max(1, int((32 * 1024**2) / bytes_per_pattern))
             batch_size = max(1, min(int(selected.size), 8, batch_target, memory_target))
@@ -6272,6 +6284,7 @@ class WorkflowSession:
         fit_maxiter: int = 40,
         fit_popsize: int = 8,
         fit_bounds: list[tuple[float, float]] | None = None,
+        parallel_cores: int = 0,
         selected_index: int | None = None,
         progress_callback: Callable[[float, str], None] | None = None,
     ) -> str:
@@ -6343,10 +6356,10 @@ class WorkflowSession:
                 old_secondary_ncc=np.ascontiguousarray(old_secondary_ncc[batch_positions]),
             )
 
-        use_parallel = selected.size >= 4 and (os.cpu_count() or 1) > 1
+        worker_count = self._parallel_worker_count(parallel_cores, int(selected.size))
+        use_parallel = selected.size >= 4 and worker_count > 1
         if use_parallel:
             bytes_per_pattern = max(1, int(self.data.h * self.data.w * np.dtype(np.float32).itemsize))
-            worker_count = max(1, min(int(os.cpu_count() or 1), int(selected.size)))
             batch_target = max(1, int(np.ceil(selected.size / max(1, worker_count * 2))))
             memory_target = max(1, int((32 * 1024**2) / bytes_per_pattern))
             batch_size = max(1, min(int(selected.size), 8, batch_target, memory_target))
@@ -6433,6 +6446,213 @@ class WorkflowSession:
 
         skipped_note = f" Skipped {skipped} point(s) without residual orientation." if skipped > 0 else ""
         return f"Fitted overlap mixtures for {selected.size} point(s) in ROI.{skipped_note}"
+
+    def export_overlap_optimization_results(
+        self,
+        output_path: str,
+        bounds: tuple[int, int, int, int],
+        *,
+        settings: dict[str, object] | None = None,
+    ) -> str:
+        """Export accumulated Step 4 results as full-scan HDF5 maps and a point table."""
+        if self.data is None:
+            raise RuntimeError("Load input data first.")
+        if not self.overlap_mixture_results:
+            raise RuntimeError("Fit at least one Step 4 overlap mixture before exporting results.")
+        rows, cols = int(self.data.rows), int(self.data.cols)
+        r0, c0, nrows, ncols = (int(v) for v in bounds)
+        if nrows <= 0 or ncols <= 0 or r0 < 0 or c0 < 0 or r0 >= rows or c0 >= cols:
+            raise ValueError("The export ROI is outside the scan or has no points.")
+        r1 = min(rows, r0 + nrows)
+        c1 = min(cols, c0 + ncols)
+        out = _output_path_with_single_suffix(output_path, ".h5")
+        out.parent.mkdir(parents=True, exist_ok=True)
+
+        scalar_specs = {
+            "primary_fraction": ("primary_fraction", "Fitted primary-pattern fraction."),
+            "secondary_fraction": ("secondary_fraction", "Fitted secondary/residual-pattern fraction."),
+            "primary_coefficient": ("primary_coefficient", "Linear coefficient of the fitted primary component."),
+            "secondary_coefficient": ("secondary_coefficient", "Linear coefficient of the fitted secondary component."),
+            "mixture_ncc": ("ncc_mixture", "Normalized cross correlation of the fitted two-pattern mixture."),
+            "residual_rms": ("residual_rms", "RMS of the final mixture residual."),
+            "old_primary_ncc": ("old_primary_ncc", "Primary NCC before Step 4 mixture fitting."),
+            "old_secondary_ncc": ("old_secondary_ncc", "Residual/secondary NCC before Step 4 mixture fitting."),
+            "fitted_sigma": ("fitted_sigma", "Gaussian blur sigma fitted to the shared pattern model, in pattern pixels."),
+            "component_correlation": ("component_correlation", "NCC between fitted primary and secondary components."),
+            "initial_mixture_ncc": ("initial_mixture_ncc", "Mixture NCC before optional orientation refinement."),
+        }
+        scalar_maps = {
+            name: np.full((rows, cols), np.nan, dtype=np.float32) for name in scalar_specs
+        }
+        primary_euler = np.full((rows, cols, 3), np.nan, dtype=np.float64)
+        secondary_euler = np.full((rows, cols, 3), np.nan, dtype=np.float64)
+        primary_delta = np.full((rows, cols, 3), np.nan, dtype=np.float32)
+        secondary_delta = np.full((rows, cols, 3), np.nan, dtype=np.float32)
+        gain_params = np.full((rows, cols, 3), np.nan, dtype=np.float32)
+        ellipse_params = np.full((rows, cols, 4), np.nan, dtype=np.float32)
+        computed_mask = np.zeros((rows, cols), dtype=np.uint8)
+        fit_success = np.zeros((rows, cols), dtype=np.uint8)
+        orientation_refined = np.zeros((rows, cols), dtype=np.uint8)
+        requested_roi_mask = np.zeros((rows, cols), dtype=np.uint8)
+        requested_roi_mask[r0:r1, c0:c1] = 1
+
+        point_results: list[OverlapMixtureResult] = []
+        for idx, result in sorted(self.overlap_mixture_results.items()):
+            index = int(idx)
+            if index < 0 or index >= rows * cols:
+                continue
+            row, col = divmod(index, cols)
+            point_results.append(result)
+            computed_mask[row, col] = 1
+            fit_success[row, col] = np.uint8(bool(result.fit_success))
+            orientation_refined[row, col] = np.uint8(bool(result.orientation_refined))
+            for name, (attribute, _description) in scalar_specs.items():
+                value = getattr(result, attribute)
+                if value is not None:
+                    scalar_maps[name][row, col] = float(value)
+            p_euler = result.primary_euler_rad
+            if p_euler is None and self.current_eulers_rad is not None:
+                p_euler = self.current_eulers_rad[index]
+            s_euler = result.secondary_euler_rad
+            if s_euler is None and self.residual_eulers_rad is not None:
+                candidate = np.asarray(self.residual_eulers_rad[index], dtype=np.float64).reshape(3)
+                if np.all(np.isfinite(candidate)):
+                    s_euler = candidate
+            if p_euler is not None:
+                primary_euler[row, col] = np.asarray(p_euler, dtype=np.float64).reshape(3)
+            if s_euler is not None:
+                secondary_euler[row, col] = np.asarray(s_euler, dtype=np.float64).reshape(3)
+            for values, target in (
+                (result.primary_euler_delta_deg, primary_delta),
+                (result.secondary_euler_delta_deg, secondary_delta),
+                (result.gain_params, gain_params),
+                (result.ellipse_params, ellipse_params),
+            ):
+                arr = np.asarray(values, dtype=np.float32).reshape(-1)
+                count = min(arr.size, target.shape[-1])
+                if count:
+                    target[row, col, :count] = arr[:count]
+
+        fd, staged_name = tempfile.mkstemp(prefix=f".{out.name}.", suffix=".tmp", dir=out.parent)
+        os.close(fd)
+        staged = Path(staged_name)
+        try:
+            with h5py.File(staged, "w") as h5:
+                h5.attrs["format"] = STEP4_RESULTS_FORMAT
+                h5.attrs["schema_version"] = np.int64(1)
+                h5.attrs["created_utc"] = datetime.now(timezone.utc).isoformat()
+                h5.attrs["source_pattern_path"] = str(self.data.pattern_path)
+                h5.attrs["source_orientation_path"] = str(self.data.orientation_path or "")
+                h5.attrs["master_pattern_path"] = str(self.master.path if self.master is not None else "")
+                h5.attrs["map_rows"] = np.int64(rows)
+                h5.attrs["map_columns"] = np.int64(cols)
+                h5.attrs["requested_roi_r0"] = np.int64(r0)
+                h5.attrs["requested_roi_c0"] = np.int64(c0)
+                h5.attrs["requested_roi_nrows"] = np.int64(r1 - r0)
+                h5.attrs["requested_roi_ncols"] = np.int64(c1 - c0)
+                h5.attrs["computed_point_count"] = np.int64(len(point_results))
+                h5.attrs["scan_unit"] = str(self.data.scan_unit)
+                h5.attrs["step_x"] = float(self.data.step_x)
+                h5.attrs["step_y"] = float(self.data.step_y)
+                h5.attrs["settings_json"] = json.dumps(settings or {}, separators=(",", ":"))
+
+                scan = h5.create_group("Scan")
+                scan.attrs["description"] = "Original full scan geometry and coordinates."
+                x_ds = scan.create_dataset(
+                    "x", data=np.asarray(self.data.x_coords, dtype=np.float64).reshape(rows, cols)
+                )
+                y_ds = scan.create_dataset(
+                    "y", data=np.asarray(self.data.y_coords, dtype=np.float64).reshape(rows, cols)
+                )
+                x_ds.attrs["units"] = str(self.data.scan_unit)
+                y_ds.attrs["units"] = str(self.data.scan_unit)
+                scan.create_dataset("requested_roi_mask", data=requested_roi_mask, compression="gzip", shuffle=True)
+                scan["requested_roi_mask"].attrs["description"] = "1 inside the ROI selected when this export was made."
+
+                maps = h5.create_group("Maps")
+                maps.attrs["description"] = (
+                    "Every dataset uses the original full map dimensions. Floating-point values are NaN where no "
+                    "Step 4 result exists; use computed_mask to distinguish computed points."
+                )
+                maps.create_dataset("computed_mask", data=computed_mask, compression="gzip", shuffle=True)
+                maps["computed_mask"].attrs["description"] = "1 where an accumulated Step 4 result is present."
+                maps.create_dataset("fit_success", data=fit_success, compression="gzip", shuffle=True)
+                maps["fit_success"].attrs["description"] = "1 where the Step 4 optimizer reported success."
+                maps.create_dataset("orientation_refined", data=orientation_refined, compression="gzip", shuffle=True)
+                maps["orientation_refined"].attrs["description"] = (
+                    "1 where Step 4 orientation refinement was accepted."
+                )
+                for name, (_attribute, description) in scalar_specs.items():
+                    ds = maps.create_dataset(name, data=scalar_maps[name], compression="gzip", shuffle=True)
+                    ds.attrs["description"] = description
+                for name, values, description in (
+                    ("primary_euler_rad", primary_euler, "Primary Bunge Euler angles in radians (phi1, Phi, phi2)."),
+                    ("secondary_euler_rad", secondary_euler, "Secondary Bunge Euler angles in radians (phi1, Phi, phi2)."),
+                    ("primary_euler_delta_deg", primary_delta, "Primary Euler changes from Step 4 refinement, in degrees."),
+                    ("secondary_euler_delta_deg", secondary_delta, "Secondary Euler changes from Step 4 refinement, in degrees."),
+                    ("gain_params", gain_params, "Fitted gain parameters (minimum, maximum, power)."),
+                    ("ellipse_params", ellipse_params, "Fitted ellipse parameters (a, b, y offset, x offset)."),
+                ):
+                    ds = maps.create_dataset(name, data=values, compression="gzip", shuffle=True)
+                    ds.attrs["description"] = description
+                if self.current_phases is not None:
+                    ds = maps.create_dataset(
+                        "primary_phase", data=np.asarray(self.current_phases, dtype=np.int32).reshape(rows, cols),
+                        compression="gzip", shuffle=True,
+                    )
+                    ds.attrs["description"] = "Current primary phase ID for every scan point."
+                if self.residual_phases is not None:
+                    ds = maps.create_dataset(
+                        "secondary_phase", data=np.asarray(self.residual_phases, dtype=np.int32).reshape(rows, cols),
+                        compression="gzip", shuffle=True,
+                    )
+                    ds.attrs["description"] = "Current residual/secondary phase ID for every scan point."
+                if self.current_pc_custom is not None:
+                    ds = maps.create_dataset(
+                        "pattern_center", data=np.asarray(self.current_pc_custom, dtype=np.float64).reshape(rows, cols, 3),
+                        compression="gzip", shuffle=True,
+                    )
+                    ds.attrs["convention"] = str(self.data.pc_output_convention)
+                    ds.attrs["description"] = "Pattern center (PCx, PCy, PCz) used for each scan point."
+                if self.last_scores_map is not None:
+                    ds = maps.create_dataset(
+                        "primary_ncc",
+                        data=np.asarray(self.last_scores_map, dtype=np.float32).reshape(rows, cols),
+                        compression="gzip",
+                        shuffle=True,
+                    )
+                    ds.attrs["description"] = "Latest primary indexing/refinement NCC map."
+                if self.last_residual_scores_map is not None:
+                    ds = maps.create_dataset(
+                        "secondary_ncc",
+                        data=np.asarray(self.last_residual_scores_map, dtype=np.float32).reshape(rows, cols),
+                        compression="gzip",
+                        shuffle=True,
+                    )
+                    ds.attrs["description"] = "Latest residual/secondary indexing/refinement NCC map."
+
+                table = h5.create_group("Point Results")
+                table.attrs["description"] = "One row per computed Step 4 point, including non-numeric status text."
+                table.create_dataset("index", data=np.asarray([r.index for r in point_results], dtype=np.int64))
+                table.create_dataset("row", data=np.asarray([r.row for r in point_results], dtype=np.int64))
+                table.create_dataset("column", data=np.asarray([r.col for r in point_results], dtype=np.int64))
+                text_dtype = h5py.string_dtype(encoding="utf-8")
+                table.create_dataset(
+                    "fit_message", data=[str(r.fit_message) for r in point_results], dtype=text_dtype,
+                )
+                table.create_dataset(
+                    "orientation_refinement_note",
+                    data=[str(r.orientation_refinement_note) for r in point_results],
+                    dtype=text_dtype,
+                )
+            os.replace(staged, out)
+        except Exception:
+            staged.unlink(missing_ok=True)
+            raise
+        return (
+            f"Exported {len(point_results)} accumulated Step 4 result(s) as full-map HDF5 datasets "
+            f"({rows}x{cols}) to {out}"
+        )
 
     def preview_simulated_pattern(self, index: int) -> np.ndarray:
         if self.data is None or self.master is None:
