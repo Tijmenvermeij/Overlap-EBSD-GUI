@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import tempfile
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass, field, replace
 from multiprocessing import get_context
@@ -14,6 +15,37 @@ from scipy.ndimage import gaussian_filter
 from scipy.optimize import differential_evolution, minimize
 
 from .legacy_projector import XProjector, load_master_hemis, ncc, normalize_zmuv
+
+DICTIONARY_FORMAT_V1 = "overlap-ebsd-kikuchipy-dictionary-v1"
+DICTIONARY_FORMAT_V2 = "overlap-ebsd-kikuchipy-dictionary-v2"
+DICTIONARY_PATTERN_DTYPE = np.dtype(np.uint8)
+DICTIONARY_H5_CHUNK_PATTERNS = 128
+DICTIONARY_LAZY_CHUNK_PATTERNS = 8192
+
+
+class _H5DatasetArray:
+    """Small array-like proxy which opens an HDF5 dataset only while slicing it."""
+
+    def __init__(self, path: str | Path, dataset_path: str) -> None:
+        self.path = str(Path(path).expanduser().resolve())
+        self.dataset_path = str(dataset_path)
+        with h5py.File(self.path, "r") as h5:
+            dataset = h5[self.dataset_path]
+            self.shape = tuple(int(v) for v in dataset.shape)
+            self.dtype = np.dtype(dataset.dtype)
+        self.ndim = len(self.shape)
+
+    def __getitem__(self, key):
+        with h5py.File(self.path, "r") as h5:
+            return h5[self.dataset_path][key]
+
+
+def _dictionary_storage_chunk_patterns(
+    pattern_shape: tuple[int, int],
+    dtype: str | np.dtype | type,
+) -> int:
+    bytes_per_pattern = max(1, int(np.prod(pattern_shape)) * np.dtype(dtype).itemsize)
+    return max(1, min(DICTIONARY_H5_CHUNK_PATTERNS, (1024**2) // bytes_per_pattern))
 
 MAP_LAYER_CANDIDATES: dict[str, list[str]] = {
     "BC": ["EBSD/Data/Band Contrast"],
@@ -530,6 +562,9 @@ class DictionaryCache:
     pattern_shape: tuple[int, int]
     signal: object
     rotation_count: int
+    pattern_dtype: str = "float32"
+    storage_path: str | None = None
+    owns_storage: bool = False
 
 
 @dataclass
@@ -2044,6 +2079,22 @@ class WorkflowSession:
         self.pattern_mask_config = _pattern_mask_config_from_option(-1)
         self.dynamic_bg_config = DynamicBackgroundConfig()
 
+    def __del__(self) -> None:
+        try:
+            self._clear_dictionary_cache()
+        except Exception:
+            pass
+
+    def _clear_dictionary_cache(self) -> None:
+        cache = getattr(self, "dictionary_cache", None)
+        self.dictionary_cache = None
+        if cache is None or not cache.owns_storage or not cache.storage_path:
+            return
+        try:
+            Path(cache.storage_path).unlink(missing_ok=True)
+        except OSError:
+            pass
+
     # -------------------- Index mapping helpers -------------------- #
 
     @property
@@ -2886,7 +2937,7 @@ class WorkflowSession:
             self.calibration_indices = []
             self.calibrated_center_pc_bruker = None
             self.calibrated_center_pc_custom = None
-            self.dictionary_cache = None
+            self._clear_dictionary_cache()
             self.dictionary_settings = None
             self.last_indexed_indices = None
             self.indexed_candidate_eulers_rad = None
@@ -3025,7 +3076,7 @@ class WorkflowSession:
             self.calibration_indices = []
             self.calibrated_center_pc_bruker = None
             self.calibrated_center_pc_custom = None
-            self.dictionary_cache = None
+            self._clear_dictionary_cache()
             self.dictionary_settings = None
             self.last_indexed_indices = None
             self.indexed_candidate_eulers_rad = None
@@ -3524,13 +3575,18 @@ class WorkflowSession:
         self,
         cache: DictionaryCache,
         signal_mask: np.ndarray | None,
-    ) -> int | None:
-        if signal_mask is None:
-            return None
-        valid_pixels = int(np.count_nonzero(~np.asarray(signal_mask, dtype=bool)))
+    ) -> int:
+        valid_pixels = (
+            int(np.prod(cache.pattern_shape))
+            if signal_mask is None
+            else int(np.count_nonzero(~np.asarray(signal_mask, dtype=bool)))
+        )
         if valid_pixels <= 0:
             raise ValueError(f"Pattern mask excludes all pixels for dictionary shape {cache.pattern_shape}.")
-        target_bytes = 2 * 1024**3
+        # Kikuchipy converts each stored uint8 chunk to float32 for NCC.
+        # Limit the prepared float chunk to about 512 MiB; the source uint8
+        # chunk and score arrays add comparatively little peak memory.
+        target_bytes = 512 * 1024**2
         n = int(target_bytes / max(1, valid_pixels) / np.dtype(np.float32).itemsize)
         return max(8192, min(int(cache.rotation_count), n))
 
@@ -3624,6 +3680,32 @@ class WorkflowSession:
         if self.master is None or self.master.phase is None:
             return None
         return PhaseList(phases={int(phase_id): self.master.phase})
+
+    def _dictionary_temp_path(self) -> Path:
+        cache_dir = Path(
+            os.environ.get("OVERLAP_EBSD_DICTIONARY_CACHE_DIR", tempfile.gettempdir())
+        ).expanduser().resolve()
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        fd, path = tempfile.mkstemp(prefix="overlap_ebsd_dictionary_", suffix=".h5", dir=cache_dir)
+        os.close(fd)
+        return Path(path)
+
+    def _lazy_dictionary_signal_from_h5(self, path: str | Path, xmap):
+        import dask.array as da
+        import kikuchipy as kp
+
+        proxy = _H5DatasetArray(path, "patterns")
+        chunk_patterns = max(1, min(DICTIONARY_LAZY_CHUNK_PATTERNS, proxy.shape[0]))
+        patterns = da.from_array(
+            proxy,
+            chunks=(chunk_patterns, *proxy.shape[1:]),
+            asarray=False,
+            fancy=False,
+        )
+        dictionary = kp.signals.LazyEBSD(patterns)
+        self._configure_signal_navigation_axis(dictionary)
+        dictionary.xmap = xmap
+        return dictionary
 
     # ----------------------- Refinement step ----------------------- #
 
@@ -3769,7 +3851,7 @@ class WorkflowSession:
             twist_deg=self.data.twist_deg,
         ).reshape(-1, 3)
         self.current_pc_custom[indices] = pcs_new_custom
-        self.dictionary_cache = None
+        self._clear_dictionary_cache()
         self.dictionary_settings = None
         self._clear_indexed_candidate_rows(indices)
         self._clear_residual_candidate_rows(indices)
@@ -3812,7 +3894,7 @@ class WorkflowSession:
                 azimuthal_deg=self.data.azimuthal_deg,
                 twist_deg=self.data.twist_deg,
             ).reshape(-1, 3)
-            self.dictionary_cache = None
+            self._clear_dictionary_cache()
             self.dictionary_settings = None
             self._invalidate_orientation_cache()
             self._invalidate_residual_cache()
@@ -3897,7 +3979,7 @@ class WorkflowSession:
             twist_deg=self.data.twist_deg,
         ).reshape(-1, 3)
         self.current_pc_bruker[:] = pcs_b
-        self.dictionary_cache = None
+        self._clear_dictionary_cache()
         self.dictionary_settings = None
         self._invalidate_orientation_cache()
         self._invalidate_residual_cache()
@@ -4029,7 +4111,7 @@ class WorkflowSession:
         center_idx = self.index_from_row_col(center_row, center_col)
         self.calibrated_center_pc_bruker = self.current_pc_bruker[center_idx].copy()
         self.calibrated_center_pc_custom = self.current_pc_custom[center_idx].copy()
-        self.dictionary_cache = None
+        self._clear_dictionary_cache()
         self.dictionary_settings = None
         self._clear_indexed_candidate_rows()
         self._clear_residual_candidate_rows()
@@ -4056,7 +4138,7 @@ class WorkflowSession:
         before = self.current_pc_bruker.copy()
         self.current_pc_bruker[:] = pc_b
         self.current_pc_custom[:] = pc_c
-        self.dictionary_cache = None
+        self._clear_dictionary_cache()
         self.dictionary_settings = None
         self._clear_indexed_candidate_rows()
         self._clear_residual_candidate_rows()
@@ -4125,7 +4207,7 @@ class WorkflowSession:
                 twist_deg=self.data.twist_deg,
             ).reshape(3)
             self.current_pc_bruker[idx] = pc_b
-            self.dictionary_cache = None
+            self._clear_dictionary_cache()
             self.dictionary_settings = None
             notes.append(f"PC updated ({self.data.pc_output_convention})")
         if not notes:
@@ -4176,13 +4258,15 @@ class WorkflowSession:
             cache.rotation_count
             * cache.pattern_shape[0]
             * cache.pattern_shape[1]
-            * np.dtype(np.float32).itemsize
+            * np.dtype(cache.pattern_dtype).itemsize
             / (1024**2)
         )
         return (
             f"Generated Kikuchipy dictionary: {cache.rotation_count} orientations, "
             f"pattern shape={cache.pattern_shape[0]}x{cache.pattern_shape[1]}, "
-            f"software binning={cache.software_binning}, estimated data={estimated_mb:.1f} MB."
+            f"software binning={cache.software_binning}, dtype={cache.pattern_dtype}, "
+            f"estimated uncompressed data={estimated_mb:.1f} MB. "
+            "The dictionary is in temporary disk-backed storage; save it to keep it."
         )
 
     def dictionary_index_indices(
@@ -4401,38 +4485,68 @@ class WorkflowSession:
             azimuthal=float(self.data.azimuthal_deg),
             twist=float(self.data.twist_deg),
         )
-        bytes_per_pattern = max(1, pattern_shape[0] * pattern_shape[1] * np.dtype(np.float32).itemsize)
-        chunk_size = max(16, min(64, int((128 * 1024**2) / bytes_per_pattern)))
-        dictionary_data = np.empty((int(rots.size), *pattern_shape), dtype=np.float32)
+        storage_dtype = DICTIONARY_PATTERN_DTYPE
+        pixels_per_pattern = max(1, pattern_shape[0] * pattern_shape[1])
+        # Projection uses a float64 work pattern internally. Keep each generation
+        # batch around 64 MiB while writing the final uint8 values directly to HDF5.
+        generation_chunk_size = max(
+            16,
+            min(1024, int((64 * 1024**2) / (pixels_per_pattern * np.dtype(np.float64).itemsize))),
+        )
+        storage_chunk_size = min(
+            int(rots.size),
+            _dictionary_storage_chunk_patterns(pattern_shape, storage_dtype),
+        )
+        temp_path = self._dictionary_temp_path()
         energy = float(self.master.energy_kv) if self.master.energy_kv is not None else 20.0
-        for start in range(0, int(rots.size), chunk_size):
-            stop = min(int(rots.size), start + chunk_size)
-            chunk_signal = self.master.mp_signal.get_patterns(
-                rotations=rots[start:stop],
-                detector=detector,
-                energy=energy,
-                compute=True,
-                show_progressbar=False,
-            )
-            dictionary_data[start:stop] = np.asarray(chunk_signal.data, dtype=np.float32).reshape(
-                stop - start,
-                *pattern_shape,
-            )
-            if progress_callback is not None:
-                progress_callback(
-                    10.0 + 85.0 * stop / int(rots.size),
-                    f"Generated {stop}/{int(rots.size)} dictionary patterns...",
+        eulers = np.asarray(rots.to_euler(), dtype=np.float64).reshape(-1, 3)
+        try:
+            with h5py.File(temp_path, "w") as h5:
+                h5.attrs["format"] = DICTIONARY_FORMAT_V2
+                h5.attrs["phase_id"] = int(phase_id)
+                h5.attrs["resolution_deg"] = float(resolution_deg)
+                h5.attrs["software_binning"] = int(factor)
+                h5.attrs["pattern_dtype"] = storage_dtype.name
+                patterns_h5 = h5.create_dataset(
+                    "patterns",
+                    shape=(int(rots.size), *pattern_shape),
+                    dtype=storage_dtype,
+                    chunks=(storage_chunk_size, *pattern_shape),
+                    compression="lzf",
+                    shuffle=True,
                 )
-        dictionary = kp.signals.EBSD(dictionary_data)
-        if len(dictionary.axes_manager.navigation_axes) >= 1:
-            dictionary.axes_manager.navigation_axes[0].name = "x"
-            dictionary.axes_manager.navigation_axes[0].scale = 1.0
-            dictionary.axes_manager.navigation_axes[0].units = "px"
-        dictionary.xmap = CrystalMap(
+                h5.create_dataset("eulers_rad", data=eulers, dtype=np.float64)
+                h5.create_dataset("pc_bruker", data=pc, dtype=np.float64)
+                h5.create_dataset("crop_extent", data=np.asarray(crop_extent, dtype=np.int64))
+                for start in range(0, int(rots.size), generation_chunk_size):
+                    stop = min(int(rots.size), start + generation_chunk_size)
+                    chunk_signal = self.master.mp_signal.get_patterns(
+                        rotations=rots[start:stop],
+                        detector=detector,
+                        energy=energy,
+                        dtype_out=storage_dtype,
+                        compute=True,
+                        show_progressbar=False,
+                    )
+                    patterns_h5[start:stop] = np.asarray(chunk_signal.data, dtype=storage_dtype).reshape(
+                        stop - start,
+                        *pattern_shape,
+                    )
+                    if progress_callback is not None:
+                        progress_callback(
+                            10.0 + 85.0 * stop / int(rots.size),
+                            f"Generated {stop}/{int(rots.size)} uint8 dictionary patterns...",
+                        )
+        except Exception:
+            temp_path.unlink(missing_ok=True)
+            raise
+
+        xmap = CrystalMap(
             rotations=rots,
             phase_id=np.full(rots.size, int(phase_id), dtype=np.int32),
             phase_list=self._phase_list_for_current_master(int(phase_id)),
         )
+        dictionary = self._lazy_dictionary_signal_from_h5(temp_path, xmap)
         cache = DictionaryCache(
             phase_id=int(phase_id),
             resolution_deg=float(resolution_deg),
@@ -4442,7 +4556,11 @@ class WorkflowSession:
             pattern_shape=pattern_shape,
             signal=dictionary,
             rotation_count=int(rots.size),
+            pattern_dtype=storage_dtype.name,
+            storage_path=str(temp_path),
+            owns_storage=True,
         )
+        self._clear_dictionary_cache()
         self.dictionary_cache = cache
         self.dictionary_settings = {
             "phase_id": int(phase_id),
@@ -6432,37 +6550,69 @@ class WorkflowSession:
         if out.suffix.lower() not in {".h5", ".hdf5"}:
             out = out.with_suffix(".h5")
         out.parent.mkdir(parents=True, exist_ok=True)
-        patterns = cache.signal.data
-        if hasattr(patterns, "compute"):
-            patterns = patterns.compute()
-        patterns = np.asarray(patterns, dtype=np.float32).reshape(
-            cache.rotation_count,
-            *cache.pattern_shape,
-        )
-        eulers = np.asarray(cache.signal.xmap.rotations.to_euler(), dtype=np.float64).reshape(-1, 3)
-        with h5py.File(out, "w") as h5:
-            h5.attrs["format"] = "overlap-ebsd-kikuchipy-dictionary-v1"
-            h5.attrs["phase_id"] = int(cache.phase_id)
-            h5.attrs["resolution_deg"] = float(cache.resolution_deg)
-            h5.attrs["software_binning"] = int(cache.software_binning)
-            h5.create_dataset(
-                "patterns",
-                data=patterns,
-                dtype=np.float32,
-                chunks=(1, *cache.pattern_shape),
-                compression="lzf",
-            )
-            h5.create_dataset("eulers_rad", data=eulers, dtype=np.float64)
-            h5.create_dataset("pc_bruker", data=cache.pc_bruker, dtype=np.float64)
-            h5.create_dataset("crop_extent", data=np.asarray(cache.crop_extent, dtype=np.int64))
+        source = Path(cache.storage_path).resolve() if cache.storage_path else None
+        if source == out and out.exists():
+            cache.owns_storage = False
+            return f"Dictionary is already saved at {out}"
+
+        fd, staged_name = tempfile.mkstemp(prefix=f".{out.name}.", suffix=".tmp", dir=out.parent)
+        os.close(fd)
+        staged = Path(staged_name)
+        try:
+            if source is not None and source.exists():
+                shutil.copy2(source, staged)
+            else:
+                pattern_dtype = np.dtype(cache.pattern_dtype)
+                storage_chunk_size = min(
+                    cache.rotation_count,
+                    _dictionary_storage_chunk_patterns(cache.pattern_shape, pattern_dtype),
+                )
+                eulers = np.asarray(cache.signal.xmap.rotations.to_euler(), dtype=np.float64).reshape(-1, 3)
+                with h5py.File(staged, "w") as h5:
+                    h5.attrs["format"] = DICTIONARY_FORMAT_V2
+                    h5.attrs["phase_id"] = int(cache.phase_id)
+                    h5.attrs["resolution_deg"] = float(cache.resolution_deg)
+                    h5.attrs["software_binning"] = int(cache.software_binning)
+                    h5.attrs["pattern_dtype"] = pattern_dtype.name
+                    patterns_h5 = h5.create_dataset(
+                        "patterns",
+                        shape=(cache.rotation_count, *cache.pattern_shape),
+                        dtype=pattern_dtype,
+                        chunks=(storage_chunk_size, *cache.pattern_shape),
+                        compression="lzf",
+                        shuffle=True,
+                    )
+                    patterns = cache.signal.data.reshape((cache.rotation_count, *cache.pattern_shape))
+                    write_batch = min(DICTIONARY_LAZY_CHUNK_PATTERNS, cache.rotation_count)
+                    for start in range(0, cache.rotation_count, write_batch):
+                        stop = min(cache.rotation_count, start + write_batch)
+                        block = patterns[start:stop]
+                        if hasattr(block, "compute"):
+                            block = block.compute()
+                        patterns_h5[start:stop] = np.asarray(block, dtype=pattern_dtype)
+                    h5.create_dataset("eulers_rad", data=eulers, dtype=np.float64)
+                    h5.create_dataset("pc_bruker", data=cache.pc_bruker, dtype=np.float64)
+                    h5.create_dataset("crop_extent", data=np.asarray(cache.crop_extent, dtype=np.int64))
+            os.replace(staged, out)
+        except Exception:
+            staged.unlink(missing_ok=True)
+            raise
+
+        old_owned_path = source if cache.owns_storage else None
+        xmap = cache.signal.xmap
+        cache.signal = self._lazy_dictionary_signal_from_h5(out, xmap)
+        cache.pattern_dtype = np.dtype(cache.signal.data.dtype).name
+        cache.storage_path = str(out)
+        cache.owns_storage = False
+        if old_owned_path is not None and old_owned_path != out:
+            old_owned_path.unlink(missing_ok=True)
         return (
-            f"Saved dictionary with {cache.rotation_count} patterns at binning "
-            f"{cache.software_binning} to {out}"
+            f"Saved disk-backed {cache.pattern_dtype} dictionary with {cache.rotation_count} patterns "
+            f"at binning {cache.software_binning} to {out}"
         )
 
     def load_dictionary(self, input_path: str) -> str:
         """Load a previously saved binned dictionary for indexing and overlap work."""
-        import kikuchipy as kp
         from orix.crystal_map import CrystalMap
         from orix.quaternion import Rotation
 
@@ -6470,16 +6620,26 @@ class WorkflowSession:
             raise RuntimeError("Load input data and its Kikuchipy master pattern before loading a dictionary.")
         path = Path(input_path).expanduser().resolve()
         with h5py.File(path, "r") as h5:
-            if str(h5.attrs.get("format", "")) != "overlap-ebsd-kikuchipy-dictionary-v1":
+            format_value = h5.attrs.get("format", "")
+            if isinstance(format_value, bytes):
+                format_value = format_value.decode("utf-8", errors="replace")
+            if str(format_value) not in {DICTIONARY_FORMAT_V1, DICTIONARY_FORMAT_V2}:
                 raise ValueError("This is not a supported overlap-EBSD dictionary file.")
             phase_id = int(h5.attrs["phase_id"])
             resolution_deg = float(h5.attrs["resolution_deg"])
             software_binning = int(h5.attrs["software_binning"])
-            patterns = np.asarray(h5["patterns"][()], dtype=np.float32)
+            patterns_h5 = h5["patterns"]
+            if patterns_h5.ndim != 3 or not (
+                np.issubdtype(patterns_h5.dtype, np.integer) or np.issubdtype(patterns_h5.dtype, np.floating)
+            ):
+                raise ValueError("Dictionary patterns must be a 3D numeric dataset.")
+            pattern_count = int(patterns_h5.shape[0])
+            pattern_shape = tuple(int(v) for v in patterns_h5.shape[-2:])
+            pattern_dtype = np.dtype(patterns_h5.dtype).name
             eulers = np.asarray(h5["eulers_rad"][()], dtype=np.float64).reshape(-1, 3)
             pc_bruker = np.asarray(h5["pc_bruker"][()], dtype=np.float64).reshape(3)
             crop_extent = tuple(int(v) for v in np.asarray(h5["crop_extent"][()]).reshape(4))
-        if patterns.shape[0] != eulers.shape[0]:
+        if pattern_count != eulers.shape[0]:
             raise ValueError("Dictionary pattern and rotation counts do not match.")
         expected_extent = self._binning_crop_extent(software_binning)
         if crop_extent != expected_extent:
@@ -6487,25 +6647,20 @@ class WorkflowSession:
                 f"Dictionary crop extent {crop_extent} does not match the loaded pattern shape "
                 f"(expected {expected_extent})."
             )
-        pattern_shape = tuple(int(v) for v in patterns.shape[-2:])
         expected_shape = (
             (crop_extent[1] - crop_extent[0]) // software_binning,
             (crop_extent[3] - crop_extent[2]) // software_binning,
         )
         if pattern_shape != expected_shape:
             raise ValueError(f"Dictionary pattern shape {pattern_shape} does not match expected {expected_shape}.")
-        dictionary = kp.signals.EBSD(patterns)
-        if len(dictionary.axes_manager.navigation_axes) >= 1:
-            dictionary.axes_manager.navigation_axes[0].name = "x"
-            dictionary.axes_manager.navigation_axes[0].scale = 1.0
-            dictionary.axes_manager.navigation_axes[0].units = "px"
         rotations = Rotation.from_euler(eulers, degrees=False)
-        dictionary.xmap = CrystalMap(
+        xmap = CrystalMap(
             rotations=rotations,
             phase_id=np.full(rotations.size, phase_id, dtype=np.int32),
             phase_list=self._phase_list_for_current_master(phase_id),
         )
-        self.dictionary_cache = DictionaryCache(
+        dictionary = self._lazy_dictionary_signal_from_h5(path, xmap)
+        cache = DictionaryCache(
             phase_id=phase_id,
             resolution_deg=resolution_deg,
             pc_bruker=pc_bruker.copy(),
@@ -6513,8 +6668,13 @@ class WorkflowSession:
             crop_extent=crop_extent,
             pattern_shape=pattern_shape,
             signal=dictionary,
-            rotation_count=int(patterns.shape[0]),
+            rotation_count=pattern_count,
+            pattern_dtype=pattern_dtype,
+            storage_path=str(path),
+            owns_storage=False,
         )
+        self._clear_dictionary_cache()
+        self.dictionary_cache = cache
         self.dictionary_settings = {
             "phase_id": phase_id,
             "resolution_deg": resolution_deg,
@@ -6523,8 +6683,8 @@ class WorkflowSession:
             "crop_extent": np.asarray(crop_extent, dtype=np.int64),
         }
         return (
-            f"Loaded dictionary: {patterns.shape[0]} patterns, shape={pattern_shape[0]}x{pattern_shape[1]}, "
-            f"software binning={software_binning}, from {path}"
+            f"Loaded disk-backed dictionary: {pattern_count} {pattern_dtype} patterns, "
+            f"shape={pattern_shape[0]}x{pattern_shape[1]}, software binning={software_binning}, from {path}"
         )
 
     def save_workflow_state(self, output_path: str) -> str:
@@ -6661,7 +6821,7 @@ class WorkflowSession:
                 if "residual_pattern_output_path" in state.files
                 else ""
             )
-            self.dictionary_cache = None
+            self._clear_dictionary_cache()
             self._invalidate_orientation_cache()
             self._invalidate_residual_cache()
             self.residual_pattern_output_path = residual_output_path or None

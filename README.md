@@ -57,4 +57,7 @@ python multistep_overlap_ebsd_gui.py
 ## Notes
 
 - Large EBSD datasets, generated dictionaries, residual exports, logs, and caches are ignored by git.
+- Generated dictionaries use disk-backed, chunked `uint8` patterns. Generation first uses a temporary cache;
+  **Save Dictionary** keeps it under the suggested master-pattern/binning/resolution filename. Existing v1
+  `float32` dictionaries remain loadable and are read lazily.
 - `ReferenceCodes/`, `EMSphInx Studio/`, `_Depr/`, the local paper copies, and the deprecated launcher are ignored by git and are not part of the current workflow.

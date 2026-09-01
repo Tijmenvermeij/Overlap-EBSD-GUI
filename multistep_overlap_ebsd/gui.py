@@ -107,7 +107,9 @@ class MultiStepOverlapGUI(tk.Tk):
         self.overlap_optimization_status_var = tk.StringVar(value="Overlap optimization not started.")
         self.refinement_progress_var = tk.DoubleVar(value=0.0)
         self.refinement_progress_status_var = tk.StringVar(value="Orientation refinement not started.")
-        self.dictionary_path_var = tk.StringVar(value=str((cwd / "ebsd_dictionary_binned.h5").resolve()))
+        initial_dictionary_path = str((cwd / "Cu-master_20kV_dictionary_bin4_12deg.h5").resolve())
+        self._auto_dictionary_path: str | None = initial_dictionary_path
+        self.dictionary_path_var = tk.StringVar(value=initial_dictionary_path)
         self.primary_roi_export_path_var = tk.StringVar(value=str((cwd / "primary_roi_map.h5oina").resolve()))
         self.residual_roi_export_path_var = tk.StringVar(value=str((cwd / "residual_roi_map.h5oina").resolve()))
         self.blur_sigma_var = tk.DoubleVar(value=0.0)
@@ -1367,6 +1369,20 @@ class MultiStepOverlapGUI(tk.Tk):
     def _dictionary_filetypes(self) -> list[tuple[str, str]]:
         return [("Binned EBSD dictionary", "*.h5 *.hdf5"), ("All files", "*.*")]
 
+    def _refresh_default_dictionary_path(self, *, force: bool = False) -> None:
+        current = self.dictionary_path_var.get().strip()
+        if not force and (self._auto_dictionary_path is None or current != self._auto_dictionary_path):
+            return
+        master_stem = Path(self.master_path_var.get().strip() or "master_pattern").stem
+        safe_stem = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in master_stem).strip("_")
+        safe_stem = safe_stem or "master_pattern"
+        resolution = f"{float(self.di_res_deg_var.get()):g}".replace(".", "p")
+        binning = max(1, int(self.di_binning_var.get()))
+        parent = Path(current).expanduser().resolve().parent if current else Path.cwd()
+        suggested = str((parent / f"{safe_stem}_dictionary_bin{binning}_{resolution}deg.h5").resolve())
+        self.dictionary_path_var.set(suggested)
+        self._auto_dictionary_path = suggested
+
     def _dictionary_dialog_options(self, *, for_save: bool = False) -> dict[str, object]:
         options: dict[str, object] = {"filetypes": self._dictionary_filetypes()}
         raw = self.dictionary_path_var.get().strip()
@@ -1394,6 +1410,7 @@ class MultiStepOverlapGUI(tk.Tk):
             return None
         path = str(Path(selected).resolve())
         self.dictionary_path_var.set(path)
+        self._auto_dictionary_path = None
         return path
 
     def _roi_bounds(self) -> tuple[int, int, int, int]:
@@ -1681,9 +1698,15 @@ class MultiStepOverlapGUI(tk.Tk):
             self.dictionary_status_var.set("No dictionary generated or loaded.")
             self.dictionary_progress_var.set(0.0)
             return
+        storage_note = (
+            "temporary disk cache — save to keep"
+            if cache.owns_storage
+            else f"disk-backed file={Path(cache.storage_path).name}" if cache.storage_path else "in memory"
+        )
         self.dictionary_status_var.set(
             f"Ready: {cache.rotation_count} patterns, {cache.pattern_shape[0]}x{cache.pattern_shape[1]}, "
-            f"binning={cache.software_binning}, resolution={cache.resolution_deg:g}°"
+            f"binning={cache.software_binning}, resolution={cache.resolution_deg:g}°, "
+            f"dtype={cache.pattern_dtype}; {storage_note}"
         )
         self.dictionary_progress_var.set(100.0)
 
@@ -2067,6 +2090,7 @@ class MultiStepOverlapGUI(tk.Tk):
         phase_id = int(self.phase_id_var.get())
         resolution_deg = float(self.di_res_deg_var.get())
         software_binning = int(self.di_binning_var.get())
+        self._refresh_default_dictionary_path()
 
         def progress(value: float, message: str) -> None:
             self.after(0, lambda v=value, m=message: self._set_dictionary_progress(v, m))
@@ -2093,6 +2117,7 @@ class MultiStepOverlapGUI(tk.Tk):
             return
         path = str(Path(selected).resolve())
         self.dictionary_path_var.set(path)
+        self._auto_dictionary_path = None
 
         def action() -> str:
             msg = self.session.load_dictionary(path)
