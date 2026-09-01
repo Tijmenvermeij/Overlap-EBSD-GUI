@@ -26,6 +26,7 @@ PLOT_TITLE_FONTSIZE = 9
 PLOT_TEXT_FONTSIZE = 8
 PLOT_TICK_FONTSIZE = 7
 PLOT_INSTRUCTION_FONTSIZE = 10
+RESIDUAL_PATTERN_CMAP = "gray"
 _TIGHT_LAYOUT_WARNING = "This figure includes Axes that are not compatible with tight_layout, so results might be incorrect."
 
 
@@ -60,6 +61,7 @@ class MultiStepOverlapGUI(tk.Tk):
         self.btn_refine_roi: ttk.Button | None = None
         self.btn_index_roi: ttk.Button | None = None
         self.btn_refine_indexed: ttk.Button | None = None
+        self.btn_complete_analysis: ttk.Button | None = None
         self.workflow_notebook: ttk.Notebook | None = None
         self._pending_restore_path: str | None = None
 
@@ -108,6 +110,8 @@ class MultiStepOverlapGUI(tk.Tk):
         self.dictionary_progress_var = tk.DoubleVar(value=0.0)
         self.reindex_progress_var = tk.DoubleVar(value=0.0)
         self.reindex_progress_status_var = tk.StringVar(value="Re-indexing not started.")
+        self.complete_analysis_progress_var = tk.DoubleVar(value=0.0)
+        self.complete_analysis_status_var = tk.StringVar(value="Complete ROI analysis not started.")
         self.overlap_progress_var = tk.DoubleVar(value=0.0)
         self.overlap_progress_status_var = tk.StringVar(value="Residual ROI workflow not started.")
         self.overlap_optimization_progress_var = tk.DoubleVar(value=0.0)
@@ -858,23 +862,43 @@ class MultiStepOverlapGUI(tk.Tk):
         )
         ttk.Button(parent, text="Save Dictionary", command=self._save_dictionary).grid(row=6, column=0, sticky="we", pady=(4, 0))
         ttk.Button(parent, text="Load Dictionary", command=self._load_dictionary).grid(row=6, column=1, sticky="we", pady=(4, 0))
-        ttk.Separator(parent, orient=tk.HORIZONTAL).grid(row=7, column=0, columnspan=2, sticky="we", pady=8)
-        ttk.Label(parent, text="keep_n (top matches)").grid(row=8, column=0, sticky="w")
-        ttk.Entry(parent, textvariable=self.dictionary_keep_n_var, width=8).grid(row=8, column=1, sticky="w")
-        ttk.Button(parent, text="Index Selected Point (NCC)", command=self._index_selected_point).grid(row=9, column=0, columnspan=2, sticky="we", pady=(6, 0))
+        ttk.Label(parent, text="keep_n (top matches)").grid(row=7, column=0, sticky="w", pady=(8, 0))
+        ttk.Entry(parent, textvariable=self.dictionary_keep_n_var, width=8).grid(row=7, column=1, sticky="w", pady=(8, 0))
+        self.btn_complete_analysis = ttk.Button(
+            parent,
+            text="Run Complete ROI Analysis (Steps 2–4)",
+            command=self._run_complete_roi_analysis,
+        )
+        self.btn_complete_analysis.grid(row=8, column=0, columnspan=2, sticky="we", pady=(8, 0))
+        ttk.Progressbar(
+            parent,
+            variable=self.complete_analysis_progress_var,
+            maximum=100.0,
+            mode="determinate",
+        ).grid(row=9, column=0, columnspan=2, sticky="we", pady=(4, 0))
+        ttk.Label(parent, textvariable=self.complete_analysis_status_var, wraplength=390).grid(
+            row=10, column=0, columnspan=2, sticky="w", pady=(2, 0)
+        )
+        ttk.Label(
+            parent,
+            text="Uses the current ROI and all indexing, refinement, residual, and mixture settings from Steps 2–4.",
+            wraplength=390,
+        ).grid(row=11, column=0, columnspan=2, sticky="w", pady=(2, 0))
+        ttk.Separator(parent, orient=tk.HORIZONTAL).grid(row=12, column=0, columnspan=2, sticky="we", pady=8)
+        ttk.Button(parent, text="Index Selected Point (NCC)", command=self._index_selected_point).grid(row=13, column=0, columnspan=2, sticky="we", pady=(6, 0))
         self.btn_index_roi = ttk.Button(parent, text="Re-index ROI (NCC)", command=self._index_roi)
-        self.btn_index_roi.grid(row=10, column=0, columnspan=2, sticky="we", pady=(4, 0))
+        self.btn_index_roi.grid(row=14, column=0, columnspan=2, sticky="we", pady=(4, 0))
         ttk.Progressbar(
             parent,
             variable=self.reindex_progress_var,
             maximum=100.0,
             mode="determinate",
-        ).grid(row=11, column=0, columnspan=2, sticky="we", pady=(8, 0))
+        ).grid(row=15, column=0, columnspan=2, sticky="we", pady=(8, 0))
         ttk.Label(
             parent,
             textvariable=self.reindex_progress_status_var,
             wraplength=390,
-        ).grid(row=12, column=0, columnspan=2, sticky="w", pady=(2, 0))
+        ).grid(row=16, column=0, columnspan=2, sticky="w", pady=(2, 0))
         parent.columnconfigure(0, weight=1)
 
     def _build_overlap_tab(self, parent: ttk.Frame) -> None:
@@ -1584,6 +1608,10 @@ class MultiStepOverlapGUI(tk.Tk):
         self.reindex_progress_var.set(float(np.clip(value, 0.0, 100.0)))
         self.reindex_progress_status_var.set(message)
 
+    def _set_complete_analysis_progress(self, value: float, message: str) -> None:
+        self.complete_analysis_progress_var.set(float(np.clip(value, 0.0, 100.0)))
+        self.complete_analysis_status_var.set(message)
+
     def _set_refinement_progress(self, value: float, message: str) -> None:
         self._set_progress_state(
             "refinement",
@@ -1894,7 +1922,12 @@ class MultiStepOverlapGUI(tk.Tk):
 
     def _update_mode_controls(self) -> None:
         state = tk.NORMAL
-        for btn in (self.btn_refine_roi, self.btn_index_roi, self.btn_refine_indexed):
+        for btn in (
+            self.btn_refine_roi,
+            self.btn_index_roi,
+            self.btn_refine_indexed,
+            self.btn_complete_analysis,
+        ):
             if btn is not None:
                 try:
                     btn.configure(state=state)
@@ -2535,6 +2568,216 @@ class MultiStepOverlapGUI(tk.Tk):
 
         self._run_threaded(action)
 
+    def _run_complete_roi_analysis(self) -> None:
+        if self.session.data is None:
+            messagebox.showerror("Error", "Load input data first.")
+            return
+        if self.session.dictionary_cache is None:
+            messagebox.showerror("Error", "Generate or load a dictionary before running the complete analysis.")
+            return
+
+        bounds = self._roi_bounds()
+        roi_indices = self.session.roi_indices(*bounds)
+        selected_index = int(self.index_var.get())
+        try:
+            phase_id = int(self.phase_id_var.get())
+            resolution_deg = float(self.di_res_deg_var.get())
+            keep_n = max(1, int(self.dictionary_keep_n_var.get()))
+            primary_trust_euler = float(self.trust_euler_var.get())
+            primary_maxfev = int(self.maxfev_var.get())
+            primary_full_resolution = bool(self.refine_full_resolution_var.get())
+            fit_blur_gain = bool(self.fit_blur_gain_var.get())
+            fit_maxiter = int(self.gain_fit_maxiter_var.get())
+            fit_popsize = int(self.gain_fit_popsize_var.get())
+            fit_bounds = self._primary_fit_bounds()
+            residual_trust_euler = float(self.residual_trust_euler_var.get())
+            residual_maxfev = int(self.residual_maxfev_var.get())
+            residual_full_resolution = bool(self.residual_refine_full_resolution_var.get())
+            step3_parallel_cores = int(self.step3_parallel_cores_var.get())
+            step4_parallel_cores = int(self.step4_parallel_cores_var.get())
+            primary_ncc_threshold = float(self._residual_ncc_threshold())
+            residual_ncc_threshold = float(self._overlap_mixture_residual_ncc_threshold())
+            write_patterns = bool(self.write_residual_patterns_var.get())
+            residual_output_path = self.residual_pattern_path_var.get().strip()
+        except Exception as exc:
+            messagebox.showerror("Invalid complete-analysis settings", str(exc))
+            return
+        if write_patterns and not residual_output_path:
+            messagebox.showerror("Missing residual output", "Choose a residual-pattern file name first.")
+            return
+
+        self._sync_residual_keep_n_to_dictionary(keep_n)
+        self._set_complete_analysis_progress(0.0, "Preparing complete ROI analysis...")
+
+        stage_count = 6
+
+        def stage_progress(stage_index: int, stage_name: str, setter):
+            def callback(value: float, message: str) -> None:
+                stage_value = float(np.clip(value, 0.0, 100.0))
+                overall = 100.0 * (stage_index + stage_value / 100.0) / stage_count
+
+                def update() -> None:
+                    self._set_complete_analysis_progress(
+                        overall,
+                        f"{stage_index + 1}/{stage_count} {stage_name}: {message}",
+                    )
+                    setter(stage_value, message)
+
+                self.after(0, update)
+
+            return callback
+
+        def finish_stage(stage_index: int, stage_name: str, message: str) -> None:
+            overall = 100.0 * (stage_index + 1) / stage_count
+            self.after(
+                0,
+                lambda: self._set_complete_analysis_progress(
+                    overall,
+                    f"{stage_index + 1}/{stage_count} {stage_name} complete.",
+                ),
+            )
+            self.after(0, lambda: self._log(f"Complete ROI analysis — {stage_name}: {message}"))
+
+        def execute() -> str:
+            primary_index_msg = self.session.dictionary_index_indices(
+                indices=roi_indices,
+                phase_id=phase_id,
+                keep_n=keep_n,
+                resolution_deg=resolution_deg,
+                progress_callback=stage_progress(0, "Primary indexing", self._set_reindex_progress),
+            )
+            finish_stage(0, "Primary indexing", primary_index_msg)
+
+            primary_refine_msg = self.session.refine_orientations_indices(
+                roi_indices,
+                phase_id=phase_id,
+                trust_euler_deg=primary_trust_euler,
+                maxfev=primary_maxfev,
+                use_full_resolution=primary_full_resolution,
+                progress_callback=stage_progress(1, "Primary refinement", self._set_refinement_progress),
+            )
+            finish_stage(1, "Primary refinement", primary_refine_msg)
+
+            eligible_primary: list[int] = []
+            for idx in roi_indices.tolist():
+                score = self.session.get_primary_index_ncc(int(idx))
+                if score is not None and (primary_ncc_threshold <= 0.0 or score >= primary_ncc_threshold):
+                    eligible_primary.append(int(idx))
+            residual_indices = np.asarray(eligible_primary, dtype=np.int64)
+            skipped_primary = int(roi_indices.size - residual_indices.size)
+            if residual_indices.size == 0:
+                raise RuntimeError(
+                    "Primary indexing/refinement finished, but no ROI points meet the minimum primary NCC "
+                    f"of {primary_ncc_threshold:.3f}."
+                )
+
+            residual_generation_msg = self.session.compute_overlap_residual_indices(
+                residual_indices,
+                fit_blur_gain=fit_blur_gain,
+                fit_maxiter=fit_maxiter,
+                fit_popsize=fit_popsize,
+                fit_bounds=fit_bounds if fit_blur_gain else None,
+                write_patterns=write_patterns,
+                residual_output_path=residual_output_path if write_patterns else None,
+                parallel_cores=step3_parallel_cores,
+                selected_index=(
+                    selected_index if np.any(residual_indices == selected_index) else None
+                ),
+                progress_callback=stage_progress(2, "Residual generation", self._set_overlap_progress),
+            )
+            finish_stage(2, "Residual generation", residual_generation_msg)
+
+            residual_index_msg = self.session.index_overlap_residual_indices(
+                residual_indices,
+                keep_n=keep_n,
+                write_patterns=write_patterns,
+                selected_index=(
+                    selected_index if np.any(residual_indices == selected_index) else None
+                ),
+                progress_callback=stage_progress(3, "Residual indexing", self._set_overlap_progress),
+            )
+            finish_stage(3, "Residual indexing", residual_index_msg)
+
+            residual_refine_msg = self.session.refine_overlap_residual_indices(
+                residual_indices,
+                trust_euler_deg=residual_trust_euler,
+                maxfev=residual_maxfev,
+                use_full_resolution=residual_full_resolution,
+                write_patterns=write_patterns,
+                selected_index=(
+                    selected_index if np.any(residual_indices == selected_index) else None
+                ),
+                progress_callback=stage_progress(4, "Residual refinement", self._set_overlap_progress),
+            )
+            finish_stage(4, "Residual refinement", residual_refine_msg)
+
+            mixture_indices: list[int] = []
+            for idx in residual_indices.tolist():
+                score = self._overlap_mixture_residual_ncc_for_index(int(idx))
+                if residual_ncc_threshold <= 0.0 or (
+                    score is not None and score >= residual_ncc_threshold
+                ):
+                    mixture_indices.append(int(idx))
+            overlap_indices = np.asarray(mixture_indices, dtype=np.int64)
+            skipped_residual = int(residual_indices.size - overlap_indices.size)
+            if overlap_indices.size == 0:
+                raise RuntimeError(
+                    "Residual refinement finished, but no ROI points meet the minimum residual NCC "
+                    f"of {residual_ncc_threshold:.3f}."
+                )
+
+            mixture_msg = self.session.compute_overlap_mixture_indices(
+                overlap_indices,
+                fit_maxiter=fit_maxiter,
+                fit_popsize=fit_popsize,
+                fit_bounds=fit_bounds,
+                parallel_cores=step4_parallel_cores,
+                selected_index=(
+                    selected_index if np.any(overlap_indices == selected_index) else None
+                ),
+                progress_callback=stage_progress(5, "Overlap optimization", self._set_overlap_optimization_progress),
+            )
+            finish_stage(5, "Overlap optimization", mixture_msg)
+
+            if np.any(residual_indices == selected_index):
+                selected_residual = self.session.get_residual_point_result(selected_index)
+                self.last_overlap = selected_residual
+            else:
+                self.last_overlap = None
+            if np.any(overlap_indices == selected_index):
+                self.last_overlap_mixture = self.session.get_overlap_mixture_result(selected_index)
+            else:
+                self.last_overlap_mixture = None
+
+            self.after(
+                0,
+                lambda: self._set_complete_analysis_progress(
+                    100.0,
+                    "Complete ROI analysis finished successfully.",
+                ),
+            )
+            return (
+                f"Complete ROI analysis finished for {roi_indices.size} point(s): re-indexed and refined "
+                f"the primary orientations, processed {residual_indices.size} residual(s), and optimized "
+                f"{overlap_indices.size} overlap mixture(s). Skipped {skipped_primary} point(s) at the "
+                f"primary NCC threshold and {skipped_residual} at the residual NCC threshold."
+            )
+
+        def action() -> str:
+            try:
+                return execute()
+            except Exception as exc:
+                error_message = str(exc)
+                self.after(
+                    0,
+                    lambda error_message=error_message: self.complete_analysis_status_var.set(
+                        f"Complete ROI analysis stopped: {error_message}"
+                    ),
+                )
+                raise
+
+        self._run_threaded(action)
+
     # -------------------------- Step 3 -------------------------- #
 
     def _analyze_overlap(self) -> None:
@@ -3108,7 +3351,7 @@ class MultiStepOverlapGUI(tk.Tk):
         axes[0, 1].imshow(result.simulated, cmap="gray")
         axes[0, 1].set_title(f"Primary simulated pattern — NCC={result.ncc_es:.4f}")
         rabs = max(float(np.max(np.abs(result.residual))), 1e-8)
-        axes[1, 0].imshow(result.residual, cmap="bwr", vmin=-rabs, vmax=rabs)
+        axes[1, 0].imshow(result.residual, cmap=RESIDUAL_PATTERN_CMAP, vmin=-rabs, vmax=rabs)
         axes[1, 0].set_title(f"Residual: Zexp − {result.scale:.4f}·Zsim")
         if result.secondary_simulated is not None:
             axes[1, 1].imshow(result.secondary_simulated, cmap="gray")
@@ -3345,7 +3588,12 @@ class MultiStepOverlapGUI(tk.Tk):
             rmax = float(np.nanmax(live_residual))
             rabs = max(abs(rmin), abs(rmax), 1e-8)
             rrms = float(np.sqrt(np.mean(np.square(live_residual))))
-            im_resid = self.axes[1, 0].imshow(live_residual, cmap="bwr", vmin=-rabs, vmax=rabs)
+            im_resid = self.axes[1, 0].imshow(
+                live_residual,
+                cmap=RESIDUAL_PATTERN_CMAP,
+                vmin=-rabs,
+                vmax=rabs,
+            )
             self.axes[1, 0].set_title(f"Residual (Zexp - NCC·Zsim) | RMS={rrms:.4f}")
             self.axes[1, 0].set_axis_off()
             view["colorbar"] = self.figure.colorbar(
@@ -3359,7 +3607,12 @@ class MultiStepOverlapGUI(tk.Tk):
             rmin = float(np.nanmin(self.last_overlap.residual))
             rmax = float(np.nanmax(self.last_overlap.residual))
             rabs = max(abs(rmin), abs(rmax), 1e-8)
-            im_resid = self.axes[1, 0].imshow(self.last_overlap.residual, cmap="bwr", vmin=-rabs, vmax=rabs)
+            im_resid = self.axes[1, 0].imshow(
+                self.last_overlap.residual,
+                cmap=RESIDUAL_PATTERN_CMAP,
+                vmin=-rabs,
+                vmax=rabs,
+            )
             self.axes[1, 0].set_title("Residual (Zexp - NCC·Zsim)")
             self.axes[1, 0].set_axis_off()
             view["colorbar"] = self.figure.colorbar(
@@ -3721,7 +3974,12 @@ class MultiStepOverlapGUI(tk.Tk):
                 gain_ax.text(0.5, 0.5, "Gain fitting disabled", ha="center", va="center")
                 gain_ax.set_title("Gain mask")
             rabs = max(float(np.max(np.abs(result.residual))), 1e-8)
-            primary_residual_ax.imshow(result.residual, cmap="bwr", vmin=-rabs, vmax=rabs)
+            primary_residual_ax.imshow(
+                result.residual,
+                cmap=RESIDUAL_PATTERN_CMAP,
+                vmin=-rabs,
+                vmax=rabs,
+            )
             primary_residual_ax.set_title(f"Residual E − {result.scale:.4f}·S′")
             if result.secondary_simulated is not None:
                 residual_sim_ax.imshow(normalize_for_view(result.secondary_simulated), cmap="gray")
@@ -3761,7 +4019,12 @@ class MultiStepOverlapGUI(tk.Tk):
                 sim_ax.set_title("Indexed solution simulation")
             if preview_residual is not None and preview_scale is not None:
                 rabs = max(float(np.max(np.abs(preview_residual))), 1e-8)
-                primary_residual_ax.imshow(preview_residual, cmap="bwr", vmin=-rabs, vmax=rabs)
+                primary_residual_ax.imshow(
+                    preview_residual,
+                    cmap=RESIDUAL_PATTERN_CMAP,
+                    vmin=-rabs,
+                    vmax=rabs,
+                )
                 primary_residual_ax.set_title(f"Preview residual E − {preview_scale:.4f}·S")
             else:
                 primary_residual_ax.text(0.5, 0.5, "Preview residual appears after step 2 indexing", ha="center", va="center")
@@ -3976,7 +4239,12 @@ class MultiStepOverlapGUI(tk.Tk):
             secondary_sim_ax.imshow(normalize_for_view(result.secondary_simulated), cmap="gray")
             secondary_sim_ax.set_title(secondary_title)
             rabs = max(float(np.max(np.abs(result.residual))), 1e-8)
-            final_residual_ax.imshow(result.residual, cmap="bwr", vmin=-rabs, vmax=rabs)
+            final_residual_ax.imshow(
+                result.residual,
+                cmap=RESIDUAL_PATTERN_CMAP,
+                vmin=-rabs,
+                vmax=rabs,
+            )
             final_residual_ax.set_title(
                 f"Final residual | NCC={_fmt(result.ncc_mixture)}\n"
                 f"old primary={_fmt(result.old_primary_ncc)}, old residual={_fmt(result.old_secondary_ncc)}"
