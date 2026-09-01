@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import tempfile
@@ -46,6 +47,20 @@ def _dictionary_storage_chunk_patterns(
 ) -> int:
     bytes_per_pattern = max(1, int(np.prod(pattern_shape)) * np.dtype(dtype).itemsize)
     return max(1, min(DICTIONARY_H5_CHUNK_PATTERNS, (1024**2) // bytes_per_pattern))
+
+
+def _output_path_with_single_suffix(output_path: str, suffix: str) -> Path:
+    """Return an absolute output path with exactly one copy of *suffix*."""
+    out = Path(output_path).expanduser().resolve()
+    suffix = suffix.lower()
+    name = out.name
+    doubled = suffix + suffix
+    while name.lower().endswith(doubled):
+        name = name[: -len(suffix)]
+    out = out.with_name(name)
+    if out.suffix.lower() != suffix:
+        out = out.with_suffix(suffix)
+    return out
 
 MAP_LAYER_CANDIDATES: dict[str, list[str]] = {
     "BC": ["EBSD/Data/Band Contrast"],
@@ -2061,6 +2076,7 @@ class WorkflowSession:
         self.dictionary_cache: DictionaryCache | None = None
         self.dictionary_settings: dict[str, object] | None = None
         self.last_indexed_indices: np.ndarray | None = None
+        self.indexed_mask: np.ndarray | None = None
         self.indexed_candidate_eulers_rad: np.ndarray | None = None
         self.residual_eulers_rad: np.ndarray | None = None
         self.residual_phases: np.ndarray | None = None
@@ -2076,6 +2092,7 @@ class WorkflowSession:
         self.overlap_primary_fraction_map: np.ndarray | None = None
         self.overlap_secondary_fraction_map: np.ndarray | None = None
         self.overlap_mixture_ncc_map: np.ndarray | None = None
+        self.restored_ui_state: dict[str, object] = {}
         self.pattern_mask_config = _pattern_mask_config_from_option(-1)
         self.dynamic_bg_config = DynamicBackgroundConfig()
 
@@ -2476,7 +2493,14 @@ class WorkflowSession:
     def get_primary_index_ncc(self, index: int) -> float | None:
         if self.data is None or self.last_scores_map is None:
             return None
-        row, col = self.row_col_from_index(int(index))
+        idx = int(index)
+        if (
+            self.indexed_mask is None
+            or self.indexed_mask.shape != (self.data.count,)
+            or not bool(self.indexed_mask[idx])
+        ):
+            return None
+        row, col = self.row_col_from_index(idx)
         score = float(self.last_scores_map[row, col])
         if not np.isfinite(score):
             return None
@@ -2779,6 +2803,7 @@ class WorkflowSession:
         import kikuchipy as kp
         from transforms3d.euler import euler2mat
 
+        self.restored_ui_state = {}
         p = str(Path(pattern_path).expanduser().resolve())
         if not Path(p).exists():
             raise FileNotFoundError(p)
@@ -2940,6 +2965,7 @@ class WorkflowSession:
             self._clear_dictionary_cache()
             self.dictionary_settings = None
             self.last_indexed_indices = None
+            self.indexed_mask = np.zeros(self.data.count, dtype=bool)
             self.indexed_candidate_eulers_rad = None
             self.residual_candidate_eulers_rad = None
             unique_ph = np.unique(phases)
@@ -3079,6 +3105,7 @@ class WorkflowSession:
             self._clear_dictionary_cache()
             self.dictionary_settings = None
             self.last_indexed_indices = None
+            self.indexed_mask = np.zeros(self.data.count, dtype=bool)
             self.indexed_candidate_eulers_rad = None
             self.residual_candidate_eulers_rad = None
             unique_ph = np.unique(phase)
@@ -4412,6 +4439,9 @@ class WorkflowSession:
                 )
 
         self.last_indexed_indices = indices.copy()
+        if self.indexed_mask is None or self.indexed_mask.shape != (self.data.count,):
+            self.indexed_mask = np.zeros(self.data.count, dtype=bool)
+        self.indexed_mask[indices] = True
         self._invalidate_orientation_cache()
         self._invalidate_residual_cache()
         return (
@@ -4629,6 +4659,9 @@ class WorkflowSession:
         self._invalidate_orientation_cache()
         self._invalidate_residual_cache()
         self.last_indexed_indices = indices.copy()
+        if self.indexed_mask is None or self.indexed_mask.shape != (self.data.count,):
+            self.indexed_mask = np.zeros(self.data.count, dtype=bool)
+        self.indexed_mask[indices] = True
 
         return (
             f"Dictionary indexed {indices.size} point(s) with legacy NCC fallback "
@@ -6687,8 +6720,156 @@ class WorkflowSession:
             f"shape={pattern_shape[0]}x{pattern_shape[1]}, software binning={software_binning}, from {path}"
         )
 
-    def save_workflow_state(self, output_path: str) -> str:
-        """Save enough state to reopen refined/indexed work without altering source data."""
+    @staticmethod
+    def _residual_result_metadata(result: OverlapPointResult) -> dict[str, object]:
+        return {
+            "index": int(result.index),
+            "row": int(result.row),
+            "col": int(result.col),
+            "ncc_es": float(result.ncc_es),
+            "scale": float(result.scale),
+            "ncc_residual_sim": float(result.ncc_residual_sim),
+            "fitted_sigma": float(result.fitted_sigma),
+            "gain_params": [float(v) for v in result.gain_params],
+            "ellipse_params": [float(v) for v in result.ellipse_params],
+            "ncc_unfitted": None if result.ncc_unfitted is None else float(result.ncc_unfitted),
+            "fit_success": bool(result.fit_success),
+            "fit_message": str(result.fit_message),
+            "secondary_dictionary_ncc_kp": (
+                None if result.secondary_dictionary_ncc_kp is None else float(result.secondary_dictionary_ncc_kp)
+            ),
+            "secondary_ncc_kp": None if result.secondary_ncc_kp is None else float(result.secondary_ncc_kp),
+            "secondary_ncc_full": None if result.secondary_ncc_full is None else float(result.secondary_ncc_full),
+            "secondary_euler_rad": (
+                None
+                if result.secondary_euler_rad is None
+                else np.asarray(result.secondary_euler_rad, dtype=np.float64).reshape(3).tolist()
+            ),
+            "secondary_refined": bool(result.secondary_refined),
+            "secondary_refinement_note": str(result.secondary_refinement_note),
+        }
+
+    @staticmethod
+    def _residual_result_from_metadata(values: dict[str, object]) -> OverlapPointResult:
+        secondary = values.get("secondary_euler_rad")
+        return OverlapPointResult(
+            index=int(values["index"]),
+            row=int(values["row"]),
+            col=int(values["col"]),
+            ncc_es=float(values["ncc_es"]),
+            scale=float(values["scale"]),
+            ncc_residual_sim=float(values["ncc_residual_sim"]),
+            experimental=None,
+            simulated=None,
+            residual=None,
+            fitted_sigma=float(values.get("fitted_sigma", 0.0)),
+            gain_params=tuple(float(v) for v in values.get("gain_params", [])),
+            ellipse_params=tuple(float(v) for v in values.get("ellipse_params", [])),
+            ncc_unfitted=None if values.get("ncc_unfitted") is None else float(values["ncc_unfitted"]),
+            fit_success=bool(values.get("fit_success", True)),
+            fit_message=str(values.get("fit_message", "")),
+            secondary_dictionary_ncc_kp=(
+                None
+                if values.get("secondary_dictionary_ncc_kp") is None
+                else float(values["secondary_dictionary_ncc_kp"])
+            ),
+            secondary_ncc_kp=(
+                None if values.get("secondary_ncc_kp") is None else float(values["secondary_ncc_kp"])
+            ),
+            secondary_ncc_full=(
+                None if values.get("secondary_ncc_full") is None else float(values["secondary_ncc_full"])
+            ),
+            secondary_euler_rad=(
+                None if secondary is None else np.asarray(secondary, dtype=np.float64).reshape(3)
+            ),
+            secondary_refined=bool(values.get("secondary_refined", False)),
+            secondary_refinement_note=str(values.get("secondary_refinement_note", "")),
+        )
+
+    @staticmethod
+    def _mixture_result_metadata(result: OverlapMixtureResult) -> dict[str, object]:
+        def euler(value: np.ndarray | None) -> list[float] | None:
+            return None if value is None else np.asarray(value, dtype=np.float64).reshape(3).tolist()
+
+        return {
+            "index": int(result.index),
+            "row": int(result.row),
+            "col": int(result.col),
+            "primary_fraction": float(result.primary_fraction),
+            "secondary_fraction": float(result.secondary_fraction),
+            "primary_coefficient": float(result.primary_coefficient),
+            "secondary_coefficient": float(result.secondary_coefficient),
+            "ncc_mixture": float(result.ncc_mixture),
+            "residual_rms": float(result.residual_rms),
+            "old_primary_ncc": None if result.old_primary_ncc is None else float(result.old_primary_ncc),
+            "old_secondary_ncc": None if result.old_secondary_ncc is None else float(result.old_secondary_ncc),
+            "fitted_sigma": float(result.fitted_sigma),
+            "gain_params": [float(v) for v in result.gain_params],
+            "ellipse_params": [float(v) for v in result.ellipse_params],
+            "component_correlation": float(result.component_correlation),
+            "primary_euler_rad": euler(result.primary_euler_rad),
+            "secondary_euler_rad": euler(result.secondary_euler_rad),
+            "fit_success": bool(result.fit_success),
+            "fit_message": str(result.fit_message),
+            "orientation_refined": bool(result.orientation_refined),
+            "orientation_refinement_note": str(result.orientation_refinement_note),
+            "initial_mixture_ncc": (
+                None if result.initial_mixture_ncc is None else float(result.initial_mixture_ncc)
+            ),
+            "primary_euler_delta_deg": [float(v) for v in result.primary_euler_delta_deg],
+            "secondary_euler_delta_deg": [float(v) for v in result.secondary_euler_delta_deg],
+        }
+
+    @staticmethod
+    def _mixture_result_from_metadata(values: dict[str, object]) -> OverlapMixtureResult:
+        def euler(key: str) -> np.ndarray | None:
+            value = values.get(key)
+            return None if value is None else np.asarray(value, dtype=np.float64).reshape(3)
+
+        return OverlapMixtureResult(
+            index=int(values["index"]),
+            row=int(values["row"]),
+            col=int(values["col"]),
+            primary_fraction=float(values["primary_fraction"]),
+            secondary_fraction=float(values["secondary_fraction"]),
+            primary_coefficient=float(values["primary_coefficient"]),
+            secondary_coefficient=float(values["secondary_coefficient"]),
+            ncc_mixture=float(values["ncc_mixture"]),
+            residual_rms=float(values["residual_rms"]),
+            old_primary_ncc=(
+                None if values.get("old_primary_ncc") is None else float(values["old_primary_ncc"])
+            ),
+            old_secondary_ncc=(
+                None if values.get("old_secondary_ncc") is None else float(values["old_secondary_ncc"])
+            ),
+            experimental=None,
+            primary_simulated=None,
+            secondary_simulated=None,
+            combined_simulated=None,
+            residual=None,
+            fitted_sigma=float(values.get("fitted_sigma", 0.0)),
+            gain_params=tuple(float(v) for v in values.get("gain_params", [])),
+            ellipse_params=tuple(float(v) for v in values.get("ellipse_params", [])),
+            component_correlation=float(values.get("component_correlation", 0.0)),
+            primary_euler_rad=euler("primary_euler_rad"),
+            secondary_euler_rad=euler("secondary_euler_rad"),
+            fit_success=bool(values.get("fit_success", True)),
+            fit_message=str(values.get("fit_message", "")),
+            orientation_refined=bool(values.get("orientation_refined", False)),
+            orientation_refinement_note=str(values.get("orientation_refinement_note", "")),
+            initial_mixture_ncc=(
+                None if values.get("initial_mixture_ncc") is None else float(values["initial_mixture_ncc"])
+            ),
+            primary_euler_delta_deg=tuple(float(v) for v in values.get("primary_euler_delta_deg", [])),
+            secondary_euler_delta_deg=tuple(float(v) for v in values.get("secondary_euler_delta_deg", [])),
+        )
+
+    def save_workflow_state(
+        self,
+        output_path: str,
+        ui_state: dict[str, object] | None = None,
+    ) -> str:
+        """Save all reproducible workflow state without embedding large pattern stores."""
         if self.data is None or self.current_eulers_rad is None or self.current_phases is None:
             raise RuntimeError("Load input data first.")
         if self.current_pc_bruker is None or self.current_pc_custom is None:
@@ -6699,8 +6880,29 @@ class WorkflowSession:
         out_path.parent.mkdir(parents=True, exist_ok=True)
         settings = self.dictionary_settings or {}
         dict_pc = np.asarray(settings.get("pc_bruker", np.full(3, np.nan)), dtype=np.float64).reshape(3)
+        stable_dictionary_path = ""
+        dictionary_was_available = self.dictionary_cache is not None
+        if self.dictionary_cache is not None and not self.dictionary_cache.owns_storage:
+            candidate = Path(self.dictionary_cache.storage_path or "").expanduser()
+            if candidate.is_file():
+                stable_dictionary_path = str(candidate.resolve())
+        residual_results_json = json.dumps(
+            [
+                self._residual_result_metadata(self._strip_residual_point_result(result))
+                for _, result in sorted(self.residual_point_results.items())
+            ],
+            separators=(",", ":"),
+        )
+        mixture_results_json = json.dumps(
+            [
+                self._mixture_result_metadata(self._strip_overlap_mixture_result(result))
+                for _, result in sorted(self.overlap_mixture_results.items())
+            ],
+            separators=(",", ":"),
+        )
         np.savez_compressed(
             out_path,
+            workflow_schema_version=np.asarray(2, dtype=np.int64),
             pattern_path=np.asarray(self.data.pattern_path),
             orientation_path=np.asarray(self.data.orientation_path or ""),
             master_path=np.asarray(self.master.path if self.master is not None else ""),
@@ -6720,10 +6922,25 @@ class WorkflowSession:
                 else np.empty((0, 0, 3), dtype=np.float64)
             ),
             calibration_indices=np.asarray(self.calibration_indices, dtype=np.int64),
+            calibrated_center_pc_bruker=(
+                self.calibrated_center_pc_bruker
+                if self.calibrated_center_pc_bruker is not None
+                else np.empty(0, dtype=np.float64)
+            ),
+            calibrated_center_pc_custom=(
+                self.calibrated_center_pc_custom
+                if self.calibrated_center_pc_custom is not None
+                else np.empty(0, dtype=np.float64)
+            ),
             last_indexed_indices=(
                 self.last_indexed_indices
                 if self.last_indexed_indices is not None
                 else np.empty(0, dtype=np.int64)
+            ),
+            indexed_mask=(
+                self.indexed_mask
+                if self.indexed_mask is not None
+                else np.zeros(self.data.count, dtype=bool)
             ),
             sample_tilt=np.asarray(self.data.sample_tilt_deg),
             detector_tilt=np.asarray(self.data.detector_tilt_deg),
@@ -6737,17 +6954,74 @@ class WorkflowSession:
                 settings.get("crop_extent", np.array([-1, -1, -1, -1], dtype=np.int64)),
                 dtype=np.int64,
             ),
+            dictionary_storage_path=np.asarray(stable_dictionary_path),
+            dictionary_was_available=np.asarray(dictionary_was_available),
             pattern_mask_option=np.asarray(int(self.pattern_mask_option), dtype=np.int64),
             dynamic_bg_enabled=np.asarray(bool(self.dynamic_bg_config.enabled)),
             dynamic_bg_std_px=np.asarray(float(self.dynamic_bg_config.std_px)),
             dynamic_bg_truncate=np.asarray(float(self.dynamic_bg_config.truncate)),
             residual_pattern_output_path=np.asarray(self.residual_pattern_output_path or ""),
+            residual_eulers_rad=(
+                self.residual_eulers_rad
+                if self.residual_eulers_rad is not None
+                else np.empty((0, 3), dtype=np.float64)
+            ),
+            residual_phases=(
+                self.residual_phases if self.residual_phases is not None else np.empty(0, dtype=np.int32)
+            ),
+            residual_scores=(
+                self.last_residual_scores_map
+                if self.last_residual_scores_map is not None
+                else np.empty((0, 0), dtype=np.float32)
+            ),
+            last_residual_indexed_indices=(
+                self.last_residual_indexed_indices
+                if self.last_residual_indexed_indices is not None
+                else np.empty(0, dtype=np.int64)
+            ),
+            residual_candidate_eulers_rad=(
+                self.residual_candidate_eulers_rad
+                if self.residual_candidate_eulers_rad is not None
+                else np.empty((0, 0, 3), dtype=np.float64)
+            ),
+            residual_results_json=np.asarray(residual_results_json),
+            last_overlap_index=np.asarray(
+                -1 if self.last_overlap is None else int(self.last_overlap.index), dtype=np.int64
+            ),
+            overlap_primary_fraction_map=(
+                self.overlap_primary_fraction_map
+                if self.overlap_primary_fraction_map is not None
+                else np.empty((0, 0), dtype=np.float32)
+            ),
+            overlap_secondary_fraction_map=(
+                self.overlap_secondary_fraction_map
+                if self.overlap_secondary_fraction_map is not None
+                else np.empty((0, 0), dtype=np.float32)
+            ),
+            overlap_mixture_ncc_map=(
+                self.overlap_mixture_ncc_map
+                if self.overlap_mixture_ncc_map is not None
+                else np.empty((0, 0), dtype=np.float32)
+            ),
+            mixture_results_json=np.asarray(mixture_results_json),
+            last_overlap_mixture_index=np.asarray(
+                -1 if self.last_overlap_mixture is None else int(self.last_overlap_mixture.index), dtype=np.int64
+            ),
+            ui_state_json=np.asarray(json.dumps(ui_state or {}, separators=(",", ":"))),
         )
-        return f"Saved workflow state to {out_path}"
+        dictionary_note = (
+            " Saved dictionary link."
+            if stable_dictionary_path
+            else " Temporary/unsaved dictionary was not embedded; save it separately to auto-reload it."
+            if dictionary_was_available
+            else ""
+        )
+        return f"Saved complete workflow state to {out_path}.{dictionary_note}"
 
     def restore_workflow_state(self, input_path: str) -> str:
         """Reopen a saved workflow, including source data and refined map state."""
         path = Path(input_path).expanduser().resolve()
+        restore_notes: list[str] = []
         with np.load(path, allow_pickle=False) as state:
             pattern_path = str(state["pattern_path"].item())
             orientation_path = str(state["orientation_path"].item()) or None
@@ -6794,11 +7068,27 @@ class WorkflowSession:
             if self.data is not None and scores.shape == (self.data.rows, self.data.cols):
                 self.last_scores_map = scores.copy()
             self.calibration_indices = np.asarray(state["calibration_indices"], dtype=np.int64).tolist()
+            for key, attr in (
+                ("calibrated_center_pc_bruker", "calibrated_center_pc_bruker"),
+                ("calibrated_center_pc_custom", "calibrated_center_pc_custom"),
+            ):
+                value = np.asarray(state[key], dtype=np.float64).reshape(-1) if key in state.files else np.empty(0)
+                setattr(self, attr, value.reshape(3).copy() if value.size == 3 else None)
             self.last_indexed_indices = (
                 np.asarray(state["last_indexed_indices"], dtype=np.int64).reshape(-1).copy()
                 if "last_indexed_indices" in state.files
                 else None
             )
+            if "indexed_mask" in state.files:
+                indexed_mask = np.asarray(state["indexed_mask"], dtype=bool).reshape(-1)
+                self.indexed_mask = indexed_mask.copy() if indexed_mask.shape == (expected,) else None
+            else:
+                self.indexed_mask = np.zeros(expected, dtype=bool)
+                if self.last_indexed_indices is not None:
+                    valid_indexed = self.last_indexed_indices[
+                        (self.last_indexed_indices >= 0) & (self.last_indexed_indices < expected)
+                    ]
+                    self.indexed_mask[valid_indexed] = True
             dict_phase = int(state["dictionary_phase"].item())
             dict_resolution = float(state["dictionary_resolution"].item())
             dict_pc = np.asarray(state["dictionary_pc_bruker"], dtype=np.float64).reshape(3)
@@ -6833,7 +7123,98 @@ class WorkflowSession:
             )
             if indexed_candidates.size > 0 and indexed_candidates.ndim == 3 and indexed_candidates.shape[0] == expected:
                 self.indexed_candidate_eulers_rad = indexed_candidates.copy()
-        return f"Restored workflow from {path}. {load_note} {master_note}"
+            residual_eulers = (
+                np.asarray(state["residual_eulers_rad"], dtype=np.float64).reshape(-1, 3)
+                if "residual_eulers_rad" in state.files
+                else np.empty((0, 3), dtype=np.float64)
+            )
+            if residual_eulers.shape == (expected, 3):
+                self.residual_eulers_rad = residual_eulers.copy()
+            residual_phases = (
+                np.asarray(state["residual_phases"], dtype=np.int32).reshape(-1)
+                if "residual_phases" in state.files
+                else np.empty(0, dtype=np.int32)
+            )
+            if residual_phases.shape == (expected,):
+                self.residual_phases = residual_phases.copy()
+            residual_scores = (
+                np.asarray(state["residual_scores"], dtype=np.float32)
+                if "residual_scores" in state.files
+                else np.empty((0, 0), dtype=np.float32)
+            )
+            if self.data is not None and residual_scores.shape == (self.data.rows, self.data.cols):
+                self.last_residual_scores_map = residual_scores.copy()
+            self.last_residual_indexed_indices = (
+                np.asarray(state["last_residual_indexed_indices"], dtype=np.int64).reshape(-1).copy()
+                if "last_residual_indexed_indices" in state.files
+                and np.asarray(state["last_residual_indexed_indices"]).size > 0
+                else None
+            )
+            residual_candidates = (
+                np.asarray(state["residual_candidate_eulers_rad"], dtype=np.float64)
+                if "residual_candidate_eulers_rad" in state.files
+                else np.empty((0, 0, 3), dtype=np.float64)
+            )
+            if residual_candidates.ndim == 3 and residual_candidates.shape[0] == expected and residual_candidates.size:
+                self.residual_candidate_eulers_rad = residual_candidates.copy()
+
+            self.residual_point_results = {}
+            if "residual_results_json" in state.files:
+                for values in json.loads(str(state["residual_results_json"].item())):
+                    result = self._residual_result_from_metadata(values)
+                    if 0 <= result.index < expected:
+                        self.residual_point_results[result.index] = result
+            last_overlap_index = int(state["last_overlap_index"].item()) if "last_overlap_index" in state.files else -1
+            self.last_overlap = self.residual_point_results.get(last_overlap_index)
+
+            map_shape = (self.data.rows, self.data.cols) if self.data is not None else (0, 0)
+            for key, attr in (
+                ("overlap_primary_fraction_map", "overlap_primary_fraction_map"),
+                ("overlap_secondary_fraction_map", "overlap_secondary_fraction_map"),
+                ("overlap_mixture_ncc_map", "overlap_mixture_ncc_map"),
+            ):
+                values = np.asarray(state[key], dtype=np.float32) if key in state.files else np.empty((0, 0))
+                setattr(self, attr, values.copy() if values.shape == map_shape else None)
+            self.overlap_mixture_results = {}
+            if "mixture_results_json" in state.files:
+                for values in json.loads(str(state["mixture_results_json"].item())):
+                    result = self._mixture_result_from_metadata(values)
+                    if 0 <= result.index < expected:
+                        self.overlap_mixture_results[result.index] = result
+            last_mixture_index = (
+                int(state["last_overlap_mixture_index"].item())
+                if "last_overlap_mixture_index" in state.files
+                else -1
+            )
+            self.last_overlap_mixture = self.overlap_mixture_results.get(last_mixture_index)
+            self.restored_ui_state = (
+                json.loads(str(state["ui_state_json"].item())) if "ui_state_json" in state.files else {}
+            )
+
+            dictionary_path = (
+                str(state["dictionary_storage_path"].item())
+                if "dictionary_storage_path" in state.files
+                else ""
+            )
+            dictionary_was_available = (
+                bool(state["dictionary_was_available"].item())
+                if "dictionary_was_available" in state.files
+                else False
+            )
+            if dictionary_path:
+                if Path(dictionary_path).is_file():
+                    try:
+                        restore_notes.append(self.load_dictionary(dictionary_path))
+                    except Exception as exc:
+                        restore_notes.append(f"Dictionary link could not be loaded: {exc}")
+                else:
+                    restore_notes.append(f"Saved dictionary file is missing: {dictionary_path}")
+            elif dictionary_was_available:
+                restore_notes.append("The workflow used a temporary dictionary; regenerate or load a saved dictionary.")
+            self._invalidate_orientation_cache()
+            self._invalidate_residual_color_cache()
+        note = " ".join(restore_notes)
+        return f"Restored workflow from {path}. {load_note} {master_note}{(' ' + note) if note else ''}"
 
     def export_reindexed_results(self, output_path: str) -> str:
         if self.data is None:
@@ -7090,12 +7471,10 @@ class WorkflowSession:
         out = Path(output_path).expanduser().resolve()
 
         if self.data.source_type == "h5oina":
-            if out.suffix.lower() != ".h5oina":
-                out = out.with_suffix(".h5oina")
+            out = _output_path_with_single_suffix(str(out), ".h5oina")
             source_path = Path(self.data.pattern_path).expanduser().resolve()
         elif self.data.source_type == "up_ang":
-            if out.suffix.lower() != ".ang":
-                out = out.with_suffix(".ang")
+            out = _output_path_with_single_suffix(str(out), ".ang")
             if self.data.orientation_path is None:
                 raise RuntimeError("Missing ANG source metadata in session.")
             source_path = Path(self.data.orientation_path).expanduser().resolve()
@@ -7154,6 +7533,15 @@ class WorkflowSession:
         else:
             if self.current_eulers_rad is None or self.last_scores_map is None or self.current_phases is None:
                 raise RuntimeError("Run primary ROI indexing before exporting the primary map.")
+            if self.indexed_mask is None or self.indexed_mask.shape != (rows * cols,):
+                raise RuntimeError("No dictionary-indexed points are registered for primary export.")
+            indexed_roi = self.indexed_mask.reshape(rows, cols)[r0:r1, c0:c1]
+            if not np.all(indexed_roi):
+                missing_count = int(indexed_roi.size - np.count_nonzero(indexed_roi))
+                raise RuntimeError(
+                    f"Primary ROI export requires every ROI point to be dictionary indexed; "
+                    f"{missing_count} point(s) still contain source orientations. Re-index the ROI first."
+                )
             euler_grid = np.asarray(self.current_eulers_rad, dtype=np.float64).reshape(rows, cols, 3)
             quality_grid = np.nan_to_num(np.asarray(self.last_scores_map, dtype=np.float64).reshape(rows, cols), nan=0.0)
             phase_grid = np.asarray(self.current_phases, dtype=np.int32).reshape(rows, cols)
