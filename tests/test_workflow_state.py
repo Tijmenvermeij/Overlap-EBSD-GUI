@@ -170,6 +170,36 @@ class WorkflowStateTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 WorkflowSession._parallel_worker_count(-1, 20)
 
+    def test_dictionary_batch_size_scales_with_available_memory(self) -> None:
+        session = WorkflowSession()
+        cache = SimpleNamespace(
+            pattern_shape=(64, 78),
+            rotation_count=486_755,
+        )
+        with patch.object(WorkflowSession, "_available_memory_bytes", return_value=8 * 1024**3):
+            self.assertEqual(
+                session._dictionary_index_batch_size(
+                    cache,
+                    900,
+                    n_per_iteration=26_886,
+                ),
+                900,
+            )
+            large_batch = session._dictionary_index_batch_size(
+                cache,
+                10_000,
+                n_per_iteration=26_886,
+            )
+        with patch.object(WorkflowSession, "_available_memory_bytes", return_value=256 * 1024**2):
+            constrained_batch = session._dictionary_index_batch_size(
+                cache,
+                10_000,
+                n_per_iteration=26_886,
+            )
+        self.assertGreater(large_batch, 512)
+        self.assertLessEqual(large_batch, 4096)
+        self.assertLess(constrained_batch, large_batch)
+
     def test_step4_hdf5_export_keeps_full_scan_shape_for_small_roi(self) -> None:
         session = WorkflowSession()
         session.data = SimpleNamespace(

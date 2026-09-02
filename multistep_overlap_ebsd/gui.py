@@ -61,6 +61,7 @@ class MultiStepOverlapGUI(tk.Tk):
         self.btn_refine_roi: ttk.Button | None = None
         self.btn_index_roi: ttk.Button | None = None
         self.btn_refine_indexed: ttk.Button | None = None
+        self.btn_steps_2_3_analysis: ttk.Button | None = None
         self.btn_complete_analysis: ttk.Button | None = None
         self.workflow_notebook: ttk.Notebook | None = None
         self._pending_restore_path: str | None = None
@@ -864,41 +865,63 @@ class MultiStepOverlapGUI(tk.Tk):
         ttk.Button(parent, text="Load Dictionary", command=self._load_dictionary).grid(row=6, column=1, sticky="we", pady=(4, 0))
         ttk.Label(parent, text="keep_n (top matches)").grid(row=7, column=0, sticky="w", pady=(8, 0))
         ttk.Entry(parent, textvariable=self.dictionary_keep_n_var, width=8).grid(row=7, column=1, sticky="w", pady=(8, 0))
+        automated_frame = ttk.LabelFrame(parent, text="Automated ROI Workflows", padding=8)
+        automated_frame.grid(row=8, column=0, columnspan=2, sticky="we", pady=(12, 4))
+        automated_frame.columnconfigure(0, weight=1)
+        self.btn_steps_2_3_analysis = ttk.Button(
+            automated_frame,
+            text="Run ROI Analysis — Steps 2–3 Only (Faster)",
+            command=lambda: self._run_complete_roi_analysis(include_step4=False),
+        )
+        self.btn_steps_2_3_analysis.grid(row=0, column=0, sticky="we")
+        ttk.Label(
+            automated_frame,
+            text="Indexes and refines the primary and residual orientations, then stops before Step 4.",
+            wraplength=370,
+        ).grid(row=1, column=0, sticky="w", pady=(2, 8))
         self.btn_complete_analysis = ttk.Button(
-            parent,
-            text="Run Complete ROI Analysis (Steps 2–4)",
+            automated_frame,
+            text="Run Complete ROI Analysis — Steps 2–4",
             command=self._run_complete_roi_analysis,
         )
-        self.btn_complete_analysis.grid(row=8, column=0, columnspan=2, sticky="we", pady=(8, 0))
+        self.btn_complete_analysis.grid(row=2, column=0, sticky="we")
+        ttk.Label(
+            automated_frame,
+            text="Runs Steps 2–3 and then performs the Step 4 ROI overlap-mixture optimization.",
+            wraplength=370,
+        ).grid(row=3, column=0, sticky="w", pady=(2, 8))
         ttk.Progressbar(
-            parent,
+            automated_frame,
             variable=self.complete_analysis_progress_var,
             maximum=100.0,
             mode="determinate",
-        ).grid(row=9, column=0, columnspan=2, sticky="we", pady=(4, 0))
-        ttk.Label(parent, textvariable=self.complete_analysis_status_var, wraplength=390).grid(
-            row=10, column=0, columnspan=2, sticky="w", pady=(2, 0)
+        ).grid(row=4, column=0, sticky="we")
+        ttk.Label(automated_frame, textvariable=self.complete_analysis_status_var, wraplength=370).grid(
+            row=5, column=0, sticky="w", pady=(2, 0)
         )
         ttk.Label(
-            parent,
-            text="Uses the current ROI and all indexing, refinement, residual, and mixture settings from Steps 2–4.",
-            wraplength=390,
-        ).grid(row=11, column=0, columnspan=2, sticky="w", pady=(2, 0))
-        ttk.Separator(parent, orient=tk.HORIZONTAL).grid(row=12, column=0, columnspan=2, sticky="we", pady=8)
-        ttk.Button(parent, text="Index Selected Point (NCC)", command=self._index_selected_point).grid(row=13, column=0, columnspan=2, sticky="we", pady=(6, 0))
+            automated_frame,
+            text=(
+                "Both use the current ROI and the settings in the relevant tabs. Neither workflow runs the "
+                "separate selected-point mixture-orientation refinement."
+            ),
+            wraplength=370,
+        ).grid(row=6, column=0, sticky="w", pady=(6, 0))
+        ttk.Separator(parent, orient=tk.HORIZONTAL).grid(row=9, column=0, columnspan=2, sticky="we", pady=8)
+        ttk.Button(parent, text="Index Selected Point (NCC)", command=self._index_selected_point).grid(row=10, column=0, columnspan=2, sticky="we", pady=(6, 0))
         self.btn_index_roi = ttk.Button(parent, text="Re-index ROI (NCC)", command=self._index_roi)
-        self.btn_index_roi.grid(row=14, column=0, columnspan=2, sticky="we", pady=(4, 0))
+        self.btn_index_roi.grid(row=11, column=0, columnspan=2, sticky="we", pady=(4, 0))
         ttk.Progressbar(
             parent,
             variable=self.reindex_progress_var,
             maximum=100.0,
             mode="determinate",
-        ).grid(row=15, column=0, columnspan=2, sticky="we", pady=(8, 0))
+        ).grid(row=12, column=0, columnspan=2, sticky="we", pady=(8, 0))
         ttk.Label(
             parent,
             textvariable=self.reindex_progress_status_var,
             wraplength=390,
-        ).grid(row=16, column=0, columnspan=2, sticky="w", pady=(2, 0))
+        ).grid(row=13, column=0, columnspan=2, sticky="w", pady=(2, 0))
         parent.columnconfigure(0, weight=1)
 
     def _build_overlap_tab(self, parent: ttk.Frame) -> None:
@@ -1926,6 +1949,7 @@ class MultiStepOverlapGUI(tk.Tk):
             self.btn_refine_roi,
             self.btn_index_roi,
             self.btn_refine_indexed,
+            self.btn_steps_2_3_analysis,
             self.btn_complete_analysis,
         ):
             if btn is not None:
@@ -2568,12 +2592,13 @@ class MultiStepOverlapGUI(tk.Tk):
 
         self._run_threaded(action)
 
-    def _run_complete_roi_analysis(self) -> None:
+    def _run_complete_roi_analysis(self, *, include_step4: bool = True) -> None:
+        workflow_label = "Steps 2–4" if include_step4 else "Steps 2–3"
         if self.session.data is None:
             messagebox.showerror("Error", "Load input data first.")
             return
         if self.session.dictionary_cache is None:
-            messagebox.showerror("Error", "Generate or load a dictionary before running the complete analysis.")
+            messagebox.showerror("Error", "Generate or load a dictionary before running the automated analysis.")
             return
 
         bounds = self._roi_bounds()
@@ -2589,27 +2614,29 @@ class MultiStepOverlapGUI(tk.Tk):
             fit_blur_gain = bool(self.fit_blur_gain_var.get())
             fit_maxiter = int(self.gain_fit_maxiter_var.get())
             fit_popsize = int(self.gain_fit_popsize_var.get())
-            fit_bounds = self._primary_fit_bounds()
+            fit_bounds = self._primary_fit_bounds() if fit_blur_gain or include_step4 else None
             residual_trust_euler = float(self.residual_trust_euler_var.get())
             residual_maxfev = int(self.residual_maxfev_var.get())
             residual_full_resolution = bool(self.residual_refine_full_resolution_var.get())
             step3_parallel_cores = int(self.step3_parallel_cores_var.get())
-            step4_parallel_cores = int(self.step4_parallel_cores_var.get())
+            step4_parallel_cores = int(self.step4_parallel_cores_var.get()) if include_step4 else 0
             primary_ncc_threshold = float(self._residual_ncc_threshold())
-            residual_ncc_threshold = float(self._overlap_mixture_residual_ncc_threshold())
+            residual_ncc_threshold = (
+                float(self._overlap_mixture_residual_ncc_threshold()) if include_step4 else 0.0
+            )
             write_patterns = bool(self.write_residual_patterns_var.get())
             residual_output_path = self.residual_pattern_path_var.get().strip()
         except Exception as exc:
-            messagebox.showerror("Invalid complete-analysis settings", str(exc))
+            messagebox.showerror(f"Invalid {workflow_label} analysis settings", str(exc))
             return
         if write_patterns and not residual_output_path:
             messagebox.showerror("Missing residual output", "Choose a residual-pattern file name first.")
             return
 
         self._sync_residual_keep_n_to_dictionary(keep_n)
-        self._set_complete_analysis_progress(0.0, "Preparing complete ROI analysis...")
+        self._set_complete_analysis_progress(0.0, f"Preparing ROI analysis ({workflow_label})...")
 
-        stage_count = 6
+        stage_count = 6 if include_step4 else 5
 
         def stage_progress(stage_index: int, stage_name: str, setter):
             def callback(value: float, message: str) -> None:
@@ -2627,16 +2654,35 @@ class MultiStepOverlapGUI(tk.Tk):
 
             return callback
 
-        def finish_stage(stage_index: int, stage_name: str, message: str) -> None:
+        def finish_stage(
+            stage_index: int,
+            stage_name: str,
+            message: str,
+            *,
+            map_view_index: int,
+        ) -> None:
             overall = 100.0 * (stage_index + 1) / stage_count
-            self.after(
-                0,
-                lambda: self._set_complete_analysis_progress(
-                    overall,
-                    f"{stage_index + 1}/{stage_count} {stage_name} complete.",
-                ),
-            )
-            self.after(0, lambda: self._log(f"Complete ROI analysis — {stage_name}: {message}"))
+            refresh_complete = threading.Event()
+
+            def update_and_refresh() -> None:
+                try:
+                    self._set_complete_analysis_progress(
+                        overall,
+                        f"{stage_index + 1}/{stage_count} {stage_name} complete.",
+                    )
+                    self._log(f"ROI analysis {workflow_label} — {stage_name}: {message}")
+                    self._refresh_complete_analysis_maps(map_view_index)
+                except Exception:
+                    self._log(
+                        f"Intermediate map refresh failed after {stage_name}:\n{traceback.format_exc()}"
+                    )
+                finally:
+                    refresh_complete.set()
+
+            self.after(0, update_and_refresh)
+            # Do not let the next numerical stage mutate session maps until
+            # the GUI has drawn this completed stage's intermediate result.
+            refresh_complete.wait()
 
         def execute() -> str:
             primary_index_msg = self.session.dictionary_index_indices(
@@ -2646,7 +2692,9 @@ class MultiStepOverlapGUI(tk.Tk):
                 resolution_deg=resolution_deg,
                 progress_callback=stage_progress(0, "Primary indexing", self._set_reindex_progress),
             )
-            finish_stage(0, "Primary indexing", primary_index_msg)
+            self.last_overlap = None
+            self.last_overlap_mixture = None
+            finish_stage(0, "Primary indexing", primary_index_msg, map_view_index=1)
 
             primary_refine_msg = self.session.refine_orientations_indices(
                 roi_indices,
@@ -2656,7 +2704,7 @@ class MultiStepOverlapGUI(tk.Tk):
                 use_full_resolution=primary_full_resolution,
                 progress_callback=stage_progress(1, "Primary refinement", self._set_refinement_progress),
             )
-            finish_stage(1, "Primary refinement", primary_refine_msg)
+            finish_stage(1, "Primary refinement", primary_refine_msg, map_view_index=1)
 
             eligible_primary: list[int] = []
             for idx in roi_indices.tolist():
@@ -2685,7 +2733,9 @@ class MultiStepOverlapGUI(tk.Tk):
                 ),
                 progress_callback=stage_progress(2, "Residual generation", self._set_overlap_progress),
             )
-            finish_stage(2, "Residual generation", residual_generation_msg)
+            if np.any(residual_indices == selected_index):
+                self.last_overlap = self.session.get_residual_point_result(selected_index)
+            finish_stage(2, "Residual generation", residual_generation_msg, map_view_index=2)
 
             residual_index_msg = self.session.index_overlap_residual_indices(
                 residual_indices,
@@ -2696,7 +2746,9 @@ class MultiStepOverlapGUI(tk.Tk):
                 ),
                 progress_callback=stage_progress(3, "Residual indexing", self._set_overlap_progress),
             )
-            finish_stage(3, "Residual indexing", residual_index_msg)
+            if np.any(residual_indices == selected_index):
+                self.last_overlap = self.session.get_residual_point_result(selected_index)
+            finish_stage(3, "Residual indexing", residual_index_msg, map_view_index=2)
 
             residual_refine_msg = self.session.refine_overlap_residual_indices(
                 residual_indices,
@@ -2709,7 +2761,25 @@ class MultiStepOverlapGUI(tk.Tk):
                 ),
                 progress_callback=stage_progress(4, "Residual refinement", self._set_overlap_progress),
             )
-            finish_stage(4, "Residual refinement", residual_refine_msg)
+            if np.any(residual_indices == selected_index):
+                self.last_overlap = self.session.get_residual_point_result(selected_index)
+            finish_stage(4, "Residual refinement", residual_refine_msg, map_view_index=2)
+
+            if not include_step4:
+                self.last_overlap_mixture = None
+                self.after(
+                    0,
+                    lambda: self._set_complete_analysis_progress(
+                        100.0,
+                        "Steps 2–3 ROI analysis finished successfully.",
+                    ),
+                )
+                return (
+                    f"Steps 2–3 ROI analysis finished for {roi_indices.size} point(s): re-indexed and refined "
+                    f"the primary orientations, then generated, indexed, and refined {residual_indices.size} "
+                    f"residual(s). Skipped {skipped_primary} point(s) at the primary NCC threshold. "
+                    "Step 4 mixture fitting was not run."
+                )
 
             mixture_indices: list[int] = []
             for idx in residual_indices.tolist():
@@ -2737,7 +2807,9 @@ class MultiStepOverlapGUI(tk.Tk):
                 ),
                 progress_callback=stage_progress(5, "Overlap optimization", self._set_overlap_optimization_progress),
             )
-            finish_stage(5, "Overlap optimization", mixture_msg)
+            if np.any(overlap_indices == selected_index):
+                self.last_overlap_mixture = self.session.get_overlap_mixture_result(selected_index)
+            finish_stage(5, "Overlap optimization", mixture_msg, map_view_index=3)
 
             if np.any(residual_indices == selected_index):
                 selected_residual = self.session.get_residual_point_result(selected_index)
@@ -2771,7 +2843,7 @@ class MultiStepOverlapGUI(tk.Tk):
                 self.after(
                     0,
                     lambda error_message=error_message: self.complete_analysis_status_var.set(
-                        f"Complete ROI analysis stopped: {error_message}"
+                        f"ROI analysis {workflow_label} stopped: {error_message}"
                     ),
                 )
                 raise
@@ -3444,10 +3516,25 @@ class MultiStepOverlapGUI(tk.Tk):
         self._safe_tight_layout(self.figure)
         self.canvas.draw_idle()
 
-    def _refresh_plot(self) -> None:
-        view_index = 0
+    def _refresh_complete_analysis_maps(self, stage_view_index: int) -> None:
+        active_view = 0
         if self.workflow_notebook is not None:
-            view_index = int(self.workflow_notebook.index(self.workflow_notebook.select()))
+            active_view = int(self.workflow_notebook.index(self.workflow_notebook.select()))
+        # Always redraw the visible map and the tab whose state changed. This
+        # keeps intermediate results ready even when that tab is not selected.
+        for view_index in dict.fromkeys((active_view, int(stage_view_index))):
+            self._refresh_plot(view_index=view_index)
+            canvas = self._plot_views[view_index].get("canvas")
+            if canvas is not None:
+                canvas.draw()
+        self._activate_plot_view(active_view)
+
+    def _refresh_plot(self, view_index: int | None = None) -> None:
+        if view_index is None:
+            view_index = 0
+            if self.workflow_notebook is not None:
+                view_index = int(self.workflow_notebook.index(self.workflow_notebook.select()))
+        view_index = int(view_index)
         self._activate_plot_view(view_index)
         if self._roi_drag_patch is not None:
             self._cancel_roi_drag()

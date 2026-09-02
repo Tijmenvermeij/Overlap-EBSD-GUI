@@ -23,6 +23,12 @@ DICTIONARY_FORMAT_V2 = "overlap-ebsd-kikuchipy-dictionary-v2"
 DICTIONARY_PATTERN_DTYPE = np.dtype(np.uint8)
 DICTIONARY_H5_CHUNK_PATTERNS = 128
 DICTIONARY_LAZY_CHUNK_PATTERNS = 8192
+DICTIONARY_INDEX_MAX_BATCH_PATTERNS = 4096
+DICTIONARY_INDEX_MIN_EXTRA_MEMORY = 128 * 1024**2
+DICTIONARY_INDEX_MAX_EXTRA_MEMORY = 512 * 1024**2
+# Eager refinement batches otherwise remain one serial Dask task. Let
+# Kikuchipy split them into navigation chunks for its threaded scheduler.
+KIKUCHIPY_PARALLEL_REFINEMENT_RECHUNK = True
 STEP4_RESULTS_FORMAT = "overlap-ebsd-step4-results-v1"
 
 
@@ -3582,18 +3588,65 @@ class WorkflowSession:
             candidate_scores,
         )
 
-    def _dictionary_index_batch_size(self, cache: DictionaryCache, selected_count: int) -> int:
-        bytes_per_pattern = max(
+    @staticmethod
+    def _available_memory_bytes() -> int:
+        try:
+            import psutil
+
+            available = int(psutil.virtual_memory().available)
+            if available > 0:
+                return available
+        except Exception:
+            pass
+        try:
+            total = int(os.sysconf("SC_PHYS_PAGES")) * int(os.sysconf("SC_PAGE_SIZE"))
+            if total > 0:
+                # Total memory is only a fallback. Treat one quarter as
+                # available so batch sizing stays conservative under load.
+                return max(1, total // 4)
+        except (AttributeError, OSError, TypeError, ValueError):
+            pass
+        return 4 * 1024**3
+
+    def _dictionary_index_batch_size(
+        self,
+        cache: DictionaryCache,
+        selected_count: int,
+        *,
+        n_per_iteration: int | None = None,
+    ) -> int:
+        pattern_float_bytes = max(
             1,
             int(cache.pattern_shape[0] * cache.pattern_shape[1] * np.dtype(np.float32).itemsize),
         )
-        by_pattern_memory = int((128 * 1024**2) / bytes_per_pattern)
+        dictionary_iteration = max(
+            1,
+            min(
+                int(cache.rotation_count),
+                int(n_per_iteration) if n_per_iteration is not None else int(cache.rotation_count),
+            ),
+        )
+        # Each experimental pattern adds its prepared float values plus
+        # one score per dictionary pattern in the current iteration.
+        # Reserve two score arrays for Dask's top-k graph/intermediates.
+        bytes_per_experimental = pattern_float_bytes + (
+            2 * dictionary_iteration * np.dtype(np.float32).itemsize
+        )
+        available = self._available_memory_bytes()
+        extra_memory_budget = int(
+            np.clip(
+                0.05 * available,
+                DICTIONARY_INDEX_MIN_EXTRA_MEMORY,
+                DICTIONARY_INDEX_MAX_EXTRA_MEMORY,
+            )
+        )
+        by_memory = max(1, int(extra_memory_budget / max(1, bytes_per_experimental)))
         return max(
             1,
             min(
                 int(selected_count),
-                512,
-                max(1, by_pattern_memory),
+                DICTIONARY_INDEX_MAX_BATCH_PATTERNS,
+                by_memory,
             ),
         )
 
@@ -4396,7 +4449,11 @@ class WorkflowSession:
             self._reset_indexed_candidate_cache(keep_n)
         signal_mask = self._signal_mask_for_dictionary_cache(cache)
         n_per_iteration = self._dictionary_n_per_iteration(cache, signal_mask)
-        batch_size = self._dictionary_index_batch_size(cache, int(indices.size))
+        batch_size = self._dictionary_index_batch_size(
+            cache,
+            int(indices.size),
+            n_per_iteration=n_per_iteration,
+        )
         total_batches = int(np.ceil(indices.size / batch_size))
 
         for batch_number, start in enumerate(range(0, indices.size, batch_size), start=1):
@@ -4776,7 +4833,7 @@ class WorkflowSession:
                     method="minimize",
                     method_kwargs=dict(method="Nelder-Mead", options=dict(maxfev=int(maxfev), disp=False)),
                     compute=True,
-                    rechunk=self._dictionary_rechunk_enabled(signal),
+                    rechunk=KIKUCHIPY_PARALLEL_REFINEMENT_RECHUNK,
                 )
                 refined_eulers = np.asarray(refined.rotations.to_euler(), dtype=np.float64).reshape(
                     batch_indices.size, candidate_count, 3
@@ -4831,7 +4888,7 @@ class WorkflowSession:
                     method="minimize",
                     method_kwargs=dict(method="Nelder-Mead", options=dict(maxfev=int(maxfev), disp=False)),
                     compute=True,
-                    rechunk=self._dictionary_rechunk_enabled(signal),
+                    rechunk=KIKUCHIPY_PARALLEL_REFINEMENT_RECHUNK,
                 )
                 eulers = np.asarray(refined.rotations.to_euler(), dtype=np.float64).reshape(-1, 3)[: batch_indices.size]
                 self.current_eulers_rad[batch_indices] = self._eulers_from_kikuchipy_frame(eulers)
@@ -5115,7 +5172,11 @@ class WorkflowSession:
         residual_results = self.residual_point_results if residual_results is None else residual_results
         signal_mask = self._signal_mask_for_dictionary_cache(cache)
         n_per_iteration = self._dictionary_n_per_iteration(cache, signal_mask)
-        batch_size = self._dictionary_index_batch_size(cache, int(selected.size))
+        batch_size = self._dictionary_index_batch_size(
+            cache,
+            int(selected.size),
+            n_per_iteration=n_per_iteration,
+        )
         total_batches = int(np.ceil(selected.size / batch_size))
 
         for batch_number, start in enumerate(range(0, selected.size, batch_size), start=1):
@@ -5266,7 +5327,7 @@ class WorkflowSession:
                 method="minimize",
                 method_kwargs=dict(method="Nelder-Mead", options=dict(maxfev=int(maxfev), disp=False)),
                 compute=True,
-                rechunk=self._dictionary_rechunk_enabled(signal),
+                rechunk=KIKUCHIPY_PARALLEL_REFINEMENT_RECHUNK,
             )
             refined_euler_arr = np.asarray(refined.rotations.to_euler(), dtype=np.float64).reshape(candidate_count, 3)
             refined_scores = np.asarray(refined.prop.get("scores", np.full(candidate_count, np.nan)), dtype=np.float64).reshape(-1)
@@ -5325,7 +5386,7 @@ class WorkflowSession:
                 method="minimize",
                 method_kwargs=dict(method="Nelder-Mead", options=dict(maxfev=int(maxfev), disp=False)),
                 compute=True,
-                rechunk=self._dictionary_rechunk_enabled(signal),
+                rechunk=KIKUCHIPY_PARALLEL_REFINEMENT_RECHUNK,
             )
             refined_kp_euler = np.asarray(refined.rotations.to_euler(), dtype=np.float64).reshape(-1, 3)[0]
             refined_scores = np.asarray(refined.prop.get("scores", np.full(2, np.nan)), dtype=np.float64).reshape(-1)
@@ -5485,7 +5546,7 @@ class WorkflowSession:
                 method="minimize",
                 method_kwargs=dict(method="Nelder-Mead", options=dict(maxfev=int(maxfev), disp=False)),
                 compute=True,
-                rechunk=self._dictionary_rechunk_enabled(signal),
+                rechunk=KIKUCHIPY_PARALLEL_REFINEMENT_RECHUNK,
             )
 
             refined_euler_arr = np.asarray(refined.rotations.to_euler(), dtype=np.float64).reshape(
@@ -5563,7 +5624,7 @@ class WorkflowSession:
             method="minimize",
             method_kwargs=dict(method="Nelder-Mead", options=dict(maxfev=int(maxfev), disp=False)),
             compute=True,
-            rechunk=self._dictionary_rechunk_enabled(signal),
+            rechunk=KIKUCHIPY_PARALLEL_REFINEMENT_RECHUNK,
         )
 
         refined_euler_arr = np.asarray(refined.rotations.to_euler(), dtype=np.float64).reshape(-1, 3)
