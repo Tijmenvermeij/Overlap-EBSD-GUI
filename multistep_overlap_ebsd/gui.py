@@ -1736,6 +1736,19 @@ class MultiStepOverlapGUI(tk.Tk):
             self.ipf_direction_var.set(direction)
         return direction.lower(), f"IPF-{direction}"
 
+    @staticmethod
+    def _draw_inspection_marker(ax, *, row: int, col: int, ipf: bool) -> object:
+        """Mark an axis as scan-selectable and draw its current inspection point."""
+        setattr(ax, "_overlap_ebsd_scan_map", True)
+        return ax.scatter(
+            [col],
+            [row],
+            marker="+",
+            color="black" if ipf else "red",
+            s=180,
+            linewidths=2.0,
+        )
+
     def _residual_ipf_ncc_threshold(self) -> float:
         try:
             return float(str(self.residual_ipf_ncc_var.get()).strip())
@@ -3556,6 +3569,7 @@ class MultiStepOverlapGUI(tk.Tk):
         for ax in self.axes.flat:
             ax.clear()
             ax.set_axis_off()
+            setattr(ax, "_overlap_ebsd_scan_map", False)
 
         data = self.session.data
         row = max(0, min(int(self.row_var.get()), data.rows - 1))
@@ -3600,7 +3614,12 @@ class MultiStepOverlapGUI(tk.Tk):
             else:
                 vmin, vmax = 0.0, 1.0
             ax_map.imshow(m, cmap=cmap, origin="upper", vmin=vmin, vmax=vmax)
-        ax_map.scatter([col], [row], marker="+", color="red", s=160, linewidths=2.0)
+        self._draw_inspection_marker(
+            ax_map,
+            row=row,
+            col=col,
+            ipf=str(layer).strip().upper().startswith("IPF"),
+        )
         if self.session.calibration_indices:
             calibration_rc = np.asarray(
                 [self.session.row_col_from_index(i) for i in self.session.calibration_indices],
@@ -3728,6 +3747,7 @@ class MultiStepOverlapGUI(tk.Tk):
         if self.session.last_scores_map is not None:
             sm = self.session.last_scores_map
             self.axes[1, 2].imshow(sm, cmap="viridis", origin="upper")
+            self._draw_inspection_marker(self.axes[1, 2], row=row, col=col, ipf=False)
             self.axes[1, 2].set_title("Latest KP Score Map")
             self.axes[1, 2].set_axis_off()
 
@@ -3813,10 +3833,9 @@ class MultiStepOverlapGUI(tk.Tk):
         def _draw_rgb(ax, image: np.ndarray | None, title: str, *, zoom: bool) -> None:
             if image is None:
                 ax.text(0.5, 0.5, "No IPF available", ha="center", va="center")
-                ax.set_title(title)
-                return
-            ax.imshow(np.clip(np.asarray(image, dtype=np.float32), 0.0, 1.0), origin="upper")
-            ax.scatter([col], [row], marker="+", color="red", s=180, linewidths=2.0)
+            else:
+                ax.imshow(np.clip(np.asarray(image, dtype=np.float32), 0.0, 1.0), origin="upper")
+            self._draw_inspection_marker(ax, row=row, col=col, ipf=True)
             if zoom:
                 ax.set_xlim(*xlim_roi)
                 ax.set_ylim(*ylim_roi)
@@ -3848,10 +3867,9 @@ class MultiStepOverlapGUI(tk.Tk):
         ) -> None:
             if image is None:
                 ax.text(0.5, 0.5, "Run indexing to populate", ha="center", va="center")
-                ax.set_title(title)
-                return
-            ax.imshow(np.asarray(image, dtype=np.float32), cmap=cmap, origin="upper", vmin=vmin, vmax=vmax)
-            ax.scatter([col], [row], marker="+", color="red", s=180, linewidths=2.0)
+            else:
+                ax.imshow(np.asarray(image, dtype=np.float32), cmap=cmap, origin="upper", vmin=vmin, vmax=vmax)
+            self._draw_inspection_marker(ax, row=row, col=col, ipf=False)
             if zoom:
                 ax.set_xlim(*xlim_roi)
                 ax.set_ylim(*ylim_roi)
@@ -3968,7 +3986,7 @@ class MultiStepOverlapGUI(tk.Tk):
                 ax.imshow(np.clip(image, 0.0, 1.0), origin="upper")
             else:
                 ax.text(0.5, 0.5, placeholder, ha="center", va="center")
-            ax.scatter([col], [row], marker="+", color="red", s=180, linewidths=2.0)
+            self._draw_inspection_marker(ax, row=row, col=col, ipf=True)
             ax.add_patch(
                 Rectangle(
                     (c0 - 0.5, r0 - 0.5),
@@ -3985,7 +4003,7 @@ class MultiStepOverlapGUI(tk.Tk):
             ax.set_axis_off()
 
         def _decorate_score_axis(ax) -> None:
-            ax.scatter([col], [row], marker="+", color="red", s=180, linewidths=2.0)
+            self._draw_inspection_marker(ax, row=row, col=col, ipf=False)
             ax.add_patch(
                 Rectangle(
                     (c0 - 0.5, r0 - 0.5),
@@ -4245,7 +4263,7 @@ class MultiStepOverlapGUI(tk.Tk):
                 ax.imshow(np.clip(image, 0.0, 1.0), origin="upper")
             else:
                 ax.text(0.5, 0.5, placeholder, ha="center", va="center")
-            ax.scatter([col], [row], marker="+", color="red", s=180, linewidths=2.0)
+            self._draw_inspection_marker(ax, row=row, col=col, ipf=True)
             ax.add_patch(
                 Rectangle(
                     (c0 - 0.5, r0 - 0.5),
@@ -4267,7 +4285,7 @@ class MultiStepOverlapGUI(tk.Tk):
                 ax.imshow(masked, cmap="viridis", origin="upper", vmin=0.0, vmax=1.0)
             else:
                 ax.text(0.5, 0.5, "Fit ROI mixture", ha="center", va="center")
-            ax.scatter([col], [row], marker="+", color="red", s=180, linewidths=2.0)
+            self._draw_inspection_marker(ax, row=row, col=col, ipf=False)
             ax.add_patch(
                 Rectangle(
                     (c0 - 0.5, r0 - 0.5),
@@ -4402,14 +4420,11 @@ class MultiStepOverlapGUI(tk.Tk):
             return
         if active_view == 1 and self._maybe_begin_roi_drag(event, active_view):
             return
-        if active_view == 1:
-            allowed_axes = [ax for ax in np.asarray(self.axes, dtype=object).flat]
-        elif active_view == 3 and self.axes.shape == (2, 4):
-            allowed_axes = [self.axes[0, 0], self.axes[0, 1], self.axes[1, 2], self.axes[1, 3]]
-        elif active_view == 2 and self.axes.shape[1] > 1:
-            allowed_axes = [self.axes[0, 0], self.axes[0, 1]]
-        else:
-            allowed_axes = [self.axes[0, 0]]
+        allowed_axes = [
+            ax
+            for ax in np.asarray(self.axes, dtype=object).flat
+            if bool(getattr(ax, "_overlap_ebsd_scan_map", False))
+        ]
         if event.inaxes not in allowed_axes:
             return
         if event.xdata is None or event.ydata is None:

@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import numpy as np
+from matplotlib.figure import Figure
 
 from multistep_overlap_ebsd.gui import RESIDUAL_PATTERN_CMAP, MultiStepOverlapGUI
 
@@ -30,6 +31,66 @@ class IpfDirectionSelectorTests(unittest.TestCase):
         self.variable.set("invalid")
         self.assertEqual(MultiStepOverlapGUI._selected_ipf_direction(self.gui_stub), ("z", "IPF-Z"))
         self.assertEqual(self.variable.get(), "Z")
+
+    def test_inspection_marker_is_black_on_ipf_and_red_on_quality_maps(self) -> None:
+        figure = Figure()
+        ipf_ax, quality_ax = figure.subplots(1, 2)
+
+        ipf_marker = MultiStepOverlapGUI._draw_inspection_marker(
+            ipf_ax,
+            row=1,
+            col=2,
+            ipf=True,
+        )
+        quality_marker = MultiStepOverlapGUI._draw_inspection_marker(
+            quality_ax,
+            row=1,
+            col=2,
+            ipf=False,
+        )
+
+        np.testing.assert_allclose(ipf_marker.get_edgecolors()[0, :3], (0.0, 0.0, 0.0))
+        np.testing.assert_allclose(quality_marker.get_edgecolors()[0, :3], (1.0, 0.0, 0.0))
+        self.assertTrue(getattr(ipf_ax, "_overlap_ebsd_scan_map"))
+        self.assertTrue(getattr(quality_ax, "_overlap_ebsd_scan_map"))
+
+    def test_clicking_any_tagged_map_moves_the_inspection_point(self) -> None:
+        figure = Figure()
+        axes = figure.subplots(2, 4)
+        residual_score_ax = axes[1, 3]
+        pattern_ax = axes[0, 2]
+        MultiStepOverlapGUI._draw_inspection_marker(
+            residual_score_ax,
+            row=0,
+            col=0,
+            ipf=False,
+        )
+        row_updates: list[int] = []
+        col_updates: list[int] = []
+        sync_index = Mock()
+        gui_stub = SimpleNamespace(
+            session=SimpleNamespace(data=SimpleNamespace(rows=5, cols=6)),
+            axes=axes,
+            row_var=SimpleNamespace(set=lambda value: row_updates.append(int(value))),
+            col_var=SimpleNamespace(set=lambda value: col_updates.append(int(value))),
+            _activate_plot_view=lambda _view_index: None,
+            _sync_index_from_row_col=sync_index,
+        )
+
+        MultiStepOverlapGUI._on_plot_click(
+            gui_stub,
+            SimpleNamespace(inaxes=residual_score_ax, xdata=3.2, ydata=1.7),
+            view_index=2,
+        )
+        MultiStepOverlapGUI._on_plot_click(
+            gui_stub,
+            SimpleNamespace(inaxes=pattern_ax, xdata=1.0, ydata=1.0),
+            view_index=2,
+        )
+
+        self.assertEqual(row_updates, [2])
+        self.assertEqual(col_updates, [3])
+        sync_index.assert_called_once_with()
 
     def test_close_waits_for_active_worker(self) -> None:
         gui_stub = SimpleNamespace(
