@@ -10,6 +10,7 @@ import h5py
 import numpy as np
 
 from multistep_overlap_ebsd.core import (
+    GeometryConfig,
     MASTER_ENERGY_MODE_GLOBAL,
     OverlapMixtureResult,
     OverlapPointResult,
@@ -206,6 +207,11 @@ class WorkflowStateTests(unittest.TestCase):
             ".h5oina",
         )
         self.assertEqual(path.name, "primary_roi.h5oina")
+        mixed = _output_path_with_single_suffix(
+            str(self.root / "primary_roi.h5oina.ang"),
+            ".h5oina",
+        )
+        self.assertEqual(mixed.name, "primary_roi.h5oina")
 
     def test_pattern_bearing_h5oina_copy_keeps_every_pattern_without_filters(self) -> None:
         source = self.root / "source.h5oina"
@@ -238,6 +244,54 @@ class WorkflowStateTests(unittest.TestCase):
             self.assertIsNone(copied.compression)
             self.assertFalse(copied.shuffle)
             self.assertNotIn("1/EBSD/Data/Unprocessed Patterns", h5)
+
+    def test_loading_gui_export_restores_dictionary_indexed_ncc_state(self) -> None:
+        source = self.root / "gui_primary_export.h5oina"
+        scores = np.array([0.8, 0.7, 0.0, 0.0, 0.6, 0.0], dtype=np.float32)
+        roi_mask = np.array([1, 1, 0, 0, 1, 0], dtype=np.uint8)
+        phases = np.array([1, 1, 0, 0, 1, 0], dtype=np.int32)
+        with h5py.File(source, "w") as h5:
+            h5.create_dataset("1/EBSD/Data/Processed Patterns", data=np.zeros((2, 3, 3, 4), dtype=np.uint8))
+            h5.create_dataset("1/Data Processing/Data/Euler", data=np.zeros((6, 3), dtype=np.float64))
+            h5.create_dataset("1/Data Processing/Data/Phase", data=phases)
+            h5.create_dataset(
+                "1/Data Processing/Pattern Matching/Data/Cross Correlation Coefficient",
+                data=scores,
+            )
+            export_group = h5.require_group("1/Data Processing/Overlap EBSD Indexing/Data")
+            export_group.attrs["Export Type"] = "primary"
+            export_group.create_dataset("ROI Mask", data=roi_mask)
+            export_group.create_dataset("Primary NCC", data=scores)
+
+        detector = SimpleNamespace(
+            sample_tilt=70.0,
+            tilt=0.0,
+            azimuthal=0.0,
+            twist=0.0,
+            px_size=1.0,
+            binning=1.0,
+            pc_bruker=lambda: np.full((6, 3), 0.5, dtype=np.float64),
+            pc_oxford=lambda: np.full((6, 3), 0.6, dtype=np.float64),
+        )
+        axis = SimpleNamespace(scale=1.0, units="um")
+        signal = SimpleNamespace(
+            data=np.zeros((2, 3, 3, 4), dtype=np.uint8),
+            detector=detector,
+            axes_manager=SimpleNamespace(navigation_axes=[axis, axis]),
+            xmap=None,
+        )
+        session = WorkflowSession()
+        with patch("kikuchipy.load", return_value=signal):
+            message = session.load_input(str(source), None, GeometryConfig())
+
+        np.testing.assert_array_equal(
+            session.indexed_mask,
+            np.array([True, True, False, False, True, False]),
+        )
+        np.testing.assert_array_equal(session.last_indexed_indices, np.array([0, 1, 4]))
+        np.testing.assert_allclose(session.last_scores_map.reshape(-1)[[0, 1, 4]], [0.8, 0.7, 0.6])
+        self.assertTrue(np.all(np.isnan(session.last_scores_map.reshape(-1)[[2, 3, 5]])))
+        self.assertIn("Restored 3 dictionary-indexed point(s)", message)
 
     def test_residual_writer_preserves_points_without_residual_and_commits_atomically(self) -> None:
         source = self.root / "source.h5oina"
@@ -357,6 +411,67 @@ class WorkflowStateTests(unittest.TestCase):
                 marker_group.attrs["Residual Pattern Encoding"],
                 "overlap-ebsd-residual-patterns-v1",
             )
+
+        primary_output = self.root / "exported_primary.h5oina"
+        session.indexed_mask = np.ones(6, dtype=bool)
+        session.export_primary_roi_results(
+            (0, 0, 2, 3),
+            str(primary_output),
+            include_primary_patterns=True,
+        )
+        with h5py.File(primary_output, "r") as h5:
+            np.testing.assert_array_equal(h5[pattern_path][()], primary_patterns)
+            export_group = h5["1/Data Processing/Overlap EBSD Indexing/Data"]
+            self.assertEqual(int(export_group.attrs["Primary Patterns Included"]), 1)
+
+    def test_primary_ang_export_can_include_companion_patterns_and_forces_ang_suffix(self) -> None:
+        source_up = self.root / "source.up1"
+        source_up.write_bytes(b"UP-pattern-payload")
+        source_ang = self.root / "source.ang"
+        source_ang.write_text(
+            "# synthetic ANG\n"
+            "0 0 0 0 0 1 0.1 1\n"
+            "0 0 0 1 0 1 0.2 1\n",
+            encoding="utf-8",
+        )
+        reader = SimpleNamespace(
+            path=str(source_up),
+            dtype=np.dtype(np.uint8),
+            pattern_offset=0,
+            n_patterns=2,
+            h=1,
+            w=1,
+        )
+        session = WorkflowSession()
+        session.data = SimpleNamespace(
+            # The file extension remains authoritative even if stale state
+            # reports the wrong source type.
+            source_type="h5oina",
+            pattern_path=str(source_up),
+            orientation_path=str(source_ang),
+            rows=1,
+            cols=2,
+            count=2,
+            ang_angles_were_degrees=False,
+            up_pattern_reader=reader,
+        )
+        session.current_eulers_rad = np.zeros((2, 3), dtype=np.float64)
+        session.current_phases = np.ones(2, dtype=np.int32)
+        session.last_scores_map = np.array([[0.8, 0.7]], dtype=np.float32)
+        session.indexed_mask = np.ones(2, dtype=bool)
+
+        requested = self.root / "primary_result.h5oina"
+        session.export_primary_roi_results(
+            (0, 0, 1, 2),
+            str(requested),
+            include_primary_patterns=True,
+        )
+
+        actual_ang = self.root / "primary_result.ang"
+        actual_up = self.root / "primary_result.up1"
+        self.assertTrue(actual_ang.is_file())
+        self.assertFalse(requested.exists())
+        self.assertEqual(actual_up.read_bytes(), source_up.read_bytes())
 
     def test_parallel_core_count_zero_means_all_available(self) -> None:
         with patch("multistep_overlap_ebsd.core.os.cpu_count", return_value=8):

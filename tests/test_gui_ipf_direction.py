@@ -132,6 +132,24 @@ class IpfDirectionSelectorTests(unittest.TestCase):
         stem = MultiStepOverlapGUI._source_stem(Path("map.h5oina.h5oina"))
         self.assertEqual(stem, "map")
 
+    def test_roi_export_suffix_follows_pattern_file_even_if_state_is_stale(self) -> None:
+        h5_gui = SimpleNamespace(
+            session=SimpleNamespace(
+                data=SimpleNamespace(pattern_path="/tmp/map.h5oina", source_type="up_ang")
+            )
+        )
+        up_gui = SimpleNamespace(
+            session=SimpleNamespace(
+                data=SimpleNamespace(pattern_path="/tmp/map.up1", source_type="h5oina")
+            )
+        )
+        self.assertEqual(MultiStepOverlapGUI._roi_export_suffix(h5_gui), ".h5oina")
+        self.assertEqual(MultiStepOverlapGUI._roi_export_suffix(up_gui), ".ang")
+        self.assertEqual(
+            MultiStepOverlapGUI._path_with_single_suffix("/tmp/map.h5oina.ang", ".h5oina").name,
+            "map.h5oina",
+        )
+
     def test_primary_and_residual_save_dialogs_do_not_double_h5oina_extension(self) -> None:
         def path_var(default: str):
             value = [default]
@@ -228,6 +246,7 @@ class IpfDirectionSelectorTests(unittest.TestCase):
         picker = Mock(return_value="/tmp/map_primary_roi.h5oina")
         gui_stub = SimpleNamespace(
             session=session,
+            include_primary_patterns_export_var=SimpleNamespace(get=lambda: True),
             _roi_bounds=Mock(return_value=(0, 0, 2, 3)),
             _browse_primary_roi_export=picker,
             _set_overlap_progress=Mock(),
@@ -238,10 +257,10 @@ class IpfDirectionSelectorTests(unittest.TestCase):
         MultiStepOverlapGUI._export_primary_roi_map(gui_stub)
 
         picker.assert_called_once_with()
-        session.export_primary_roi_results.assert_called_once_with(
-            (0, 0, 2, 3),
-            "/tmp/map_primary_roi.h5oina",
-        )
+        call = session.export_primary_roi_results.call_args
+        self.assertEqual(call.args, ((0, 0, 2, 3), "/tmp/map_primary_roi.h5oina"))
+        self.assertTrue(call.kwargs["include_primary_patterns"])
+        self.assertTrue(callable(call.kwargs["progress_callback"]))
 
     def test_residual_export_forwards_progress_to_overlap_progress_bar(self) -> None:
         def export(*_args, **kwargs):

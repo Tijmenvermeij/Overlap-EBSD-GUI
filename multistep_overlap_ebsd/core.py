@@ -78,13 +78,10 @@ def _output_path_with_single_suffix(output_path: str, suffix: str) -> Path:
     out = Path(output_path).expanduser().resolve()
     suffix = suffix.lower()
     name = out.name
-    doubled = suffix + suffix
-    while name.lower().endswith(doubled):
-        name = name[: -len(suffix)]
-    out = out.with_name(name)
-    if out.suffix.lower() != suffix:
-        out = out.with_suffix(suffix)
-    return out
+    known_export_suffixes = {".ang", ".h5oina", suffix}
+    while Path(name).suffix.lower() in known_export_suffixes:
+        name = Path(name).stem
+    return out.with_name(name + suffix)
 
 MAP_LAYER_CANDIDATES: dict[str, list[str]] = {
     "BC": ["EBSD/Data/Band Contrast"],
@@ -385,6 +382,49 @@ def _h5_verified_residual_pattern_mask(
         values = np.asarray(group["Residual Pattern Available"][()], dtype=bool).reshape(-1)
         if values.size == int(expected_count):
             return values
+    return None
+
+
+def _h5_overlap_export_indexing_state(
+    h5_file: h5py.File,
+    *,
+    roots: list[str] | None,
+    rows: int,
+    cols: int,
+    phases: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, str] | None:
+    """Read dictionary-indexed ROI state written by this GUI's H5OINA export."""
+    expected = int(rows * cols)
+    search_roots = roots if roots is not None else _h5oina_analysis_roots(h5_file)
+    for root in search_roots:
+        group_path = f"{root}/{H5OINA_EXPORT_DATA_GROUP}" if root else H5OINA_EXPORT_DATA_GROUP
+        if group_path not in h5_file:
+            continue
+        group = h5_file[group_path]
+        export_type_value = group.attrs.get("Export Type", "")
+        if isinstance(export_type_value, bytes):
+            export_type_value = export_type_value.decode("utf-8", errors="replace")
+        export_type = str(export_type_value).strip().lower()
+        if export_type not in {"primary", "residual"} or "ROI Mask" not in group:
+            continue
+        roi_mask = np.asarray(group["ROI Mask"][()], dtype=bool).reshape(-1)
+        if roi_mask.size != expected:
+            continue
+        score_name = "Residual NCC" if export_type == "residual" else "Primary NCC"
+        if score_name in group:
+            source_scores = np.asarray(group[score_name][()], dtype=np.float32).reshape(-1)
+        else:
+            ncc_path = f"{root}/{H5OINA_NCC_DATASET}" if root else H5OINA_NCC_DATASET
+            if ncc_path not in h5_file:
+                continue
+            source_scores = np.asarray(h5_file[ncc_path][()], dtype=np.float32).reshape(-1)
+        if source_scores.size != expected:
+            continue
+        phase_values = np.asarray(phases, dtype=np.int32).reshape(-1)
+        indexed = roi_mask & (phase_values > 0) & np.isfinite(source_scores)
+        scores = np.full(expected, np.nan, dtype=np.float32)
+        scores[indexed] = source_scores[indexed]
+        return scores.reshape(rows, cols), indexed, export_type
     return None
 
 
@@ -1477,7 +1517,7 @@ def _copy_patterns_to_up1(source_reader: UPPatternReader, output_path: Path) -> 
     source = Path(source_reader.path).expanduser().resolve()
     output = Path(output_path).expanduser().resolve()
     if source == output:
-        raise ValueError("Residual UP1 export path must be different from the source pattern file.")
+        raise ValueError("Companion UP1 export path must be different from the source pattern file.")
     output.parent.mkdir(parents=True, exist_ok=True)
 
     if np.dtype(source_reader.dtype) == np.dtype(np.uint8):
@@ -3195,6 +3235,7 @@ class WorkflowSession:
             s = kp.load(p, lazy=True)
             rows, cols, h, w = map(int, s.data.shape)
             expected = rows * cols
+            loaded_indexing_state: tuple[np.ndarray, np.ndarray, str] | None = None
             with h5py.File(p, "r") as f:
                 roots = _h5oina_matching_roots(f, rows=rows, cols=cols, h=h, w=w)
                 if not roots:
@@ -3294,6 +3335,16 @@ class WorkflowSession:
                 phase_symmetries = _h5_phase_symmetries(f, roots=roots)
                 phase_euler_corrections = _h5_phase_euler_corrections(f, roots=roots)
                 eulers = _apply_phase_euler_corrections(eulers, phases, phase_euler_corrections)
+                loaded_indexing_state = _h5_overlap_export_indexing_state(
+                    f,
+                    roots=roots,
+                    rows=rows,
+                    cols=cols,
+                    phases=phases,
+                )
+                if loaded_indexing_state is not None:
+                    loaded_scores, _loaded_mask, _loaded_export_type = loaded_indexing_state
+                    map_layers["NCC"] = loaded_scores.copy()
 
             det = s.detector
             pc_bruker = np.asarray(det.pc_bruker(), dtype=np.float64).reshape(rows, cols, 3)
@@ -3340,14 +3391,23 @@ class WorkflowSession:
             self.current_pc_custom = pc_custom.reshape(-1, 3).copy()
             self._invalidate_orientation_cache()
             self._invalidate_residual_cache()
-            self.last_scores_map = np.full((rows, cols), np.nan, dtype=np.float32)
+            self.last_scores_map = (
+                loaded_indexing_state[0].copy()
+                if loaded_indexing_state is not None
+                else np.full((rows, cols), np.nan, dtype=np.float32)
+            )
             self.calibration_indices = []
             self.calibrated_center_pc_bruker = None
             self.calibrated_center_pc_custom = None
             self._clear_dictionary_cache()
             self.dictionary_settings = None
-            self.last_indexed_indices = None
-            self.indexed_mask = np.zeros(self.data.count, dtype=bool)
+            self.indexed_mask = (
+                loaded_indexing_state[1].copy()
+                if loaded_indexing_state is not None
+                else np.zeros(self.data.count, dtype=bool)
+            )
+            loaded_indices = np.flatnonzero(self.indexed_mask)
+            self.last_indexed_indices = loaded_indices if loaded_indices.size else None
             self.indexed_candidate_eulers_rad = None
             self.residual_candidate_eulers_rad = None
             unique_ph = np.unique(phases)
@@ -3356,7 +3416,16 @@ class WorkflowSession:
             if phase_euler_corrections:
                 phase_labels = sorted(int(pid) for pid in phase_euler_corrections)
                 correction_note = f" Applied +30 deg x||a Euler correction for H5OINA phase(s) {phase_labels}."
-            return f"Loaded H5OINA: map={rows}x{cols}, pattern={h}x{w}, N={rows * cols}.{correction_note}"
+            indexed_note = ""
+            if loaded_indexing_state is not None:
+                indexed_note = (
+                    f" Restored {int(np.count_nonzero(self.indexed_mask))} dictionary-indexed point(s) "
+                    f"from the GUI {loaded_indexing_state[2]} export NCC data."
+                )
+            return (
+                f"Loaded H5OINA: map={rows}x{cols}, pattern={h}x{w}, N={rows * cols}."
+                f"{correction_note}{indexed_note}"
+            )
 
         if ext in (".up1", ".up2"):
             if not orientation_path:
@@ -8469,6 +8538,7 @@ class WorkflowSession:
         *,
         residual: bool,
         primary_ncc_threshold: float = 0.15,
+        include_primary_patterns: bool = False,
         include_residual_patterns: bool = False,
         progress_callback: Callable[[float, str], None] | None = None,
     ) -> str:
@@ -8490,10 +8560,18 @@ class WorkflowSession:
         roi_cols = c1 - c0
         out = Path(output_path).expanduser().resolve()
 
-        if self.data.source_type == "h5oina":
+        pattern_suffix = Path(self.data.pattern_path).suffix.lower()
+        if pattern_suffix == ".h5oina":
+            export_source_type = "h5oina"
+        elif pattern_suffix in {".up1", ".up2"}:
+            export_source_type = "up_ang"
+        else:
+            export_source_type = self.data.source_type
+
+        if export_source_type == "h5oina":
             out = _output_path_with_single_suffix(str(out), ".h5oina")
             source_path = Path(self.data.pattern_path).expanduser().resolve()
-        elif self.data.source_type == "up_ang":
+        elif export_source_type == "up_ang":
             out = _output_path_with_single_suffix(str(out), ".ang")
             if self.data.orientation_path is None:
                 raise RuntimeError("Missing ANG source metadata in session.")
@@ -8578,10 +8656,14 @@ class WorkflowSession:
                 )
             zero_note = ""
 
-        if self.data.source_type == "h5oina":
+        if export_source_type == "h5oina":
             source_roots = [self.data.h5_analysis_root] if self.data.h5_analysis_root is not None else None
             included_processed_path: str | None = None
-            if residual and include_residual_patterns:
+            include_h5_patterns = (
+                (residual and include_residual_patterns)
+                or (not residual and include_primary_patterns)
+            )
+            if include_h5_patterns:
                 with h5py.File(source_path, "r") as source_h5:
                     included_processed_path = _h5oina_first_path(
                         source_h5,
@@ -8670,6 +8752,9 @@ class WorkflowSession:
                 if H5OINA_RESIDUAL_PATTERN_FORMAT_ATTR in export_group.attrs:
                     del export_group.attrs[H5OINA_RESIDUAL_PATTERN_FORMAT_ATTR]
                 export_group.attrs["Export Type"] = "residual" if residual else "primary"
+                export_group.attrs["Primary Patterns Included"] = np.uint8(
+                    bool(not residual and include_primary_patterns)
+                )
                 export_group.attrs["Residual Patterns Included"] = np.uint8(bool(residual and include_residual_patterns))
                 if residual:
                     export_group.attrs["Primary NCC Threshold"] = float(primary_ncc_threshold)
@@ -8796,6 +8881,8 @@ class WorkflowSession:
             pattern_note = (
                 " Residual patterns were stored in EBSD/Data/Processed Patterns; original processed patterns were retained at points without a residual."
                 if residual and include_residual_patterns
+                else " Primary patterns were stored in EBSD/Data/Processed Patterns."
+                if not residual and include_primary_patterns
                 else " Processed and unprocessed pattern stacks were omitted."
             )
             return f"Exported {'residual' if residual else 'primary'} ROI map to {out}.{zero_note}{pattern_note}"
@@ -8850,6 +8937,13 @@ class WorkflowSession:
                 data_idx += 1
 
         pattern_note = ""
+        if not residual and include_primary_patterns:
+            source_reader = self.data.up_pattern_reader
+            if source_reader is None:
+                raise RuntimeError("Primary UP1 export requires a loaded source pattern reader.")
+            up1_path = out.with_suffix(".up1")
+            _copy_patterns_to_up1(source_reader, up1_path)
+            pattern_note = f" Primary patterns were saved to {up1_path}."
         if residual and include_residual_patterns:
             source_reader = self.data.up_pattern_reader
             if source_reader is None:
@@ -8889,8 +8983,21 @@ class WorkflowSession:
 
         return f"Exported {'residual' if residual else 'primary'} ROI map to {out}.{zero_note}{pattern_note}"
 
-    def export_primary_roi_results(self, bounds: tuple[int, int, int, int], output_path: str) -> str:
-        return self._export_roi_result_map(bounds, output_path, residual=False)
+    def export_primary_roi_results(
+        self,
+        bounds: tuple[int, int, int, int],
+        output_path: str,
+        *,
+        include_primary_patterns: bool = False,
+        progress_callback: Callable[[float, str], None] | None = None,
+    ) -> str:
+        return self._export_roi_result_map(
+            bounds,
+            output_path,
+            residual=False,
+            include_primary_patterns=bool(include_primary_patterns),
+            progress_callback=progress_callback,
+        )
 
     def export_residual_roi_results(
         self,

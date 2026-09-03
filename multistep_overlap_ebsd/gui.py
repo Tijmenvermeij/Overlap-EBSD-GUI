@@ -149,6 +149,7 @@ class MultiStepOverlapGUI(tk.Tk):
         self.residual_ipf_ncc_var = tk.StringVar(value="0.15")
         self.overlap_mixture_residual_ncc_var = tk.StringVar(value=self.residual_ipf_ncc_var.get())
         self.write_residual_patterns_var = tk.BooleanVar(value=False)
+        self.include_primary_patterns_export_var = tk.BooleanVar(value=False)
         self.include_residual_patterns_export_var = tk.BooleanVar(value=False)
         self.residual_pattern_path_var = tk.StringVar(value=str((cwd / "residual_patterns.h5oina").resolve()))
         self.overlap_optimization_export_path_var = tk.StringVar(
@@ -1021,22 +1022,32 @@ class MultiStepOverlapGUI(tk.Tk):
         export_box = ttk.LabelFrame(parent, text="Export ROI indexing results", padding=8)
         export_box.grid(row=24, column=0, columnspan=2, sticky="we", pady=(10, 0))
         export_box.columnconfigure(0, weight=1)
-        ttk.Button(export_box, text="Export Primary ROI Map", command=self._export_primary_roi_map).grid(
-            row=0, column=0, columnspan=2, sticky="we"
-        )
-        ttk.Separator(export_box, orient=tk.HORIZONTAL).grid(row=1, column=0, columnspan=2, sticky="we", pady=8)
         ttk.Checkbutton(
             export_box,
-            text="Include residual patterns with export",
-            variable=self.include_residual_patterns_export_var,
-        ).grid(row=2, column=0, columnspan=2, sticky="w")
+            text="Include primary patterns with export",
+            variable=self.include_primary_patterns_export_var,
+        ).grid(row=0, column=0, columnspan=2, sticky="w")
         ttk.Label(
             export_box,
             text="H5OINA: Processed Patterns; ANG: companion .up1",
             wraplength=340,
-        ).grid(row=3, column=0, columnspan=2, sticky="w")
+        ).grid(row=1, column=0, columnspan=2, sticky="w")
+        ttk.Button(export_box, text="Export Primary ROI Map", command=self._export_primary_roi_map).grid(
+            row=2, column=0, columnspan=2, sticky="we", pady=(4, 0)
+        )
+        ttk.Separator(export_box, orient=tk.HORIZONTAL).grid(row=3, column=0, columnspan=2, sticky="we", pady=8)
+        ttk.Checkbutton(
+            export_box,
+            text="Include residual patterns with export",
+            variable=self.include_residual_patterns_export_var,
+        ).grid(row=4, column=0, columnspan=2, sticky="w")
+        ttk.Label(
+            export_box,
+            text="H5OINA: Processed Patterns; ANG: companion .up1",
+            wraplength=340,
+        ).grid(row=5, column=0, columnspan=2, sticky="w")
         ttk.Button(export_box, text="Export Residual ROI Map", command=self._export_residual_roi_map).grid(
-            row=4, column=0, columnspan=2, sticky="we", pady=(4, 0)
+            row=6, column=0, columnspan=2, sticky="we", pady=(4, 0)
         )
         bounds_box = ttk.LabelFrame(parent, text="Primary fit bounds", padding=8)
         bounds_box.grid(row=25, column=0, columnspan=2, sticky="we", pady=(8, 0))
@@ -1477,10 +1488,10 @@ class MultiStepOverlapGUI(tk.Tk):
         out = Path(path).expanduser().resolve()
         suffix = suffix.lower()
         name = out.name
-        while name.lower().endswith(suffix + suffix):
-            name = name[: -len(suffix)]
-        out = out.with_name(name)
-        return out if out.suffix.lower() == suffix else out.with_suffix(suffix)
+        known_export_suffixes = {".ang", ".h5oina", suffix}
+        while Path(name).suffix.lower() in known_export_suffixes:
+            name = Path(name).stem
+        return out.with_name(name + suffix)
 
     def _default_residual_pattern_path(self) -> str:
         pattern = self.pattern_path_var.get().strip()
@@ -1515,10 +1526,11 @@ class MultiStepOverlapGUI(tk.Tk):
         suffix = ".h5oina"
         source: Path | None = None
         if self.session.data is not None:
-            if self.session.data.source_type == "h5oina":
+            pattern_suffix = Path(self.session.data.pattern_path).suffix.lower()
+            if pattern_suffix == ".h5oina":
                 source = Path(self.session.data.pattern_path)
                 suffix = ".h5oina"
-            elif self.session.data.source_type == "up_ang":
+            elif pattern_suffix in {".up1", ".up2"}:
                 source_path = self.session.data.orientation_path or self.orientation_path_var.get().strip()
                 source = Path(source_path) if source_path else None
                 suffix = ".ang"
@@ -1528,7 +1540,14 @@ class MultiStepOverlapGUI(tk.Tk):
 
     def _roi_export_suffix(self) -> str:
         data = self.session.data
-        return ".ang" if data is not None and data.source_type == "up_ang" else ".h5oina"
+        if data is None:
+            return ".h5oina"
+        pattern_suffix = Path(data.pattern_path).suffix.lower()
+        if pattern_suffix == ".h5oina":
+            return ".h5oina"
+        if pattern_suffix in {".up1", ".up2"}:
+            return ".ang"
+        return ".ang" if data.source_type == "up_ang" else ".h5oina"
 
     def _sync_roi_export_paths_to_source(self) -> None:
         suffix = self._roi_export_suffix()
@@ -2223,6 +2242,7 @@ class MultiStepOverlapGUI(tk.Tk):
             "overlap_min_ncc": self.overlap_min_ncc_var,
             "residual_ipf_ncc": self.residual_ipf_ncc_var,
             "write_residual_patterns": self.write_residual_patterns_var,
+            "include_primary_patterns_export": self.include_primary_patterns_export_var,
             "include_residual_patterns_export": self.include_residual_patterns_export_var,
             "residual_pattern_path": self.residual_pattern_path_var,
             "primary_roi_export_path": self.primary_roi_export_path_var,
@@ -2275,6 +2295,7 @@ class MultiStepOverlapGUI(tk.Tk):
             "overlap_min_ncc": self.overlap_min_ncc_var,
             "residual_ipf_ncc": self.residual_ipf_ncc_var,
             "write_residual_patterns": self.write_residual_patterns_var,
+            "include_primary_patterns_export": self.include_primary_patterns_export_var,
             "include_residual_patterns_export": self.include_residual_patterns_export_var,
             "residual_pattern_path": self.residual_pattern_path_var,
             "primary_roi_export_path": self.primary_roi_export_path_var,
@@ -3408,13 +3429,22 @@ class MultiStepOverlapGUI(tk.Tk):
             messagebox.showerror("Error", "Load input data first.")
             return
         bounds = self._roi_bounds()
+        include_patterns = bool(self.include_primary_patterns_export_var.get())
         output_path = self._browse_primary_roi_export()
         if output_path is None:
             return
         self._set_overlap_progress(0.0, "Exporting primary ROI map...")
 
+        def progress(value: float, message: str) -> None:
+            self.after(0, lambda v=value, m=message: self._set_overlap_progress(v, m))
+
         def action() -> str:
-            msg = self.session.export_primary_roi_results(bounds, output_path)
+            msg = self.session.export_primary_roi_results(
+                bounds,
+                output_path,
+                include_primary_patterns=include_patterns,
+                progress_callback=progress,
+            )
             self.after(0, lambda: self._set_overlap_progress(100.0, "Primary ROI export complete."))
             return msg
 
