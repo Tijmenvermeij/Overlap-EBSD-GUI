@@ -13,7 +13,9 @@ from multistep_overlap_ebsd.core import (
     MASTER_ENERGY_MODE_GLOBAL,
     OverlapMixtureResult,
     OverlapPointResult,
+    ResidualPatternWriter,
     WorkflowSession,
+    _copy_h5oina_for_map_export,
     _output_path_with_single_suffix,
 )
 
@@ -176,6 +178,78 @@ class WorkflowStateTests(unittest.TestCase):
             ".h5oina",
         )
         self.assertEqual(path.name, "primary_roi.h5oina")
+
+    def test_pattern_bearing_h5oina_copy_keeps_every_pattern_without_filters(self) -> None:
+        source = self.root / "source.h5oina"
+        output = self.root / "residual_export.h5oina"
+        pattern_path = "1/EBSD/Data/Processed Patterns"
+        patterns = np.arange(6 * 3 * 4, dtype=np.uint8).reshape(6, 3, 4)
+        with h5py.File(source, "w") as h5:
+            h5.attrs["Manufacturer"] = "Oxford Instruments"
+            dataset = h5.create_dataset(
+                pattern_path,
+                data=patterns,
+                chunks=(1, 3, 4),
+                compression="lzf",
+                shuffle=True,
+            )
+            dataset.attrs["Meaning"] = "complete scan"
+            h5.create_dataset("1/EBSD/Data/Unprocessed Patterns", data=patterns)
+            h5.create_dataset("1/EBSD/Data/Phase", data=np.ones(6, dtype=np.int32))
+
+        _copy_h5oina_for_map_export(
+            source,
+            output,
+            included_processed_path=pattern_path,
+        )
+
+        with h5py.File(output, "r") as h5:
+            copied = h5[pattern_path]
+            np.testing.assert_array_equal(copied[()], patterns)
+            self.assertEqual(copied.attrs["Meaning"], "complete scan")
+            self.assertIsNone(copied.compression)
+            self.assertFalse(copied.shuffle)
+            self.assertNotIn("1/EBSD/Data/Unprocessed Patterns", h5)
+
+    def test_residual_writer_preserves_points_without_residual_and_commits_atomically(self) -> None:
+        source = self.root / "source.h5oina"
+        output = self.root / "residuals.h5oina"
+        pattern_path = "1/EBSD/Data/Processed Patterns"
+        patterns = np.arange(6 * 3 * 4, dtype=np.uint8).reshape(6, 3, 4)
+        with h5py.File(source, "w") as h5:
+            h5.create_dataset(
+                pattern_path,
+                data=patterns,
+                chunks=(1, 3, 4),
+                compression="lzf",
+                shuffle=True,
+            )
+            h5.create_dataset("1/EBSD/Data/Phase", data=np.ones(6, dtype=np.int32))
+
+        source_data = SimpleNamespace(
+            source_type="h5oina",
+            pattern_path=str(source),
+            h5_analysis_root="1",
+        )
+        writer = ResidualPatternWriter.create(source_data, str(output))
+        self.assertFalse(output.exists())
+        writer.write(2, np.full((3, 4), 3.0, dtype=np.float32))
+        writer.close()
+
+        self.assertTrue(output.exists())
+        with h5py.File(output, "r") as h5:
+            saved = h5[pattern_path]
+            np.testing.assert_array_equal(saved[0], patterns[0])
+            np.testing.assert_array_equal(saved[1], patterns[1])
+            np.testing.assert_array_equal(saved[2], np.full((3, 4), 255, dtype=np.uint8))
+            np.testing.assert_array_equal(saved[3:], patterns[3:])
+            self.assertIsNone(saved.compression)
+
+        aborted_output = self.root / "aborted_residuals.h5oina"
+        with self.assertRaisesRegex(RuntimeError, "stop writing"):
+            with ResidualPatternWriter.create(source_data, str(aborted_output)):
+                raise RuntimeError("stop writing")
+        self.assertFalse(aborted_output.exists())
 
     def test_parallel_core_count_zero_means_all_available(self) -> None:
         with patch("multistep_overlap_ebsd.core.os.cpu_count", return_value=8):

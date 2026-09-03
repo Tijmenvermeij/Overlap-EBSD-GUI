@@ -223,12 +223,16 @@ def _copy_h5oina_for_map_export(
     output_path: Path,
     *,
     included_processed_path: str | None = None,
+    _atomic: bool = True,
 ) -> None:
     """Copy H5OINA metadata/map data while omitting large pattern stacks.
 
     If ``included_processed_path`` is supplied, that one Processed Patterns
-    dataset is copied with its original shape, type, chunks, compression and
-    attributes. All other processed/unprocessed stacks remain omitted.
+    dataset is copied with its original shape, type, chunks and attributes,
+    but without HDF5 filters. Streaming through a fresh dataset validates
+    every source pattern and avoids publishing a residual stack containing a
+    mixture of original and in-place-rewritten compressed chunks. All other
+    processed/unprocessed stacks remain omitted.
     """
     source = Path(source_path).expanduser().resolve()
     output = Path(output_path).expanduser().resolve()
@@ -236,9 +240,56 @@ def _copy_h5oina_for_map_export(
         raise ValueError("H5OINA export path must be different from the source file.")
     include = None if included_processed_path is None else str(included_processed_path).strip("/")
 
+    if _atomic:
+        output.parent.mkdir(parents=True, exist_ok=True)
+        fd, temporary_name = tempfile.mkstemp(prefix=f".{output.name}.", suffix=".tmp", dir=output.parent)
+        os.close(fd)
+        temporary_output = Path(temporary_name)
+        try:
+            _copy_h5oina_for_map_export(
+                source,
+                temporary_output,
+                included_processed_path=include,
+                _atomic=False,
+            )
+            os.replace(temporary_output, output)
+        finally:
+            temporary_output.unlink(missing_ok=True)
+        return
+
     with h5py.File(source, "r") as src, h5py.File(output, "w") as dst:
         for key, value in src.attrs.items():
             dst.attrs[key] = value
+
+        def copy_pattern_dataset(src_ds: h5py.Dataset, dst_group: h5py.Group, name: str) -> None:
+            create_kwargs: dict[str, object] = {
+                "shape": src_ds.shape,
+                "dtype": src_ds.dtype,
+            }
+            if src_ds.chunks is not None:
+                # Keep the navigation-friendly chunk geometry, but
+                # deliberately omit compression/shuffle/checksum filters.
+                create_kwargs["chunks"] = src_ds.chunks
+            target = dst_group.create_dataset(name, **create_kwargs)
+            for attr_name, attr_value in src_ds.attrs.items():
+                target.attrs[attr_name] = attr_value
+
+            bytes_per_nav_item = max(
+                1,
+                int(np.prod(src_ds.shape[1:], dtype=np.int64)) * int(src_ds.dtype.itemsize),
+            )
+            items_per_batch = max(1, min(int(src_ds.shape[0]), (32 * 1024**2) // bytes_per_nav_item))
+            for start in range(0, int(src_ds.shape[0]), items_per_batch):
+                stop = min(int(src_ds.shape[0]), start + items_per_batch)
+                try:
+                    pattern_batch = src_ds[start:stop]
+                except OSError as exc:
+                    raise RuntimeError(
+                        "The source H5OINA Processed Patterns dataset contains an unreadable HDF5 chunk "
+                        f"between navigation items {start} and {stop - 1}. The source file is incomplete "
+                        "or corrupt and no residual output was published."
+                    ) from exc
+                target[start:stop] = pattern_batch
 
         def copy_group(src_group: h5py.Group, dst_group: h5py.Group, prefix: str) -> None:
             for name in src_group.keys():
@@ -248,13 +299,7 @@ def _copy_h5oina_for_map_export(
                     continue
                 link = src_group.get(name, getlink=True)
                 if is_pattern:
-                    src_group.copy(
-                        name,
-                        dst_group,
-                        name=name,
-                        expand_soft=True,
-                        expand_external=True,
-                    )
+                    copy_pattern_dataset(src_group[name], dst_group, name)
                     continue
                 if isinstance(link, (h5py.SoftLink, h5py.ExternalLink)):
                     dst_group[name] = link
@@ -1661,6 +1706,7 @@ def _compute_overlap_mixture_roi_batch(payload: OverlapMixtureBatchPayload) -> l
 @dataclass
 class ResidualPatternWriter:
     output_path: Path
+    working_path: Path | None
     source_type: Literal["h5oina", "up_ang"]
     dtype: np.dtype
     pattern_offset: int | None = None
@@ -1673,7 +1719,15 @@ class ResidualPatternWriter:
         return self
 
     def __exit__(self, exc_type, exc, tb) -> None:
-        self.close()
+        self.close(commit=exc_type is None)
+
+    def __del__(self) -> None:
+        # Do not leave a half-written HDF5/UP file behind if an operation
+        # unwinds before the normal commit at the end of residual generation.
+        try:
+            self.close(commit=False)
+        except Exception:
+            pass
 
     @classmethod
     def create(cls, source_data: LoadedInputData, output_path: str) -> "ResidualPatternWriter":
@@ -1686,25 +1740,38 @@ class ResidualPatternWriter:
             if out.suffix.lower() != ".h5oina":
                 out = out.with_suffix(".h5oina")
             out.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(src, out)
-            h5 = h5py.File(out, "r+")
             roots = [source_data.h5_analysis_root] if source_data.h5_analysis_root is not None else None
-            patterns_path = _h5oina_first_path(
-                h5,
-                H5OINA_DATASET_CANDIDATES["processed_patterns"],
-                roots=roots,
-                label="processed patterns",
-                required=True,
-            )
-            assert patterns_path is not None
-            patterns_ds = h5[patterns_path]
-            return cls(
-                output_path=out,
-                source_type="h5oina",
-                dtype=np.dtype(patterns_ds.dtype),
-                h5_file=h5,
-                patterns_ds=patterns_ds,
-            )
+            fd, temporary_name = tempfile.mkstemp(prefix=f".{out.name}.", suffix=".tmp", dir=out.parent)
+            os.close(fd)
+            working = Path(temporary_name)
+            try:
+                with h5py.File(src, "r") as source_h5:
+                    patterns_path = _h5oina_first_path(
+                        source_h5,
+                        H5OINA_DATASET_CANDIDATES["processed_patterns"],
+                        roots=roots,
+                        label="processed patterns",
+                        required=True,
+                    )
+                assert patterns_path is not None
+                _copy_h5oina_for_map_export(
+                    src,
+                    working,
+                    included_processed_path=patterns_path,
+                )
+                h5 = h5py.File(working, "r+")
+                patterns_ds = h5[patterns_path]
+                return cls(
+                    output_path=out,
+                    working_path=working,
+                    source_type="h5oina",
+                    dtype=np.dtype(patterns_ds.dtype),
+                    h5_file=h5,
+                    patterns_ds=patterns_ds,
+                )
+            except BaseException:
+                working.unlink(missing_ok=True)
+                raise
 
         if source_data.source_type == "up_ang":
             reader = source_data.up_pattern_reader
@@ -1715,16 +1782,24 @@ class ResidualPatternWriter:
             if out.suffix.lower() != src.suffix.lower():
                 out = out.with_suffix(src.suffix.lower())
             out.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(src, out)
-            up_file = open(out, "r+b")
-            return cls(
-                output_path=out,
-                source_type="up_ang",
-                dtype=np.dtype(reader.dtype),
-                pattern_offset=int(reader.pattern_offset),
-                up_reader=reader,
-                up_file=up_file,
-            )
+            fd, temporary_name = tempfile.mkstemp(prefix=f".{out.name}.", suffix=".tmp", dir=out.parent)
+            os.close(fd)
+            working = Path(temporary_name)
+            try:
+                shutil.copy2(src, working)
+                up_file = open(working, "r+b")
+                return cls(
+                    output_path=out,
+                    working_path=working,
+                    source_type="up_ang",
+                    dtype=np.dtype(reader.dtype),
+                    pattern_offset=int(reader.pattern_offset),
+                    up_reader=reader,
+                    up_file=up_file,
+                )
+            except BaseException:
+                working.unlink(missing_ok=True)
+                raise
 
         raise ValueError(f"Unsupported source type '{source_data.source_type}' for residual pattern writing.")
 
@@ -1756,7 +1831,7 @@ class ResidualPatternWriter:
             return
         raise RuntimeError(f"Unsupported writer type '{self.source_type}'.")
 
-    def close(self) -> None:
+    def close(self, *, commit: bool = True) -> None:
         try:
             if self.h5_file is not None:
                 self.h5_file.close()
@@ -1768,6 +1843,14 @@ class ResidualPatternWriter:
                     self.up_file.close()
                 finally:
                     self.up_file = None
+        working = self.working_path
+        if working is None:
+            return
+        if commit:
+            os.replace(working, self.output_path)
+        else:
+            working.unlink(missing_ok=True)
+        self.working_path = None
 
 
 def _h5_phase_symmetries(h5_file: h5py.File, roots: list[str] | None = None) -> dict[int, object]:
