@@ -1526,6 +1526,19 @@ class MultiStepOverlapGUI(tk.Tk):
             return str(source.with_name(f"{self._source_stem(source)}_{tag}_roi{suffix}").resolve())
         return str((Path.cwd() / f"{tag}_roi{suffix}").resolve())
 
+    def _roi_export_suffix(self) -> str:
+        data = self.session.data
+        return ".ang" if data is not None and data.source_type == "up_ang" else ".h5oina"
+
+    def _sync_roi_export_paths_to_source(self) -> None:
+        suffix = self._roi_export_suffix()
+        for variable, residual in (
+            (self.primary_roi_export_path_var, False),
+            (self.residual_roi_export_path_var, True),
+        ):
+            current = variable.get().strip() or self._default_roi_export_path(residual=residual)
+            variable.set(str(self._path_with_single_suffix(current, suffix)))
+
     def _default_overlap_optimization_export_path(self) -> str:
         source_path = (
             self.session.data.pattern_path
@@ -1554,10 +1567,8 @@ class MultiStepOverlapGUI(tk.Tk):
         return output_path
 
     def _browse_roi_export(self, var: tk.StringVar, *, residual: bool) -> str | None:
+        ext = self._roi_export_suffix()
         current = Path(var.get().strip() or self._default_roi_export_path(residual=residual))
-        ext = current.suffix.lower()
-        if ext not in {".ang", ".h5oina"}:
-            ext = ".h5oina" if (self.session.data is None or self.session.data.source_type == "h5oina") else ".ang"
         current = self._path_with_single_suffix(current, ext)
         # Tk adds ``defaultextension`` to ``initialfile`` on some platforms,
         # notably the native macOS save dialog.  Supplying the suffix in both
@@ -2127,6 +2138,9 @@ class MultiStepOverlapGUI(tk.Tk):
             self.map_layer_var.set(layers[0])
         self._sync_index_quality_layer_choices()
         self._apply_workflow_ui_state(self.session.restored_ui_state)
+        # The loaded input determines the valid solution-map format, even if
+        # a saved UI path came from another source type or an older workflow.
+        self._sync_roi_export_paths_to_source()
         self._sync_master_energy_mode_from_session()
         cache = self.session.dictionary_cache
         if cache is not None:
@@ -2154,10 +2168,6 @@ class MultiStepOverlapGUI(tk.Tk):
             self.residual_pattern_path_var.set(
                 self.session.residual_pattern_output_path or self._default_residual_pattern_path()
             )
-        if not self.primary_roi_export_path_var.get().strip():
-            self.primary_roi_export_path_var.set(self._default_roi_export_path(residual=False))
-        if not self.residual_roi_export_path_var.get().strip():
-            self.residual_roi_export_path_var.set(self._default_roi_export_path(residual=True))
         if (
             "step4_export_path" not in self.session.restored_ui_state
             or not self.overlap_optimization_export_path_var.get().strip()
@@ -3422,12 +3432,16 @@ class MultiStepOverlapGUI(tk.Tk):
             return
         self._set_overlap_progress(0.0, "Exporting residual ROI map...")
 
+        def progress(value: float, message: str) -> None:
+            self.after(0, lambda v=value, m=message: self._set_overlap_progress(v, m))
+
         def action() -> str:
             msg = self.session.export_residual_roi_results(
                 bounds,
                 output_path,
                 primary_ncc_threshold=threshold,
                 include_residual_patterns=include_patterns,
+                progress_callback=progress,
             )
             self.after(0, lambda: self._set_overlap_progress(100.0, "Residual ROI export complete."))
             return msg

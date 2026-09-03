@@ -142,15 +142,18 @@ class IpfDirectionSelectorTests(unittest.TestCase):
             _default_roi_export_path=lambda *, residual: (
                 "/tmp/map_residual_roi.h5oina" if residual else "/tmp/map_primary_roi.h5oina"
             ),
+            _roi_export_suffix=lambda: ".h5oina",
             _path_with_single_suffix=MultiStepOverlapGUI._path_with_single_suffix,
         )
-        primary_var = path_var("/tmp/map_primary_roi.h5oina")
-        residual_var = path_var("/tmp/map_residual_roi.h5oina")
+        # A restored workflow may contain stale ANG paths. The loaded H5OINA
+        # source must remain authoritative for both save dialogs.
+        primary_var = path_var("/tmp/map_primary_roi.ang")
+        residual_var = path_var("/tmp/map_residual_roi.ang")
 
         with patch("multistep_overlap_ebsd.gui.filedialog.asksaveasfilename") as save_dialog:
             save_dialog.side_effect = [
-                "/tmp/map_primary_roi.h5oina.h5oina",
-                "/tmp/map_residual_roi.h5oina.h5oina",
+                "/tmp/map_primary_roi.ang",
+                "/tmp/map_residual_roi.ang",
             ]
             primary_path = MultiStepOverlapGUI._browse_roi_export(gui_stub, primary_var, residual=False)
             residual_path = MultiStepOverlapGUI._browse_roi_export(gui_stub, residual_var, residual=True)
@@ -163,6 +166,33 @@ class IpfDirectionSelectorTests(unittest.TestCase):
         self.assertEqual(Path(residual_var.get()).name, "map_residual_roi.h5oina")
         self.assertEqual(Path(primary_path).name, "map_primary_roi.h5oina")
         self.assertEqual(Path(residual_path).name, "map_residual_roi.h5oina")
+
+    def test_workflow_restore_paths_follow_loaded_source_type(self) -> None:
+        def path_var(default: str):
+            value = [default]
+            return SimpleNamespace(get=lambda: value[0], set=lambda new: value.__setitem__(0, new))
+
+        for source_type, expected_suffix, stale_suffix in (
+            ("h5oina", ".h5oina", ".ang"),
+            ("up_ang", ".ang", ".h5oina"),
+        ):
+            primary_var = path_var(f"/tmp/map_primary_roi{stale_suffix}")
+            residual_var = path_var(f"/tmp/map_residual_roi{stale_suffix}")
+            gui_stub = SimpleNamespace(
+                session=SimpleNamespace(data=SimpleNamespace(source_type=source_type)),
+                primary_roi_export_path_var=primary_var,
+                residual_roi_export_path_var=residual_var,
+                _roi_export_suffix=lambda suffix=expected_suffix: suffix,
+                _default_roi_export_path=lambda *, residual: (
+                    f"/tmp/map_{'residual' if residual else 'primary'}_roi{expected_suffix}"
+                ),
+                _path_with_single_suffix=MultiStepOverlapGUI._path_with_single_suffix,
+            )
+
+            MultiStepOverlapGUI._sync_roi_export_paths_to_source(gui_stub)
+
+            self.assertEqual(Path(primary_var.get()).suffix, expected_suffix)
+            self.assertEqual(Path(residual_var.get()).suffix, expected_suffix)
 
     def test_step4_save_dialog_does_not_double_h5_extension(self) -> None:
         value = ["/tmp/map_step4_results.h5"]
@@ -212,6 +242,35 @@ class IpfDirectionSelectorTests(unittest.TestCase):
             (0, 0, 2, 3),
             "/tmp/map_primary_roi.h5oina",
         )
+
+    def test_residual_export_forwards_progress_to_overlap_progress_bar(self) -> None:
+        def export(*_args, **kwargs):
+            kwargs["progress_callback"](52.0, "Writing residual patterns: 100/200...")
+            return "exported"
+
+        session = SimpleNamespace(
+            data=SimpleNamespace(source_type="h5oina"),
+            export_residual_roi_results=Mock(side_effect=export),
+        )
+        progress = Mock()
+        gui_stub = SimpleNamespace(
+            session=session,
+            include_residual_patterns_export_var=SimpleNamespace(get=lambda: True),
+            _roi_bounds=Mock(return_value=(0, 0, 2, 3)),
+            _residual_ncc_threshold=Mock(return_value=0.2),
+            _browse_residual_roi_export=Mock(return_value="/tmp/map_residual_roi.h5oina"),
+            _set_overlap_progress=progress,
+            after=lambda _delay, callback: callback(),
+            _run_threaded=lambda action: action(),
+        )
+
+        MultiStepOverlapGUI._export_residual_roi_map(gui_stub)
+
+        self.assertIn(
+            ((52.0, "Writing residual patterns: 100/200..."), {}),
+            [(call.args, call.kwargs) for call in progress.call_args_list],
+        )
+        self.assertEqual(progress.call_args_list[-1].args, (100.0, "Residual ROI export complete."))
 
     def test_residual_patterns_use_grayscale(self) -> None:
         self.assertEqual(RESIDUAL_PATTERN_CMAP, "gray")

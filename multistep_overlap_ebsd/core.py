@@ -112,6 +112,8 @@ H5OINA_DATASET_CANDIDATES: dict[str, list[str]] = {
 }
 H5OINA_NCC_DATASET = "Data Processing/Pattern Matching/Data/Cross Correlation Coefficient"
 H5OINA_EXPORT_DATA_GROUP = "Data Processing/Overlap EBSD Indexing/Data"
+H5OINA_RESIDUAL_PATTERN_FORMAT_ATTR = "Residual Pattern Encoding"
+H5OINA_RESIDUAL_PATTERN_FORMAT = "overlap-ebsd-residual-patterns-v1"
 H5OINA_PATTERN_DATASET_NAMES = {
     "processed patterns",
     "unprocessed patterns",
@@ -223,6 +225,7 @@ def _copy_h5oina_for_map_export(
     output_path: Path,
     *,
     included_processed_path: str | None = None,
+    progress_callback: Callable[[float, str], None] | None = None,
     _atomic: bool = True,
 ) -> None:
     """Copy H5OINA metadata/map data while omitting large pattern stacks.
@@ -250,6 +253,7 @@ def _copy_h5oina_for_map_export(
                 source,
                 temporary_output,
                 included_processed_path=include,
+                progress_callback=progress_callback,
                 _atomic=False,
             )
             os.replace(temporary_output, output)
@@ -258,6 +262,8 @@ def _copy_h5oina_for_map_export(
         return
 
     with h5py.File(source, "r") as src, h5py.File(output, "w") as dst:
+        if progress_callback is not None:
+            progress_callback(0.0, "Copying H5OINA metadata...")
         for key, value in src.attrs.items():
             dst.attrs[key] = value
 
@@ -279,6 +285,7 @@ def _copy_h5oina_for_map_export(
                 int(np.prod(src_ds.shape[1:], dtype=np.int64)) * int(src_ds.dtype.itemsize),
             )
             items_per_batch = max(1, min(int(src_ds.shape[0]), (32 * 1024**2) // bytes_per_nav_item))
+            item_count = int(src_ds.shape[0])
             for start in range(0, int(src_ds.shape[0]), items_per_batch):
                 stop = min(int(src_ds.shape[0]), start + items_per_batch)
                 try:
@@ -290,6 +297,11 @@ def _copy_h5oina_for_map_export(
                         "or corrupt and no residual output was published."
                     ) from exc
                 target[start:stop] = pattern_batch
+                if progress_callback is not None:
+                    progress_callback(
+                        100.0 * stop / max(1, item_count),
+                        f"Copying source pattern stack: {stop}/{item_count} navigation block(s)...",
+                    )
 
         def copy_group(src_group: h5py.Group, dst_group: h5py.Group, prefix: str) -> None:
             for name in src_group.keys():
@@ -314,6 +326,8 @@ def _copy_h5oina_for_map_export(
                 src_group.copy(name, dst_group, name=name)
 
         copy_group(src, dst, "")
+        if progress_callback is not None:
+            progress_callback(100.0, "H5OINA source copy complete.")
 
 
 def _h5_pattern_at(ds: h5py.Dataset, index: int, *, rows: int, cols: int) -> np.ndarray:
@@ -344,6 +358,34 @@ def _write_h5_pattern_at(
         ds[row, col] = arr
         return
     raise RuntimeError(f"Unsupported H5OINA Processed Patterns shape {ds.shape}.")
+
+
+def _h5_verified_residual_pattern_mask(
+    h5_file: h5py.File,
+    *,
+    roots: list[str] | None,
+    expected_count: int,
+) -> np.ndarray | None:
+    """Return the per-point residual mask only for a verified pattern store.
+
+    Older files may contain a dataset named ``Residual Pattern Available`` even
+    though their Processed Patterns were copied from the primary source.  The
+    format marker therefore deliberately gates use of the mask.
+    """
+    search_roots = roots if roots is not None else _h5oina_analysis_roots(h5_file)
+    for root in search_roots:
+        group_path = f"{root}/{H5OINA_EXPORT_DATA_GROUP}" if root else H5OINA_EXPORT_DATA_GROUP
+        if group_path not in h5_file:
+            continue
+        group = h5_file[group_path]
+        if str(group.attrs.get(H5OINA_RESIDUAL_PATTERN_FORMAT_ATTR, "")) != H5OINA_RESIDUAL_PATTERN_FORMAT:
+            continue
+        if "Residual Pattern Available" not in group:
+            continue
+        values = np.asarray(group["Residual Pattern Available"][()], dtype=bool).reshape(-1)
+        if values.size == int(expected_count):
+            return values
+    return None
 
 
 def _is_hexagonal_lattice_angles(angles: np.ndarray) -> bool:
@@ -1712,6 +1754,7 @@ class ResidualPatternWriter:
     pattern_offset: int | None = None
     h5_file: h5py.File | None = None
     patterns_ds: h5py.Dataset | None = None
+    residual_available_ds: h5py.Dataset | None = None
     up_reader: UPPatternReader | None = None
     up_file: object | None = None
 
@@ -1761,6 +1804,27 @@ class ResidualPatternWriter:
                 )
                 h5 = h5py.File(working, "r+")
                 patterns_ds = h5[patterns_path]
+                pattern_count = (
+                    int(patterns_ds.shape[0] * patterns_ds.shape[1])
+                    if patterns_ds.ndim == 4
+                    else int(patterns_ds.shape[0])
+                )
+                detected_roots = _h5oina_analysis_roots(h5)
+                root = source_data.h5_analysis_root or (detected_roots[0] if detected_roots else "")
+                export_group_path = f"{root}/{H5OINA_EXPORT_DATA_GROUP}" if root else H5OINA_EXPORT_DATA_GROUP
+                export_group = h5.require_group(export_group_path)
+                if "Residual Pattern Available" in export_group:
+                    del export_group["Residual Pattern Available"]
+                residual_available_ds = export_group.create_dataset(
+                    "Residual Pattern Available",
+                    shape=(pattern_count,),
+                    dtype=np.uint8,
+                )
+                residual_available_ds.attrs["Description"] = (
+                    "1 where Processed Patterns contains a computed residual; "
+                    "0 where the original processed pattern is retained."
+                )
+                export_group.attrs[H5OINA_RESIDUAL_PATTERN_FORMAT_ATTR] = H5OINA_RESIDUAL_PATTERN_FORMAT
                 return cls(
                     output_path=out,
                     working_path=working,
@@ -1768,6 +1832,7 @@ class ResidualPatternWriter:
                     dtype=np.dtype(patterns_ds.dtype),
                     h5_file=h5,
                     patterns_ds=patterns_ds,
+                    residual_available_ds=residual_available_ds,
                 )
             except BaseException:
                 working.unlink(missing_ok=True)
@@ -1817,6 +1882,9 @@ class ResidualPatternWriter:
             rows = int(self.patterns_ds.shape[0]) if self.patterns_ds.ndim == 4 else 1
             cols = int(self.patterns_ds.shape[1]) if self.patterns_ds.ndim == 4 else int(self.patterns_ds.shape[0])
             _write_h5_pattern_at(self.patterns_ds, int(index), arr_write, rows=rows, cols=cols)
+            if self.residual_available_ds is None:
+                raise RuntimeError("H5OINA residual availability mask is not initialized.")
+            self.residual_available_ds[int(index)] = np.uint8(1)
             return
         if self.source_type == "up_ang":
             if self.up_reader is None or self.up_file is None or self.pattern_offset is None:
@@ -1838,6 +1906,7 @@ class ResidualPatternWriter:
         finally:
             self.h5_file = None
             self.patterns_ds = None
+            self.residual_available_ds = None
             if self.up_file is not None:
                 try:
                     self.up_file.close()
@@ -3869,14 +3938,39 @@ class WorkflowSession:
             )
         return sig
 
-    def _load_residual_pattern_source(self):
-        """Load and cache the residual pattern source when patterns were written to disk."""
+    def _load_residual_pattern_source(self, indices: np.ndarray | None = None):
+        """Load a verified residual-pattern source covering the requested points."""
         if self.residual_pattern_output_path is None:
             return None
         if self.data is None:
             raise RuntimeError("Load input data first.")
 
         path = str(Path(self.residual_pattern_output_path).expanduser().resolve())
+        if not Path(path).is_file():
+            return None
+        if self.data.source_type == "h5oina":
+            roots = [self.data.h5_analysis_root] if self.data.h5_analysis_root is not None else None
+            try:
+                with h5py.File(path, "r") as h5:
+                    available = _h5_verified_residual_pattern_mask(
+                        h5,
+                        roots=roots,
+                        expected_count=self.data.count,
+                    )
+            except (OSError, RuntimeError):
+                return None
+            requested = np.asarray(indices if indices is not None else [], dtype=np.int64).reshape(-1)
+            if available is None or (
+                requested.size > 0
+                and (
+                    np.any(requested < 0)
+                    or np.any(requested >= available.size)
+                    or not np.all(available[requested])
+                )
+            ):
+                # Pre-v1 and incomplete H5OINA stores are not trustworthy:
+                # regenerate from the workflow's saved residual-fit metadata.
+                return None
         cached = self._residual_pattern_source_cache
         if cached is not None and cached[0] == path:
             return cached[1]
@@ -3957,7 +4051,7 @@ class WorkflowSession:
         if can_use_memory:
             return signal_from_patterns(np.stack(memory_patterns, axis=0))
 
-        source = self._load_residual_pattern_source()
+        source = self._load_residual_pattern_source(idx)
         if source is not None:
             if self.data.source_type == "h5oina":
                 flat = source.data.reshape((-1, self.data.h, self.data.w))
@@ -7951,6 +8045,31 @@ class WorkflowSession:
                 std_px=dynamic_bg_std_px,
                 truncate=dynamic_bg_truncate,
             )
+            # Loading a dictionary may reapply the saved master-energy model,
+            # which intentionally invalidates orientation-dependent residual
+            # caches. Do this before restoring the saved Steps 2-4 arrays and
+            # point metadata so the dictionary cannot erase them afterward.
+            dictionary_path = (
+                str(state["dictionary_storage_path"].item())
+                if "dictionary_storage_path" in state.files
+                else ""
+            )
+            dictionary_was_available = (
+                bool(state["dictionary_was_available"].item())
+                if "dictionary_was_available" in state.files
+                else False
+            )
+            if dictionary_path:
+                if Path(dictionary_path).is_file():
+                    try:
+                        restore_notes.append(self.load_dictionary(dictionary_path))
+                    except Exception as exc:
+                        restore_notes.append(f"Dictionary link could not be loaded: {exc}")
+                else:
+                    restore_notes.append(f"Saved dictionary file is missing: {dictionary_path}")
+            elif dictionary_was_available:
+                restore_notes.append("The workflow used a temporary dictionary; regenerate or load a saved dictionary.")
+
             self.last_action_note = ""
             expected = self.data.count if self.data is not None else 0
             eulers = np.asarray(state["eulers_rad"], dtype=np.float64).reshape(-1, 3)
@@ -8010,13 +8129,13 @@ class WorkflowSession:
                     "pc_bruker": dict_pc.copy(),
                     "software_binning": dict_binning,
                     "crop_extent": dict_crop.copy(),
+                    "master_energy_mode": master_energy_mode,
                 }
             residual_output_path = (
                 str(state["residual_pattern_output_path"].item())
                 if "residual_pattern_output_path" in state.files
                 else ""
             )
-            self._clear_dictionary_cache()
             self._invalidate_orientation_cache()
             self._invalidate_residual_cache()
             self.residual_pattern_output_path = residual_output_path or None
@@ -8096,30 +8215,23 @@ class WorkflowSession:
                 json.loads(str(state["ui_state_json"].item())) if "ui_state_json" in state.files else {}
             )
 
-            dictionary_path = (
-                str(state["dictionary_storage_path"].item())
-                if "dictionary_storage_path" in state.files
-                else ""
-            )
-            dictionary_was_available = (
-                bool(state["dictionary_was_available"].item())
-                if "dictionary_was_available" in state.files
-                else False
-            )
-            if dictionary_path:
-                if Path(dictionary_path).is_file():
-                    try:
-                        restore_notes.append(self.load_dictionary(dictionary_path))
-                    except Exception as exc:
-                        restore_notes.append(f"Dictionary link could not be loaded: {exc}")
-                else:
-                    restore_notes.append(f"Saved dictionary file is missing: {dictionary_path}")
-            elif dictionary_was_available:
-                restore_notes.append("The workflow used a temporary dictionary; regenerate or load a saved dictionary.")
             self._invalidate_orientation_cache()
             self._invalidate_residual_color_cache()
         note = " ".join(restore_notes)
-        return f"Restored workflow from {path}. {load_note} {master_note}{(' ' + note) if note else ''}"
+        residual_solution_count = (
+            int(np.count_nonzero(np.all(np.isfinite(self.residual_eulers_rad), axis=1)))
+            if self.residual_eulers_rad is not None
+            else 0
+        )
+        result_note = (
+            f"Restored {len(self.residual_point_results)} residual fit(s), "
+            f"{residual_solution_count} residual solution(s), and "
+            f"{len(self.overlap_mixture_results)} Step-4 mixture result(s)."
+        )
+        return (
+            f"Restored workflow from {path}. {load_note} {master_note} {result_note}"
+            f"{(' ' + note) if note else ''}"
+        )
 
     def export_reindexed_results(self, output_path: str) -> str:
         if self.data is None:
@@ -8313,6 +8425,7 @@ class WorkflowSession:
         *,
         stored_h5_patterns: h5py.Dataset | None = None,
         stored_up_reader: UPPatternReader | None = None,
+        cache_materialized: bool = True,
     ) -> np.ndarray:
         if self.data is None:
             raise RuntimeError("Load input data first.")
@@ -8329,7 +8442,8 @@ class WorkflowSession:
             stored = stored_up_reader.read_pattern(idx)
             return _stored_pattern_to_uint8(stored, stored_up_reader.dtype)
         materialized = self._materialize_residual_point_result(result)
-        self.residual_point_results[idx] = materialized
+        if cache_materialized:
+            self.residual_point_results[idx] = materialized
         if materialized.residual is None:
             raise RuntimeError(f"Residual pattern could not be materialized for point {idx}.")
         return _residual_to_uint8(materialized.residual)
@@ -8356,6 +8470,7 @@ class WorkflowSession:
         residual: bool,
         primary_ncc_threshold: float = 0.15,
         include_residual_patterns: bool = False,
+        progress_callback: Callable[[float, str], None] | None = None,
     ) -> str:
         if self.data is None:
             raise RuntimeError("Load input data first.")
@@ -8389,6 +8504,8 @@ class WorkflowSession:
         if not source_path.exists():
             raise FileNotFoundError(str(source_path))
         out.parent.mkdir(parents=True, exist_ok=True)
+        if progress_callback is not None:
+            progress_callback(0.0, f"Preparing {'residual' if residual else 'primary'} ROI export...")
 
         roi_mask = np.zeros((rows, cols), dtype=np.uint8)
         roi_mask[r0:r1, c0:c1] = 1
@@ -8481,11 +8598,20 @@ class WorkflowSession:
             if residual_store_path is not None and residual_store_path == out:
                 raise ValueError("Residual ROI export path must be different from the residual-pattern working file.")
 
+            copy_share = 40.0 if residual and include_residual_patterns else 85.0
+
+            def copy_progress(value: float, message: str) -> None:
+                if progress_callback is not None:
+                    progress_callback(copy_share * float(value) / 100.0, message)
+
             _copy_h5oina_for_map_export(
                 source_path,
                 out,
                 included_processed_path=included_processed_path,
+                progress_callback=copy_progress,
             )
+            if progress_callback is not None:
+                progress_callback(copy_share, "Writing ROI orientations and NCC maps...")
             with h5py.File(out, "r+") as h5:
                 roots = [self.data.h5_analysis_root] if self.data.h5_analysis_root is not None else _h5oina_analysis_roots(h5)
                 euler_paths = _h5oina_existing_paths(h5, H5OINA_DATASET_CANDIDATES["euler"], roots=roots)
@@ -8538,6 +8664,11 @@ class WorkflowSession:
                 exported_ncc[r0:r1, c0:c1] = row_quality.astype(np.float32, copy=False)
                 export_group_path = f"{root}/{H5OINA_EXPORT_DATA_GROUP}" if root else H5OINA_EXPORT_DATA_GROUP
                 export_group = h5.require_group(export_group_path)
+                # A copied source may itself contain residual-export metadata.
+                # The current export gets a verified marker only after its
+                # Processed Patterns have been populated successfully below.
+                if H5OINA_RESIDUAL_PATTERN_FORMAT_ATTR in export_group.attrs:
+                    del export_group.attrs[H5OINA_RESIDUAL_PATTERN_FORMAT_ATTR]
                 export_group.attrs["Export Type"] = "residual" if residual else "primary"
                 export_group.attrs["Residual Patterns Included"] = np.uint8(bool(residual and include_residual_patterns))
                 if residual:
@@ -8605,6 +8736,7 @@ class WorkflowSession:
                     target_patterns = h5[included_processed_path]
                     stored_h5: h5py.File | None = None
                     stored_patterns: h5py.Dataset | None = None
+                    stored_available: np.ndarray | None = None
                     try:
                         if residual_store_path is not None and residual_store_path.exists():
                             stored_h5 = h5py.File(residual_store_path, "r")
@@ -8615,13 +8747,28 @@ class WorkflowSession:
                             )
                             if stored_path is not None:
                                 stored_patterns = stored_h5[stored_path]
-                        for idx in residual_pattern_indices.tolist():
-                            rr, cc = divmod(int(idx), cols)
-                            if not (r0 <= rr < r1 and c0 <= cc < c1):
-                                continue
+                                stored_available = _h5_verified_residual_pattern_mask(
+                                    stored_h5,
+                                    roots=source_roots,
+                                    expected_count=self.data.count,
+                                )
+                        roi_residual_indices: list[int] = []
+                        for candidate in residual_pattern_indices.tolist():
+                            candidate = int(candidate)
+                            candidate_row, candidate_col = divmod(candidate, cols)
+                            if r0 <= candidate_row < r1 and c0 <= candidate_col < c1:
+                                roi_residual_indices.append(candidate)
+                        progress_interval = max(1, len(roi_residual_indices) // 200)
+                        for position, idx in enumerate(roi_residual_indices, start=1):
+                            verified_stored_patterns = (
+                                stored_patterns
+                                if stored_available is not None and bool(stored_available[int(idx)])
+                                else None
+                            )
                             residual_u8 = self._residual_pattern_u8(
                                 int(idx),
-                                stored_h5_patterns=stored_patterns,
+                                stored_h5_patterns=verified_stored_patterns,
+                                cache_materialized=False,
                             )
                             _write_h5_pattern_at(
                                 target_patterns,
@@ -8630,9 +8777,22 @@ class WorkflowSession:
                                 rows=rows,
                                 cols=cols,
                             )
+                            if progress_callback is not None and (
+                                position == len(roi_residual_indices)
+                                or position % progress_interval == 0
+                            ):
+                                progress_callback(
+                                    40.0 + 58.0 * position / max(1, len(roi_residual_indices)),
+                                    f"Writing residual patterns: {position}/{len(roi_residual_indices)}...",
+                                )
+                        export_group.attrs[H5OINA_RESIDUAL_PATTERN_FORMAT_ATTR] = (
+                            H5OINA_RESIDUAL_PATTERN_FORMAT
+                        )
                     finally:
                         if stored_h5 is not None:
                             stored_h5.close()
+            if progress_callback is not None:
+                progress_callback(99.0, "Finalizing residual H5OINA export..." if residual else "Finalizing H5OINA export...")
             pattern_note = (
                 " Residual patterns were stored in EBSD/Data/Processed Patterns; original processed patterns were retained at points without a residual."
                 if residual and include_residual_patterns
@@ -8739,6 +8899,7 @@ class WorkflowSession:
         *,
         primary_ncc_threshold: float = 0.15,
         include_residual_patterns: bool = False,
+        progress_callback: Callable[[float, str], None] | None = None,
     ) -> str:
         return self._export_roi_result_map(
             bounds,
@@ -8746,4 +8907,5 @@ class WorkflowSession:
             residual=True,
             primary_ncc_threshold=float(primary_ncc_threshold),
             include_residual_patterns=bool(include_residual_patterns),
+            progress_callback=progress_callback,
         )

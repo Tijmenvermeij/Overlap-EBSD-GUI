@@ -73,6 +73,13 @@ class WorkflowStateTests(unittest.TestCase):
             "software_binning": 2,
             "crop_extent": np.array([0, 4, 0, 6]),
         }
+        linked_dictionary = self.root / "saved_dictionary.h5"
+        linked_dictionary.touch()
+        source.dictionary_cache = SimpleNamespace(
+            owns_storage=False,
+            storage_path=str(linked_dictionary),
+        )
+        source.indexed_candidate_eulers_rad = np.full((6, 2, 3), 0.25, dtype=np.float64)
 
         source.residual_eulers_rad = np.full((6, 3), np.nan, dtype=np.float64)
         source.residual_eulers_rad[4] = [0.1, 0.2, 0.3]
@@ -80,6 +87,7 @@ class WorkflowStateTests(unittest.TestCase):
         source.last_residual_scores_map = np.full((2, 3), np.nan, dtype=np.float32)
         source.last_residual_scores_map.reshape(-1)[4] = 0.77
         source.last_residual_indexed_indices = np.array([4], dtype=np.int64)
+        source.residual_candidate_eulers_rad = np.full((6, 2, 3), 0.5, dtype=np.float64)
         residual = OverlapPointResult(
             index=4,
             row=1,
@@ -144,6 +152,7 @@ class WorkflowStateTests(unittest.TestCase):
             return "Loaded fake input."
 
         restored_master_kwargs: dict[str, object] = {}
+        restored_dictionary_paths: list[str] = []
 
         def load_master(master_path, **kwargs):
             restored_master_kwargs.update(kwargs)
@@ -152,12 +161,29 @@ class WorkflowStateTests(unittest.TestCase):
 
         restored.load_input = load_input  # type: ignore[method-assign]
         restored.load_master = load_master  # type: ignore[method-assign]
-        restored.restore_workflow_state(str(workflow_path))
+
+        def load_dictionary(dictionary_path: str) -> str:
+            restored_dictionary_paths.append(dictionary_path)
+            # Real dictionary loading reapplies the master-energy model and
+            # invalidates these caches. Restore must load it before replaying
+            # the workflow's saved Steps 2-4 state.
+            restored._invalidate_residual_cache()
+            restored.indexed_candidate_eulers_rad = None
+            restored.dictionary_cache = SimpleNamespace(
+                owns_storage=False,
+                storage_path=dictionary_path,
+            )
+            return "Loaded fake dictionary."
+
+        restored.load_dictionary = load_dictionary  # type: ignore[method-assign]
+        restore_message = restored.restore_workflow_state(str(workflow_path))
 
         np.testing.assert_array_equal(restored.initial_eulers_rad, source.initial_eulers_rad)
         np.testing.assert_array_equal(restored.current_eulers_rad, source.current_eulers_rad)
         np.testing.assert_array_equal(restored.indexed_mask, source.indexed_mask)
         np.testing.assert_array_equal(restored.last_residual_indexed_indices, np.array([4]))
+        np.testing.assert_array_equal(restored.indexed_candidate_eulers_rad, source.indexed_candidate_eulers_rad)
+        np.testing.assert_array_equal(restored.residual_candidate_eulers_rad, source.residual_candidate_eulers_rad)
         self.assertEqual(restored.restored_ui_state, ui_state)
         self.assertIn(4, restored.residual_point_results)
         self.assertTrue(restored.residual_point_results[4].secondary_refined)
@@ -171,6 +197,8 @@ class WorkflowStateTests(unittest.TestCase):
             restored_master_kwargs["energy_reference_pc_bruker"],
             [0.4, 0.5, 0.6],
         )
+        self.assertEqual(restored_dictionary_paths, [str(linked_dictionary.resolve())])
+        self.assertIn("Restored 1 residual fit(s), 1 residual solution(s), and 1 Step-4 mixture result(s).", restore_message)
 
     def test_repeated_h5oina_suffix_is_collapsed(self) -> None:
         path = _output_path_with_single_suffix(
@@ -244,12 +272,91 @@ class WorkflowStateTests(unittest.TestCase):
             np.testing.assert_array_equal(saved[2], np.full((3, 4), 255, dtype=np.uint8))
             np.testing.assert_array_equal(saved[3:], patterns[3:])
             self.assertIsNone(saved.compression)
+            marker_group = h5["1/Data Processing/Overlap EBSD Indexing/Data"]
+            self.assertEqual(
+                marker_group.attrs["Residual Pattern Encoding"],
+                "overlap-ebsd-residual-patterns-v1",
+            )
+            np.testing.assert_array_equal(
+                marker_group["Residual Pattern Available"][()],
+                np.array([0, 0, 1, 0, 0, 0], dtype=np.uint8),
+            )
 
         aborted_output = self.root / "aborted_residuals.h5oina"
         with self.assertRaisesRegex(RuntimeError, "stop writing"):
             with ResidualPatternWriter.create(source_data, str(aborted_output)):
                 raise RuntimeError("stop writing")
         self.assertFalse(aborted_output.exists())
+
+    def test_residual_export_recomputes_patterns_from_unverified_old_store(self) -> None:
+        source = self.root / "source.h5oina"
+        old_store = self.root / "old_residuals.h5oina"
+        output = self.root / "exported_residuals.h5oina"
+        pattern_path = "1/EBSD/Data/Processed Patterns"
+        primary_patterns = np.arange(6 * 3 * 4, dtype=np.uint8).reshape(6, 3, 4)
+        with h5py.File(source, "w") as h5:
+            h5.create_dataset(pattern_path, data=primary_patterns)
+            h5.create_dataset("1/Data Processing/Data/Euler", data=np.zeros((6, 3)))
+            h5.create_dataset("1/Data Processing/Data/Phase", data=np.ones(6, dtype=np.int32))
+        # This represents an old/incomplete residual file: it contains only
+        # copied primary patterns and has no verified residual-store marker.
+        _copy_h5oina_for_map_export(source, old_store, included_processed_path=pattern_path)
+
+        session = WorkflowSession()
+        session.data = SimpleNamespace(
+            pattern_path=str(source),
+            source_type="h5oina",
+            h5_analysis_root="1",
+            rows=2,
+            cols=3,
+            count=6,
+            h=3,
+            w=4,
+            phase_euler_corrections_rad={},
+        )
+        session.current_eulers_rad = np.zeros((6, 3), dtype=np.float64)
+        session.current_phases = np.ones(6, dtype=np.int32)
+        session.last_scores_map = np.ones((2, 3), dtype=np.float32)
+        session.residual_eulers_rad = np.zeros((6, 3), dtype=np.float64)
+        session.residual_phases = np.ones(6, dtype=np.int32)
+        session.last_residual_scores_map = np.ones((2, 3), dtype=np.float32)
+        session.residual_pattern_output_path = str(old_store)
+        session.residual_point_results[2] = OverlapPointResult(
+            index=2,
+            row=0,
+            col=2,
+            ncc_es=0.8,
+            scale=0.7,
+            ncc_residual_sim=0.1,
+            experimental=None,
+            simulated=None,
+            residual=None,
+        )
+        materialized = SimpleNamespace(residual=np.full((3, 4), 3.0, dtype=np.float32))
+        progress_updates: list[tuple[float, str]] = []
+        with patch.object(session, "_materialize_residual_point_result", return_value=materialized) as regenerate:
+            session.export_residual_roi_results(
+                (0, 0, 2, 3),
+                str(output),
+                include_residual_patterns=True,
+                progress_callback=lambda value, message: progress_updates.append((value, message)),
+            )
+
+        regenerate.assert_called_once()
+        self.assertEqual(progress_updates[0][0], 0.0)
+        self.assertTrue(any("Copying source pattern stack" in message for _, message in progress_updates))
+        self.assertTrue(any("Writing residual patterns: 1/1" in message for _, message in progress_updates))
+        self.assertEqual(progress_updates[-1][0], 99.0)
+        self.assertTrue(all(0.0 <= value <= 100.0 for value, _ in progress_updates))
+        with h5py.File(output, "r") as h5:
+            exported = h5[pattern_path]
+            np.testing.assert_array_equal(exported[2], np.full((3, 4), 255, dtype=np.uint8))
+            np.testing.assert_array_equal(exported[0], primary_patterns[0])
+            marker_group = h5["1/Data Processing/Overlap EBSD Indexing/Data"]
+            self.assertEqual(
+                marker_group.attrs["Residual Pattern Encoding"],
+                "overlap-ebsd-residual-patterns-v1",
+            )
 
     def test_parallel_core_count_zero_means_all_available(self) -> None:
         with patch("multistep_overlap_ebsd.core.os.cpu_count", return_value=8):
