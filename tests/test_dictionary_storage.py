@@ -15,6 +15,7 @@ from orix.quaternion import Rotation
 from multistep_overlap_ebsd.core import (
     DICTIONARY_FORMAT_V1,
     DICTIONARY_FORMAT_V2,
+    MASTER_ENERGY_MODE_GLOBAL,
     WorkflowSession,
 )
 
@@ -62,6 +63,10 @@ class DictionaryStorageTests(unittest.TestCase):
 
     def test_generation_is_uint8_disk_backed_and_save_removes_temp(self) -> None:
         session = self._session()
+        session.master.energy_mode = MASTER_ENERGY_MODE_GLOBAL
+        session.master.energy_values_kv = np.asarray([18.0, 19.0, 20.0])
+        session.master.energy_weights = np.asarray([0.15, 0.35, 0.5])
+        session.master.energy_reference_pc_bruker = np.asarray([0.5, 0.5, 0.6])
         rotations = Rotation.identity(3)
         with (
             patch.dict(os.environ, {"OVERLAP_EBSD_DICTIONARY_CACHE_DIR": str(self.root)}),
@@ -88,8 +93,10 @@ class DictionaryStorageTests(unittest.TestCase):
         self.assertEqual(cache.storage_path, str(output_path.resolve()))
         with h5py.File(output_path, "r") as h5:
             self.assertEqual(h5.attrs["format"], DICTIONARY_FORMAT_V2)
+            self.assertEqual(h5.attrs["master_energy_mode"], MASTER_ENERGY_MODE_GLOBAL)
             self.assertEqual(h5["patterns"].dtype, np.dtype(np.uint8))
             self.assertGreater(h5["patterns"].chunks[0], 1)
+            np.testing.assert_allclose(h5["master_energy_weights"][()], [0.15, 0.35, 0.5])
 
     def test_v1_float32_dictionary_loads_lazily(self) -> None:
         session = self._session()

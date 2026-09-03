@@ -14,6 +14,8 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
 from .core import (
+    MASTER_ENERGY_MODE_GLOBAL,
+    MASTER_ENERGY_MODE_HIGHEST,
     ORIENTATION_LAYER_LABEL,
     ORIENTATION_LAYER_LABELS,
     GeometryConfig,
@@ -28,6 +30,10 @@ PLOT_TICK_FONTSIZE = 7
 PLOT_INSTRUCTION_FONTSIZE = 10
 RESIDUAL_PATTERN_CMAP = "gray"
 _TIGHT_LAYOUT_WARNING = "This figure includes Axes that are not compatible with tight_layout, so results might be incorrect."
+MASTER_ENERGY_MODE_LABELS = {
+    MASTER_ENERGY_MODE_HIGHEST: "Highest available energy",
+    MASTER_ENERGY_MODE_GLOBAL: "Global MC-weighted (EMsoft)",
+}
 
 
 class MultiStepOverlapGUI(tk.Tk):
@@ -70,6 +76,9 @@ class MultiStepOverlapGUI(tk.Tk):
         self.pattern_path_var = tk.StringVar(value=str((cwd / "PJablonski 45 Site 1 Map Data 2.h5oina").resolve()))
         self.orientation_path_var = tk.StringVar(value=str((cwd / "insitu Specimen 1 0 Map Data 3_BW123.ang").resolve()))
         self.master_path_var = tk.StringVar(value=str((cwd / "Cu-master_20kV.h5").resolve()))
+        self.master_energy_mode_var = tk.StringVar(
+            value=MASTER_ENERGY_MODE_LABELS[MASTER_ENERGY_MODE_HIGHEST]
+        )
         self.export_path_var = tk.StringVar(value=str((cwd / "reindexed_output.h5oina").resolve()))
         initial_source = Path(self.pattern_path_var.get())
         initial_workflow_path = str(
@@ -369,8 +378,18 @@ class MultiStepOverlapGUI(tk.Tk):
         ttk.Label(geometry, textvariable=self.dynamic_bg_status_var, wraplength=390).grid(
             row=6, column=0, columnspan=2, sticky="w", pady=(2, 0)
         )
-        ttk.Button(geometry, text="Load Input Data", command=self._load_input).grid(row=7, column=0, sticky="we", pady=(8, 0))
-        ttk.Button(geometry, text="Load Master Pattern", command=self._load_master).grid(row=7, column=1, sticky="we", pady=(8, 0))
+        ttk.Label(geometry, text="MP energy model (applied on load)").grid(
+            row=7, column=0, sticky="w", pady=(7, 0)
+        )
+        ttk.Combobox(
+            geometry,
+            textvariable=self.master_energy_mode_var,
+            values=list(MASTER_ENERGY_MODE_LABELS.values()),
+            state="readonly",
+            width=28,
+        ).grid(row=7, column=1, sticky="we", pady=(7, 0))
+        ttk.Button(geometry, text="Load Input Data", command=self._load_input).grid(row=8, column=0, sticky="we", pady=(8, 0))
+        ttk.Button(geometry, text="Load Master Pattern", command=self._load_master).grid(row=8, column=1, sticky="we", pady=(8, 0))
 
     def _build_workflow_controls(self, parent: ttk.Frame) -> None:
         box = ttk.LabelFrame(parent, text="Workflow Save and Restore", padding=8)
@@ -666,11 +685,21 @@ class MultiStepOverlapGUI(tk.Tk):
             text="H5OINA uses geometry from the file; these fields only affect .up1/.up2 loading.",
             wraplength=390,
         ).grid(row=2, column=0, columnspan=2, sticky="w", pady=(2, 0))
-        ttk.Button(geom_box, text="Load Input Data", command=self._load_input).grid(row=3, column=0, sticky="we", pady=(8, 0))
-        ttk.Button(geom_box, text="Load Master", command=self._load_master).grid(row=3, column=1, sticky="we", pady=(8, 0))
-        ttk.Button(geom_box, text="Export Re-indexed Results", command=self._export_results).grid(row=4, column=0, columnspan=2, sticky="we", pady=(6, 0))
-        ttk.Button(geom_box, text="Save Workflow State", command=self._save_workflow).grid(row=5, column=0, sticky="we", pady=(4, 0))
-        ttk.Button(geom_box, text="Open Workflow State", command=self._restore_workflow).grid(row=5, column=1, sticky="we", pady=(4, 0))
+        ttk.Label(geom_box, text="MP energy model (applied on load)").grid(
+            row=3, column=0, sticky="w", pady=(7, 0)
+        )
+        ttk.Combobox(
+            geom_box,
+            textvariable=self.master_energy_mode_var,
+            values=list(MASTER_ENERGY_MODE_LABELS.values()),
+            state="readonly",
+            width=28,
+        ).grid(row=3, column=1, sticky="we", pady=(7, 0))
+        ttk.Button(geom_box, text="Load Input Data", command=self._load_input).grid(row=4, column=0, sticky="we", pady=(8, 0))
+        ttk.Button(geom_box, text="Load Master", command=self._load_master).grid(row=4, column=1, sticky="we", pady=(8, 0))
+        ttk.Button(geom_box, text="Export Re-indexed Results", command=self._export_results).grid(row=5, column=0, columnspan=2, sticky="we", pady=(6, 0))
+        ttk.Button(geom_box, text="Save Workflow State", command=self._save_workflow).grid(row=6, column=0, sticky="we", pady=(4, 0))
+        ttk.Button(geom_box, text="Open Workflow State", command=self._restore_workflow).grid(row=6, column=1, sticky="we", pady=(4, 0))
 
         select_box = ttk.LabelFrame(parent, text="Selection", padding=8)
         select_box.pack(fill=tk.X, pady=4)
@@ -992,36 +1021,22 @@ class MultiStepOverlapGUI(tk.Tk):
         export_box = ttk.LabelFrame(parent, text="Export ROI indexing results", padding=8)
         export_box.grid(row=24, column=0, columnspan=2, sticky="we", pady=(10, 0))
         export_box.columnconfigure(0, weight=1)
-        ttk.Label(export_box, text="primary ROI export").grid(row=0, column=0, columnspan=2, sticky="w")
-        ttk.Entry(export_box, textvariable=self.primary_roi_export_path_var, width=34).grid(
-            row=1, column=0, sticky="we", pady=(2, 0)
-        )
-        ttk.Button(export_box, text="Browse", command=self._browse_primary_roi_export).grid(
-            row=1, column=1, sticky="we", padx=(4, 0), pady=(2, 0)
-        )
         ttk.Button(export_box, text="Export Primary ROI Map", command=self._export_primary_roi_map).grid(
-            row=2, column=0, columnspan=2, sticky="we", pady=(4, 0)
+            row=0, column=0, columnspan=2, sticky="we"
         )
-        ttk.Separator(export_box, orient=tk.HORIZONTAL).grid(row=3, column=0, columnspan=2, sticky="we", pady=8)
-        ttk.Label(export_box, text="residual ROI export").grid(row=4, column=0, columnspan=2, sticky="w")
-        ttk.Entry(export_box, textvariable=self.residual_roi_export_path_var, width=34).grid(
-            row=5, column=0, sticky="we", pady=(2, 0)
-        )
-        ttk.Button(export_box, text="Browse", command=self._browse_residual_roi_export).grid(
-            row=5, column=1, sticky="we", padx=(4, 0), pady=(2, 0)
-        )
+        ttk.Separator(export_box, orient=tk.HORIZONTAL).grid(row=1, column=0, columnspan=2, sticky="we", pady=8)
         ttk.Checkbutton(
             export_box,
             text="Include residual patterns with export",
             variable=self.include_residual_patterns_export_var,
-        ).grid(row=6, column=0, columnspan=2, sticky="w", pady=(4, 0))
+        ).grid(row=2, column=0, columnspan=2, sticky="w")
         ttk.Label(
             export_box,
             text="H5OINA: Processed Patterns; ANG: companion .up1",
             wraplength=340,
-        ).grid(row=7, column=0, columnspan=2, sticky="w")
+        ).grid(row=3, column=0, columnspan=2, sticky="w")
         ttk.Button(export_box, text="Export Residual ROI Map", command=self._export_residual_roi_map).grid(
-            row=8, column=0, columnspan=2, sticky="we", pady=(4, 0)
+            row=4, column=0, columnspan=2, sticky="we", pady=(4, 0)
         )
         bounds_box = ttk.LabelFrame(parent, text="Primary fit bounds", padding=8)
         bounds_box.grid(row=25, column=0, columnspan=2, sticky="we", pady=(8, 0))
@@ -1089,20 +1104,14 @@ class MultiStepOverlapGUI(tk.Tk):
         export_box = ttk.LabelFrame(parent, text="Export Step 4 results", padding=8)
         export_box.grid(row=11, column=0, columnspan=2, sticky="we", pady=(10, 0))
         export_box.columnconfigure(0, weight=1)
-        ttk.Entry(export_box, textvariable=self.overlap_optimization_export_path_var, width=34).grid(
-            row=0, column=0, sticky="we"
-        )
-        ttk.Button(export_box, text="Browse", command=self._browse_overlap_optimization_export).grid(
-            row=0, column=1, sticky="we", padx=(4, 0)
-        )
         ttk.Button(export_box, text="Export Full-Map HDF5 Results", command=self._export_overlap_optimization_results).grid(
-            row=1, column=0, columnspan=2, sticky="we", pady=(4, 0)
+            row=0, column=0, columnspan=2, sticky="we"
         )
         ttk.Label(
             export_box,
             text="All datasets retain the original scan dimensions; points without Step 4 results are marked by a mask and NaN values.",
             wraplength=360,
-        ).grid(row=2, column=0, columnspan=2, sticky="w", pady=(4, 0))
+        ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(4, 0))
 
         bounds_box = ttk.LabelFrame(parent, text="Primary fit bounds", padding=8)
         bounds_box.grid(row=12, column=0, columnspan=2, sticky="we", pady=(10, 0))
@@ -1526,28 +1535,37 @@ class MultiStepOverlapGUI(tk.Tk):
         source = Path(source_path).expanduser().resolve() if source_path else Path.cwd() / "overlap_ebsd"
         return str(source.with_name(f"{self._source_stem(source)}_step4_results.h5"))
 
-    def _browse_overlap_optimization_export(self) -> None:
+    def _browse_overlap_optimization_export(self) -> str | None:
         current = Path(
             self.overlap_optimization_export_path_var.get().strip()
             or self._default_overlap_optimization_export_path()
         )
+        current = self._path_with_single_suffix(current, ".h5")
         fn = filedialog.asksaveasfilename(
             defaultextension=".h5",
-            initialfile=current.name,
+            initialfile=current.name[: -len(".h5")],
             initialdir=str(current.parent),
             filetypes=[("Step 4 HDF5 results", "*.h5"), ("HDF5 files", "*.h5 *.hdf5"), ("All files", "*.*")],
         )
-        if fn:
-            self.overlap_optimization_export_path_var.set(str(self._path_with_single_suffix(fn, ".h5")))
+        if not fn:
+            return None
+        output_path = str(self._path_with_single_suffix(fn, ".h5"))
+        self.overlap_optimization_export_path_var.set(output_path)
+        return output_path
 
-    def _browse_roi_export(self, var: tk.StringVar, *, residual: bool) -> None:
+    def _browse_roi_export(self, var: tk.StringVar, *, residual: bool) -> str | None:
         current = Path(var.get().strip() or self._default_roi_export_path(residual=residual))
         ext = current.suffix.lower()
         if ext not in {".ang", ".h5oina"}:
             ext = ".h5oina" if (self.session.data is None or self.session.data.source_type == "h5oina") else ".ang"
+        current = self._path_with_single_suffix(current, ext)
+        # Tk adds ``defaultextension`` to ``initialfile`` on some platforms,
+        # notably the native macOS save dialog.  Supplying the suffix in both
+        # options therefore presents e.g. ``map.h5oina.h5oina`` as the default.
+        initialfile = current.name[: -len(ext)]
         fn = filedialog.asksaveasfilename(
             defaultextension=ext,
-            initialfile=current.name,
+            initialfile=initialfile,
             initialdir=str(current.parent),
             filetypes=[
                 ("Pattern/orientation files", "*.ang *.h5oina"),
@@ -1556,17 +1574,36 @@ class MultiStepOverlapGUI(tk.Tk):
                 ("All files", "*.*"),
             ],
         )
-        if fn:
-            var.set(str(self._path_with_single_suffix(fn, ext)))
+        if not fn:
+            return None
+        output_path = str(self._path_with_single_suffix(fn, ext))
+        var.set(output_path)
+        return output_path
 
-    def _browse_primary_roi_export(self) -> None:
-        self._browse_roi_export(self.primary_roi_export_path_var, residual=False)
+    def _browse_primary_roi_export(self) -> str | None:
+        return self._browse_roi_export(self.primary_roi_export_path_var, residual=False)
 
-    def _browse_residual_roi_export(self) -> None:
-        self._browse_roi_export(self.residual_roi_export_path_var, residual=True)
+    def _browse_residual_roi_export(self) -> str | None:
+        return self._browse_roi_export(self.residual_roi_export_path_var, residual=True)
 
     def _dictionary_filetypes(self) -> list[tuple[str, str]]:
         return [("Binned EBSD dictionary", "*.h5 *.hdf5"), ("All files", "*.*")]
+
+    def _selected_master_energy_mode(self) -> str:
+        label = self.master_energy_mode_var.get()
+        for mode, candidate in MASTER_ENERGY_MODE_LABELS.items():
+            if label == candidate:
+                return mode
+        if label in MASTER_ENERGY_MODE_LABELS:
+            return label
+        return MASTER_ENERGY_MODE_HIGHEST
+
+    def _sync_master_energy_mode_from_session(self) -> None:
+        master = self.session.master
+        mode = getattr(master, "energy_mode", MASTER_ENERGY_MODE_HIGHEST)
+        self.master_energy_mode_var.set(
+            MASTER_ENERGY_MODE_LABELS.get(str(mode), MASTER_ENERGY_MODE_LABELS[MASTER_ENERGY_MODE_HIGHEST])
+        )
 
     def _refresh_default_dictionary_path(self, *, force: bool = False) -> None:
         current = self.dictionary_path_var.get().strip()
@@ -1577,8 +1614,11 @@ class MultiStepOverlapGUI(tk.Tk):
         safe_stem = safe_stem or "master_pattern"
         resolution = f"{float(self.di_res_deg_var.get()):g}".replace(".", "p")
         binning = max(1, int(self.di_binning_var.get()))
+        energy_suffix = "_globalMC" if self._selected_master_energy_mode() == MASTER_ENERGY_MODE_GLOBAL else ""
         parent = Path(current).expanduser().resolve().parent if current else Path.cwd()
-        suggested = str((parent / f"{safe_stem}_dictionary_bin{binning}_{resolution}deg.h5").resolve())
+        suggested = str(
+            (parent / f"{safe_stem}_dictionary{energy_suffix}_bin{binning}_{resolution}deg.h5").resolve()
+        )
         self.dictionary_path_var.set(suggested)
         self._auto_dictionary_path = suggested
 
@@ -1925,6 +1965,7 @@ class MultiStepOverlapGUI(tk.Tk):
         self.dictionary_status_var.set(
             f"Ready: {cache.rotation_count} patterns, {cache.pattern_shape[0]}x{cache.pattern_shape[1]}, "
             f"binning={cache.software_binning}, resolution={cache.resolution_deg:g}°, "
+            f"MP energy={MASTER_ENERGY_MODE_LABELS.get(cache.master_energy_mode, cache.master_energy_mode)}, "
             f"dtype={cache.pattern_dtype}; {storage_note}"
         )
         self.dictionary_progress_var.set(100.0)
@@ -2086,6 +2127,7 @@ class MultiStepOverlapGUI(tk.Tk):
             self.map_layer_var.set(layers[0])
         self._sync_index_quality_layer_choices()
         self._apply_workflow_ui_state(self.session.restored_ui_state)
+        self._sync_master_energy_mode_from_session()
         cache = self.session.dictionary_cache
         if cache is not None:
             self.dictionary_path_var.set(str(cache.storage_path or ""))
@@ -2125,10 +2167,13 @@ class MultiStepOverlapGUI(tk.Tk):
 
     def _load_master(self) -> None:
         def action() -> str:
-            return self.session.load_master(
+            message = self.session.load_master(
                 master_path=self.master_path_var.get().strip(),
                 energy_kv=None,
+                energy_mode=self._selected_master_energy_mode(),
             )
+            self.after(0, self._sync_master_energy_mode_from_session)
+            return message
 
         self._run_threaded(action)
 
@@ -2141,6 +2186,7 @@ class MultiStepOverlapGUI(tk.Tk):
     def _workflow_ui_state(self) -> dict[str, object]:
         variables = {
             "phase_id": self.phase_id_var,
+            "master_energy_mode": self.master_energy_mode_var,
             "selected_index": self.index_var,
             "selected_row": self.row_var,
             "selected_col": self.col_var,
@@ -2192,6 +2238,7 @@ class MultiStepOverlapGUI(tk.Tk):
     def _apply_workflow_ui_state(self, state: dict[str, object]) -> None:
         variables = {
             "phase_id": self.phase_id_var,
+            "master_energy_mode": self.master_energy_mode_var,
             "selected_index": self.index_var,
             "selected_row": self.row_var,
             "selected_col": self.col_var,
@@ -2526,6 +2573,7 @@ class MultiStepOverlapGUI(tk.Tk):
                         self.phase_id_var.set(cache.phase_id),
                         self.di_res_deg_var.set(cache.resolution_deg),
                         self.di_binning_var.set(cache.software_binning),
+                        self._sync_master_energy_mode_from_session(),
                     ),
                 )
             return msg
@@ -3312,12 +3360,6 @@ class MultiStepOverlapGUI(tk.Tk):
             messagebox.showerror("Error", "Load input data first.")
             return
         bounds = self._roi_bounds()
-        raw_path = (
-            self.overlap_optimization_export_path_var.get().strip()
-            or self._default_overlap_optimization_export_path()
-        )
-        output_path = str(self._path_with_single_suffix(raw_path, ".h5"))
-        self.overlap_optimization_export_path_var.set(output_path)
         try:
             settings = {
                 "fit_max_iterations": int(self.gain_fit_maxiter_var.get()),
@@ -3331,6 +3373,9 @@ class MultiStepOverlapGUI(tk.Tk):
             }
         except Exception as exc:
             messagebox.showerror("Invalid export settings", str(exc))
+            return
+        output_path = self._browse_overlap_optimization_export()
+        if output_path is None:
             return
         self._set_overlap_optimization_progress(0.0, "Exporting full-map Step 4 HDF5 results...")
 
@@ -3353,10 +3398,9 @@ class MultiStepOverlapGUI(tk.Tk):
             messagebox.showerror("Error", "Load input data first.")
             return
         bounds = self._roi_bounds()
-        output_path = self.primary_roi_export_path_var.get().strip() or self._default_roi_export_path(residual=False)
-        suffix = ".h5oina" if self.session.data.source_type == "h5oina" else ".ang"
-        output_path = str(self._path_with_single_suffix(output_path, suffix))
-        self.primary_roi_export_path_var.set(output_path)
+        output_path = self._browse_primary_roi_export()
+        if output_path is None:
+            return
         self._set_overlap_progress(0.0, "Exporting primary ROI map...")
 
         def action() -> str:
@@ -3371,12 +3415,11 @@ class MultiStepOverlapGUI(tk.Tk):
             messagebox.showerror("Error", "Load input data first.")
             return
         bounds = self._roi_bounds()
-        output_path = self.residual_roi_export_path_var.get().strip() or self._default_roi_export_path(residual=True)
-        suffix = ".h5oina" if self.session.data.source_type == "h5oina" else ".ang"
-        output_path = str(self._path_with_single_suffix(output_path, suffix))
-        self.residual_roi_export_path_var.set(output_path)
         threshold = self._residual_ncc_threshold()
         include_patterns = bool(self.include_residual_patterns_export_var.get())
+        output_path = self._browse_residual_roi_export()
+        if output_path is None:
+            return
         self._set_overlap_progress(0.0, "Exporting residual ROI map...")
 
         def action() -> str:

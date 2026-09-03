@@ -10,6 +10,7 @@ import h5py
 import numpy as np
 
 from multistep_overlap_ebsd.core import (
+    MASTER_ENERGY_MODE_GLOBAL,
     OverlapMixtureResult,
     OverlapPointResult,
     WorkflowSession,
@@ -45,7 +46,13 @@ class WorkflowStateTests(unittest.TestCase):
     def test_complete_workflow_round_trip_preserves_steps_two_through_four(self) -> None:
         source = WorkflowSession()
         source.data = self._data()
-        source.master = SimpleNamespace(path="/tmp/master.h5")
+        source.master = SimpleNamespace(
+            path="/tmp/master.h5",
+            energy_mode=MASTER_ENERGY_MODE_GLOBAL,
+            energy_values_kv=np.asarray([18.0, 19.0, 20.0]),
+            energy_weights=np.asarray([0.15, 0.35, 0.5]),
+            energy_reference_pc_bruker=np.asarray([0.4, 0.5, 0.6]),
+        )
         source.initial_eulers_rad = np.zeros((6, 3), dtype=np.float64)
         source.current_eulers_rad = np.arange(18, dtype=np.float64).reshape(6, 3) / 100.0
         source.current_phases = np.ones(6, dtype=np.int32)
@@ -134,7 +141,10 @@ class WorkflowStateTests(unittest.TestCase):
             restored.data = self._data()
             return "Loaded fake input."
 
-        def load_master(master_path):
+        restored_master_kwargs: dict[str, object] = {}
+
+        def load_master(master_path, **kwargs):
+            restored_master_kwargs.update(kwargs)
             restored.master = SimpleNamespace(path=master_path)
             return "Loaded fake master."
 
@@ -153,6 +163,12 @@ class WorkflowStateTests(unittest.TestCase):
         self.assertIn(4, restored.overlap_mixture_results)
         self.assertAlmostEqual(restored.overlap_mixture_results[4].primary_fraction, 0.65)
         self.assertAlmostEqual(float(restored.overlap_secondary_fraction_map.reshape(-1)[4]), 0.35)
+        self.assertEqual(restored_master_kwargs["energy_mode"], MASTER_ENERGY_MODE_GLOBAL)
+        np.testing.assert_allclose(restored_master_kwargs["energy_weights"], [0.15, 0.35, 0.5])
+        np.testing.assert_allclose(
+            restored_master_kwargs["energy_reference_pc_bruker"],
+            [0.4, 0.5, 0.6],
+        )
 
     def test_repeated_h5oina_suffix_is_collapsed(self) -> None:
         path = _output_path_with_single_suffix(

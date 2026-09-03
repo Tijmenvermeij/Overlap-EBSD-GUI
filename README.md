@@ -20,6 +20,7 @@ In practice, the application can:
 - Load Oxford `.h5oina` data or EDAX `.up1` / `.up2` patterns with a companion `.ang` file
 - Calibrate or edit pattern centers
 - Build, save, load, and reuse [kikuchipy](https://github.com/pyxem/kikuchipy) dictionaries
+- Select either the highest MP energy or EMsoft-style globally MC-weighted energies when loading an MP
 - Run dictionary indexing and post-index orientation refinement
 - Fit primary overlap residuals, index residuals, and refine residual matches
 - Fit overlap-mixture models for selected points or ROIs
@@ -60,4 +61,9 @@ python multistep_overlap_ebsd_gui.py
 - Generated dictionaries use disk-backed, chunked `uint8` patterns. Generation first uses a temporary cache;
   **Save Dictionary** keeps it under the suggested master-pattern/binning/resolution filename. Existing v1
   `float32` dictionaries remain loadable and are read lazily.
+- The selected master-pattern energy model is shared by dictionary generation, pattern display, refinement,
+  residual analysis, and overlap-mixture fitting. Global weighting projects the EMsoft Monte Carlo energy
+  histogram onto one representative detector and collapses the MP once, so subsequent simulations have the
+  same cost as single-energy simulations. It requires `EMData/MCOpenCL/accum_e` in the MP HDF5 file.
+  Dictionaries and workflow files store the weights and reference PC.
 - `ReferenceCodes/`, `EMSphInx Studio/`, `_Depr/`, the local paper copies, and the deprecated launcher are ignored by git and are not part of the current workflow.

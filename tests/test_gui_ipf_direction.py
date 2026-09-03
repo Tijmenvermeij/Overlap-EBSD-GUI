@@ -132,6 +132,87 @@ class IpfDirectionSelectorTests(unittest.TestCase):
         stem = MultiStepOverlapGUI._source_stem(Path("map.h5oina.h5oina"))
         self.assertEqual(stem, "map")
 
+    def test_primary_and_residual_save_dialogs_do_not_double_h5oina_extension(self) -> None:
+        def path_var(default: str):
+            value = [default]
+            return SimpleNamespace(get=lambda: value[0], set=lambda new: value.__setitem__(0, new))
+
+        gui_stub = SimpleNamespace(
+            session=SimpleNamespace(data=SimpleNamespace(source_type="h5oina")),
+            _default_roi_export_path=lambda *, residual: (
+                "/tmp/map_residual_roi.h5oina" if residual else "/tmp/map_primary_roi.h5oina"
+            ),
+            _path_with_single_suffix=MultiStepOverlapGUI._path_with_single_suffix,
+        )
+        primary_var = path_var("/tmp/map_primary_roi.h5oina")
+        residual_var = path_var("/tmp/map_residual_roi.h5oina")
+
+        with patch("multistep_overlap_ebsd.gui.filedialog.asksaveasfilename") as save_dialog:
+            save_dialog.side_effect = [
+                "/tmp/map_primary_roi.h5oina.h5oina",
+                "/tmp/map_residual_roi.h5oina.h5oina",
+            ]
+            primary_path = MultiStepOverlapGUI._browse_roi_export(gui_stub, primary_var, residual=False)
+            residual_path = MultiStepOverlapGUI._browse_roi_export(gui_stub, residual_var, residual=True)
+
+        self.assertEqual(save_dialog.call_args_list[0].kwargs["initialfile"], "map_primary_roi")
+        self.assertEqual(save_dialog.call_args_list[1].kwargs["initialfile"], "map_residual_roi")
+        self.assertEqual(save_dialog.call_args_list[0].kwargs["defaultextension"], ".h5oina")
+        self.assertEqual(save_dialog.call_args_list[1].kwargs["defaultextension"], ".h5oina")
+        self.assertEqual(Path(primary_var.get()).name, "map_primary_roi.h5oina")
+        self.assertEqual(Path(residual_var.get()).name, "map_residual_roi.h5oina")
+        self.assertEqual(Path(primary_path).name, "map_primary_roi.h5oina")
+        self.assertEqual(Path(residual_path).name, "map_residual_roi.h5oina")
+
+    def test_step4_save_dialog_does_not_double_h5_extension(self) -> None:
+        value = ["/tmp/map_step4_results.h5"]
+        path_var = SimpleNamespace(get=lambda: value[0], set=lambda new: value.__setitem__(0, new))
+        gui_stub = SimpleNamespace(
+            overlap_optimization_export_path_var=path_var,
+            _default_overlap_optimization_export_path=lambda: "/tmp/map_step4_results.h5",
+            _path_with_single_suffix=MultiStepOverlapGUI._path_with_single_suffix,
+        )
+
+        with patch(
+            "multistep_overlap_ebsd.gui.filedialog.asksaveasfilename",
+            return_value="/tmp/map_step4_results.h5.h5",
+        ) as save_dialog:
+            output_path = MultiStepOverlapGUI._browse_overlap_optimization_export(gui_stub)
+
+        self.assertEqual(save_dialog.call_args.kwargs["initialfile"], "map_step4_results")
+        self.assertEqual(save_dialog.call_args.kwargs["defaultextension"], ".h5")
+        self.assertEqual(Path(output_path).name, "map_step4_results.h5")
+        self.assertEqual(Path(path_var.get()).name, "map_step4_results.h5")
+
+    def test_map_exports_use_one_button_and_prompt_during_export(self) -> None:
+        gui_source = Path(__file__).parents[1] / "multistep_overlap_ebsd" / "gui.py"
+        source = gui_source.read_text(encoding="utf-8")
+        self.assertNotIn('text="Browse", command=self._browse_primary_roi_export', source)
+        self.assertNotIn('text="Browse", command=self._browse_residual_roi_export', source)
+        self.assertNotIn('text="Browse", command=self._browse_overlap_optimization_export', source)
+
+        session = SimpleNamespace(
+            data=SimpleNamespace(source_type="h5oina"),
+            export_primary_roi_results=Mock(return_value="exported"),
+        )
+        picker = Mock(return_value="/tmp/map_primary_roi.h5oina")
+        gui_stub = SimpleNamespace(
+            session=session,
+            _roi_bounds=Mock(return_value=(0, 0, 2, 3)),
+            _browse_primary_roi_export=picker,
+            _set_overlap_progress=Mock(),
+            after=lambda _delay, callback: callback(),
+            _run_threaded=lambda action: action(),
+        )
+
+        MultiStepOverlapGUI._export_primary_roi_map(gui_stub)
+
+        picker.assert_called_once_with()
+        session.export_primary_roi_results.assert_called_once_with(
+            (0, 0, 2, 3),
+            "/tmp/map_primary_roi.h5oina",
+        )
+
     def test_residual_patterns_use_grayscale(self) -> None:
         self.assertEqual(RESIDUAL_PATTERN_CMAP, "gray")
         gui_source = Path(__file__).parents[1] / "multistep_overlap_ebsd" / "gui.py"

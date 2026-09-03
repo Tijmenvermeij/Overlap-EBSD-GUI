@@ -26,6 +26,9 @@ DICTIONARY_LAZY_CHUNK_PATTERNS = 8192
 DICTIONARY_INDEX_MAX_BATCH_PATTERNS = 4096
 DICTIONARY_INDEX_MIN_EXTRA_MEMORY = 128 * 1024**2
 DICTIONARY_INDEX_MAX_EXTRA_MEMORY = 512 * 1024**2
+MASTER_ENERGY_MODE_HIGHEST = "highest"
+MASTER_ENERGY_MODE_GLOBAL = "global_weighted"
+MASTER_ENERGY_MODES = {MASTER_ENERGY_MODE_HIGHEST, MASTER_ENERGY_MODE_GLOBAL}
 # Eager refinement batches otherwise remain one serial Dask task. Let
 # Kikuchipy split them into navigation chunks for its threaded scheduler.
 KIKUCHIPY_PARALLEL_REFINEMENT_RECHUNK = True
@@ -47,6 +50,19 @@ class _H5DatasetArray:
     def __getitem__(self, key):
         with h5py.File(self.path, "r") as h5:
             return h5[self.dataset_path][key]
+
+
+def _optional_arrays_close(
+    first: np.ndarray | None,
+    second: np.ndarray | None,
+    *,
+    atol: float = 1e-10,
+) -> bool:
+    if first is None or second is None:
+        return first is None and second is None
+    a = np.asarray(first)
+    b = np.asarray(second)
+    return a.shape == b.shape and bool(np.allclose(a, b, atol=atol, rtol=0.0))
 
 
 def _dictionary_storage_chunk_patterns(
@@ -510,6 +526,11 @@ class MasterPatternModel:
     phase: object | None
     energy_kv: float | None = None
     phase_id: int = 1
+    source_mp_signal: object | None = None
+    energy_mode: Literal["highest", "global_weighted"] = MASTER_ENERGY_MODE_HIGHEST
+    energy_values_kv: np.ndarray | None = None
+    energy_weights: np.ndarray | None = None
+    energy_reference_pc_bruker: np.ndarray | None = None
 
 
 @dataclass
@@ -588,6 +609,10 @@ class DictionaryCache:
     pattern_dtype: str = "float32"
     storage_path: str | None = None
     owns_storage: bool = False
+    master_energy_mode: Literal["highest", "global_weighted"] = MASTER_ENERGY_MODE_HIGHEST
+    master_energy_values_kv: np.ndarray | None = None
+    master_energy_weights: np.ndarray | None = None
+    master_energy_reference_pc_bruker: np.ndarray | None = None
 
 
 @dataclass
@@ -1409,6 +1434,9 @@ def _init_residual_roi_worker(
     master_kind: str,
     master_path: str,
     master_energy_kv: float | None,
+    master_energy_mode: str,
+    master_energy_values_kv: np.ndarray | None,
+    master_energy_weights: np.ndarray | None,
     h: int,
     w: int,
     cols: int,
@@ -1432,6 +1460,7 @@ def _init_residual_roi_worker(
     state: dict[str, object] = {
         "master_kind": str(master_kind),
         "master_energy_kv": None if master_energy_kv is None else float(master_energy_kv),
+        "master_energy_mode": str(master_energy_mode),
         "h": int(h),
         "w": int(w),
         "cols": int(cols),
@@ -1454,7 +1483,16 @@ def _init_residual_roi_worker(
     }
 
     if str(master_kind) == "kikuchipy":
-        state["mp_signal"] = kp.load(str(master_path), projection="lambert", hemisphere="both", lazy=True)
+        source_mp = kp.load(str(master_path), projection="lambert", hemisphere="both", lazy=True)
+        if str(master_energy_mode) == MASTER_ENERGY_MODE_GLOBAL:
+            if master_energy_values_kv is None or master_energy_weights is None:
+                raise RuntimeError("Residual worker did not receive the selected global MP energy weights.")
+            source_mp = _master_signal_with_energy_weights(
+                source_mp,
+                np.asarray(master_energy_values_kv, dtype=np.float64),
+                np.asarray(master_energy_weights, dtype=np.float64),
+            )
+        state["mp_signal"] = source_mp
     else:
         hemis = load_master_hemis([str(master_path)])
         state["projector"] = XProjector(hemis[0], int(h), int(w))
@@ -1805,7 +1843,7 @@ def _ang_phase_symmetries(header_lines: list[str]) -> dict[int, object]:
     return out
 
 
-def _energy_axis_values_kv_from_master_signal(mp_signal) -> np.ndarray | None:
+def _energy_axis_from_master_signal(mp_signal):
     try:
         nav_axes = list(mp_signal.axes_manager.navigation_axes)
     except Exception:
@@ -1816,12 +1854,18 @@ def _energy_axis_values_kv_from_master_signal(mp_signal) -> np.ndarray | None:
             if "energy" not in name:
                 continue
             vals = np.asarray(ax.axis, dtype=np.float64)
-            finite = vals[np.isfinite(vals)]
-            if finite.size:
-                return np.sort(finite.astype(np.float64, copy=False))
+            if vals.size and np.all(np.isfinite(vals)):
+                return ax, vals.astype(np.float64, copy=False)
         except Exception:
             continue
     return None
+
+
+def _energy_axis_values_kv_from_master_signal(mp_signal) -> np.ndarray | None:
+    result = _energy_axis_from_master_signal(mp_signal)
+    if result is None:
+        return None
+    return np.asarray(result[1], dtype=np.float64)
 
 
 def _highest_energy_kv_from_master_signal(mp_signal) -> float | None:
@@ -1829,6 +1873,175 @@ def _highest_energy_kv_from_master_signal(mp_signal) -> float | None:
     if vals is None or vals.size == 0:
         return None
     return float(np.max(vals))
+
+
+def _master_signal_with_energy_weights(
+    source_mp_signal,
+    energy_values_kv: np.ndarray,
+    energy_weights: np.ndarray,
+):
+    """Collapse a Kikuchipy master pattern's energy axis with fixed weights."""
+    import kikuchipy as kp
+
+    axis_result = _energy_axis_from_master_signal(source_mp_signal)
+    if axis_result is None:
+        raise ValueError("The master pattern has no energy navigation axis to average.")
+    energy_axis, source_energies = axis_result
+    values = np.asarray(energy_values_kv, dtype=np.float64).reshape(-1)
+    weights = np.asarray(energy_weights, dtype=np.float64).reshape(-1)
+    if values.size == 0 or values.size != weights.size:
+        raise ValueError("Master-pattern energy values and weights must be non-empty and have equal length.")
+    if not np.all(np.isfinite(weights)) or np.any(weights < 0.0) or not np.any(weights > 0.0):
+        raise ValueError("Master-pattern energy weights must be finite, non-negative, and not all zero.")
+    weights = weights / np.sum(weights)
+
+    weighted_data: np.ndarray | None = None
+    used_indices: set[int] = set()
+    for energy, weight in zip(values, weights):
+        source_index = int(np.argmin(np.abs(source_energies - float(energy))))
+        tolerance = max(1e-6, 1e-5 * max(1.0, abs(float(energy))))
+        if abs(float(source_energies[source_index]) - float(energy)) > tolerance:
+            raise ValueError(f"Energy {energy:g} kV is not present in the loaded master pattern.")
+        if source_index in used_indices:
+            raise ValueError("The requested energy weights map more than once to a master-pattern energy plane.")
+        used_indices.add(source_index)
+        selection = [slice(None)] * int(source_mp_signal.data.ndim)
+        selection[int(energy_axis.index_in_array)] = source_index
+        plane = source_mp_signal.data[tuple(selection)]
+        if hasattr(plane, "compute"):
+            plane = plane.compute()
+        plane_array = np.asarray(plane, dtype=np.float32)
+        if weighted_data is None:
+            weighted_data = np.zeros_like(plane_array, dtype=np.float32)
+        weighted_data += np.float32(weight) * plane_array
+
+    if weighted_data is None:
+        raise RuntimeError("No master-pattern energy planes were averaged.")
+    return kp.signals.EBSDMasterPattern(
+        weighted_data,
+        projection=str(source_mp_signal.projection),
+        hemisphere=str(source_mp_signal.hemisphere),
+        phase=getattr(source_mp_signal, "phase", None),
+    )
+
+
+def _h5_scalar(h5: h5py.File, path: str) -> float:
+    if path not in h5:
+        raise KeyError(path)
+    values = np.asarray(h5[path][()]).reshape(-1)
+    if values.size != 1:
+        raise ValueError(f"Expected scalar EMsoft metadata at '{path}'.")
+    return float(values[0])
+
+
+def _emsoft_global_energy_weights(
+    master_path: str,
+    detector,
+    master_energy_values_kv: np.ndarray,
+    maximum_energy_kv: float | None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return EMsoft's approximate detector-global MC energy weights.
+
+    This follows ``GenerateEBSDDetector`` and the ``energyaverage == 1``
+    branch in EMsoft: bilinearly project ``accum_e`` onto one detector,
+    apply its area correction, then normalize the sum of every energy plane.
+    """
+    from kikuchipy.signals.util._master_pattern import (
+        _get_direction_cosines_from_detector,
+        _vector2lambert,
+    )
+
+    if tuple(getattr(detector, "navigation_shape", ())) != (1,):
+        raise ValueError("Global energy weights require a detector with exactly one representative PC.")
+    source_energies = np.asarray(master_energy_values_kv, dtype=np.float64).reshape(-1)
+    if source_energies.size == 0:
+        raise ValueError("The master pattern contains no energy values.")
+    if maximum_energy_kv is None:
+        maximum_energy_kv = float(np.max(source_energies))
+    selected = source_energies <= float(maximum_energy_kv) + 1e-7
+    selected_energies = source_energies[selected]
+    if selected_energies.size == 0:
+        raise ValueError("No master-pattern energies are at or below the selected beam energy.")
+
+    with h5py.File(master_path, "r") as h5:
+        accum_path = "EMData/MCOpenCL/accum_e"
+        if accum_path not in h5:
+            raise ValueError(
+                "Global energy weighting requires EMsoft Monte Carlo data at "
+                f"'{accum_path}' in the master-pattern file."
+            )
+        accum_raw = np.asarray(h5[accum_path][()], dtype=np.float64)
+        ehist_min = _h5_scalar(h5, "NMLparameters/MCCLNameList/Ehistmin")
+        ebin_size = _h5_scalar(h5, "NMLparameters/MCCLNameList/Ebinsize")
+        beam_energy = _h5_scalar(h5, "NMLparameters/MCCLNameList/EkeV")
+        numsx = int(round(_h5_scalar(h5, "NMLparameters/MCCLNameList/numsx")))
+
+    if accum_raw.ndim != 3 or accum_raw.shape.count(numsx) < 2:
+        raise ValueError(f"Unexpected EMsoft accum_e shape {accum_raw.shape}; expected two {numsx}-pixel axes.")
+    energy_bin_count = int(round((beam_energy - ehist_min) / ebin_size)) + 1
+    energy_axes = [i for i, size in enumerate(accum_raw.shape) if int(size) == energy_bin_count]
+    if len(energy_axes) != 1:
+        raise ValueError(
+            f"Could not identify the {energy_bin_count}-bin energy axis in accum_e shape {accum_raw.shape}."
+        )
+    accum = np.moveaxis(accum_raw, energy_axes[0], 0)
+    if accum.shape[1:] != (numsx, numsx):
+        raise ValueError(f"Unexpected spatial MC histogram shape {accum.shape[1:]}; expected {(numsx, numsx)}.")
+    mc_energies = ehist_min + ebin_size * np.arange(energy_bin_count, dtype=np.float64)
+    mc_indices: list[int] = []
+    tolerance = max(1e-6, 0.51 * abs(float(ebin_size)))
+    for energy in selected_energies:
+        index = int(np.argmin(np.abs(mc_energies - float(energy))))
+        if abs(float(mc_energies[index]) - float(energy)) > tolerance:
+            raise ValueError(f"Master energy {energy:g} kV has no matching Monte Carlo energy bin.")
+        mc_indices.append(index)
+
+    direction_cosines = np.asarray(_get_direction_cosines_from_detector(detector), dtype=np.float64)
+    direction_cosines[direction_cosines[:, 2] < 0.0] *= -1.0
+    # Kikuchipy returns physical square-Lambert coordinates with half-edge
+    # sqrt(pi)/2; current EMsoft's LambertSphereToSquare is normalized to [-1, 1].
+    lambert = np.asarray(_vector2lambert(direction_cosines), dtype=np.float64) / (np.sqrt(np.pi) / 2.0)
+    ns = (numsx - 1) // 2
+    mc_x = ns * lambert[:, 1]
+    mc_y = -ns * lambert[:, 0]
+    col_float = ns + mc_x
+    row_float = ns + mc_y
+    col0 = np.clip(np.floor(col_float).astype(np.int64), 0, numsx - 2)
+    row0 = np.clip(np.floor(row_float).astype(np.int64), 0, numsx - 2)
+    dx = np.clip(col_float - col0, 0.0, 1.0)
+    dy = np.clip(row_float - row0, 0.0, 1.0)
+
+    bounds = np.asarray(detector.gnomonic_bounds, dtype=np.float64).reshape(-1, 4)[0]
+    x_step = (bounds[1] - bounds[0]) / int(detector.ncols)
+    y_step = (bounds[3] - bounds[2]) / int(detector.nrows)
+    x_centers = bounds[0] + (np.arange(int(detector.ncols)) + 0.5) * x_step
+    y_centers = bounds[3] - (np.arange(int(detector.nrows)) + 0.5) * y_step
+    pc_col = int(np.argmin(np.abs(x_centers)))
+    pc_row = int(np.argmin(np.abs(y_centers)))
+    pc_flat = pc_row * int(detector.ncols) + pc_col
+    pc_vector = direction_cosines[pc_flat]
+    dot = np.clip(direction_cosines @ pc_vector, -1.0, 1.0)
+    delta = float(np.asarray(detector.px_size_binned).reshape(-1)[0])
+    distance = float(np.asarray(detector.specimen_scintillator_distance).reshape(-1)[0])
+    alpha = np.arctan(delta / distance / np.sqrt(np.pi))
+    cos_alpha = np.cos(alpha)
+    area_base = np.maximum(cos_alpha * cos_alpha + dot * dot - 1.0, 0.0)
+    area_correction = np.power(area_base, 1.5) / (cos_alpha**3)
+    area_correction[pc_flat] = 0.25
+
+    totals = np.zeros(selected_energies.size, dtype=np.float64)
+    for out_index, mc_index in enumerate(mc_indices):
+        plane = accum[mc_index]
+        interpolated = (
+            plane[row0, col0] * (1.0 - dx) * (1.0 - dy)
+            + plane[row0, col0 + 1] * dx * (1.0 - dy)
+            + plane[row0 + 1, col0] * (1.0 - dx) * dy
+            + plane[row0 + 1, col0 + 1] * dx * dy
+        )
+        totals[out_index] = float(np.sum(area_correction * interpolated, dtype=np.float64))
+    if not np.all(np.isfinite(totals)) or np.sum(totals) <= 0.0:
+        raise ValueError("The detector-projected Monte Carlo energy histogram has no positive intensity.")
+    return selected_energies, totals / np.sum(totals)
 
 
 def _parse_ang_header_with_lines(path: str) -> tuple[dict[str, str], list[str]]:
@@ -3138,7 +3351,144 @@ class WorkflowSession:
 
     # ----------------------- Master loading ------------------------ #
 
-    def load_master(self, master_path: str, energy_kv: float | None = None) -> str:
+    def _representative_master_pc_bruker(self) -> np.ndarray:
+        if self.calibrated_center_pc_bruker is not None:
+            pc = np.asarray(self.calibrated_center_pc_bruker, dtype=np.float64).reshape(3)
+        elif self.current_pc_bruker is not None and np.asarray(self.current_pc_bruker).size:
+            pc = np.nanmedian(np.asarray(self.current_pc_bruker, dtype=np.float64).reshape(-1, 3), axis=0)
+        else:
+            raise RuntimeError("A representative pattern center is required for global energy weighting.")
+        if not np.all(np.isfinite(pc)):
+            raise ValueError("The representative pattern center contains non-finite values.")
+        return pc
+
+    def _full_kikuchipy_detector_for_pc(self, pc_bruker: np.ndarray):
+        import kikuchipy as kp
+
+        if self.data is None:
+            raise RuntimeError("Load input data first.")
+        return kp.detectors.EBSDDetector(
+            shape=(self.data.h, self.data.w),
+            pc=np.asarray(pc_bruker, dtype=np.float64).reshape(1, 3),
+            convention="bruker",
+            px_size=float(self.data.detector_px_size or 1.0),
+            binning=int(round(float(self.data.detector_binning or 1.0))),
+            sample_tilt=float(self.data.sample_tilt_deg),
+            tilt=float(self.data.detector_tilt_deg),
+            azimuthal=float(self.data.azimuthal_deg),
+            twist=float(self.data.twist_deg),
+        )
+
+    def set_master_energy_model(
+        self,
+        energy_mode: Literal["highest", "global_weighted"],
+        *,
+        energy_values_kv: np.ndarray | None = None,
+        energy_weights: np.ndarray | None = None,
+        reference_pc_bruker: np.ndarray | None = None,
+        clear_dictionary: bool = True,
+    ) -> str:
+        """Apply one persistent energy model to every master-pattern projection."""
+        if self.master is None or self.master.kind != "kikuchipy":
+            raise RuntimeError("Load a Kikuchipy master pattern before selecting its energy model.")
+        mode = str(energy_mode).strip().lower()
+        if mode not in MASTER_ENERGY_MODES:
+            raise ValueError(f"Unknown master-pattern energy mode '{energy_mode}'.")
+        source = getattr(self.master, "source_mp_signal", None)
+        if source is None:
+            source = getattr(self.master, "mp_signal", None)
+        if source is None:
+            raise RuntimeError("The source master-pattern signal is unavailable.")
+
+        if mode == MASTER_ENERGY_MODE_HIGHEST:
+            selected_energy = getattr(self.master, "energy_kv", None)
+            self.master.mp_signal = source
+            self.master.energy_mode = MASTER_ENERGY_MODE_HIGHEST
+            self.master.energy_values_kv = (
+                None if selected_energy is None else np.asarray([selected_energy], dtype=np.float64)
+            )
+            self.master.energy_weights = None if selected_energy is None else np.ones(1, dtype=np.float64)
+            self.master.energy_reference_pc_bruker = None
+            note = (
+                "highest available energy"
+                if selected_energy is None
+                else f"single energy {selected_energy:.3f} kV"
+            )
+        else:
+            source_energies = _energy_axis_values_kv_from_master_signal(source)
+            if source_energies is None or source_energies.size == 0:
+                raise ValueError("Global energy weighting requires a master pattern with an energy axis.")
+            if reference_pc_bruker is None:
+                reference_pc = self._representative_master_pc_bruker()
+            else:
+                reference_pc = np.asarray(reference_pc_bruker, dtype=np.float64).reshape(3)
+            if not np.all(np.isfinite(reference_pc)):
+                raise ValueError("The global energy-weighting reference PC contains non-finite values.")
+            if (energy_values_kv is None) != (energy_weights is None):
+                raise ValueError("Provide both stored global energy values and weights, or neither.")
+            if energy_values_kv is None:
+                detector = self._full_kikuchipy_detector_for_pc(reference_pc)
+                values, weights = _emsoft_global_energy_weights(
+                    self.master.path,
+                    detector,
+                    source_energies,
+                    self.master.energy_kv,
+                )
+            else:
+                values = np.asarray(energy_values_kv, dtype=np.float64).reshape(-1)
+                weights = np.asarray(energy_weights, dtype=np.float64).reshape(-1)
+                if values.size == 0 or values.size != weights.size:
+                    raise ValueError("Stored global energy values and weights are invalid.")
+                if not np.all(np.isfinite(weights)) or np.any(weights < 0.0) or np.sum(weights) <= 0.0:
+                    raise ValueError("Stored global energy weights must be finite, non-negative, and non-zero.")
+                weights = weights / np.sum(weights)
+            effective = _master_signal_with_energy_weights(source, values, weights)
+            self.master.mp_signal = effective
+            self.master.phase = getattr(effective, "phase", self.master.phase)
+            self.master.energy_kv = float(np.max(values))
+            self.master.energy_mode = MASTER_ENERGY_MODE_GLOBAL
+            self.master.energy_values_kv = np.asarray(values, dtype=np.float64).copy()
+            self.master.energy_weights = np.asarray(weights, dtype=np.float64).copy()
+            self.master.energy_reference_pc_bruker = reference_pc.copy()
+            note = (
+                f"globally MC-weighted {values.size}-energy master "
+                f"({float(np.min(values)):.3f}-{float(np.max(values)):.3f} kV)"
+            )
+
+        if clear_dictionary:
+            self._clear_dictionary_cache()
+            self.dictionary_settings = None
+        self._invalidate_orientation_cache()
+        self._invalidate_residual_cache()
+        self.indexed_candidate_eulers_rad = None
+        return note
+
+    def _ensure_global_master_reference_pc(self, pc_bruker: np.ndarray) -> None:
+        """Refresh the approximate global weights after the representative PC changes."""
+        if self.master is None or getattr(
+            self.master, "energy_mode", MASTER_ENERGY_MODE_HIGHEST
+        ) != MASTER_ENERGY_MODE_GLOBAL:
+            return
+        pc = np.asarray(pc_bruker, dtype=np.float64).reshape(3)
+        if _optional_arrays_close(getattr(self.master, "energy_reference_pc_bruker", None), pc, atol=1e-8):
+            return
+        self.set_master_energy_model(
+            MASTER_ENERGY_MODE_GLOBAL,
+            reference_pc_bruker=pc,
+            clear_dictionary=True,
+        )
+        self.last_action_note = "Global MP energy weights were refreshed for the dictionary pattern center."
+
+    def load_master(
+        self,
+        master_path: str,
+        energy_kv: float | None = None,
+        *,
+        energy_mode: Literal["highest", "global_weighted"] = MASTER_ENERGY_MODE_HIGHEST,
+        energy_values_kv: np.ndarray | None = None,
+        energy_weights: np.ndarray | None = None,
+        energy_reference_pc_bruker: np.ndarray | None = None,
+    ) -> str:
         import kikuchipy as kp
 
         if self.data is None:
@@ -3150,6 +3500,31 @@ class WorkflowSession:
         try:
             kwargs = {"projection": "lambert", "hemisphere": "both", "lazy": True}
             mp = kp.load(p, **kwargs)
+        except Exception:
+            if str(energy_mode).strip().lower() != MASTER_ENERGY_MODE_HIGHEST:
+                raise ValueError("Global energy weighting is only available for Kikuchipy-readable EMsoft HDF5 MPs.")
+            hemis = load_master_hemis([p], target_beam_kv=None)
+            projector = XProjector(hemis[0], self.data.h, self.data.w)
+            self.master = MasterPatternModel(
+                kind="legacy",
+                path=p,
+                mp_signal=None,
+                projector=projector,
+                phase=None,
+                energy_kv=None,
+            )
+            self._clear_dictionary_cache()
+            self.dictionary_settings = None
+            self._invalidate_orientation_cache()
+            self._invalidate_residual_cache()
+            self.indexed_candidate_eulers_rad = None
+            return (
+                f"Loaded master pattern with legacy projector fallback: {Path(p).name}. "
+                "Kikuchipy DI/refinement is unavailable for this MP format."
+            )
+
+        previous_master = self.master
+        try:
             energy_vals = _energy_axis_values_kv_from_master_signal(mp)
             selected_energy: float | None = None
             selection_note = ""
@@ -3179,37 +3554,27 @@ class WorkflowSession:
                 projector=None,
                 phase=getattr(mp, "phase", None),
                 energy_kv=selected_energy,
+                source_mp_signal=mp,
             )
-            self._invalidate_orientation_cache()
-            self._invalidate_residual_cache()
-            self.indexed_candidate_eulers_rad = None
+            model_note = self.set_master_energy_model(
+                energy_mode,
+                energy_values_kv=energy_values_kv,
+                energy_weights=energy_weights,
+                reference_pc_bruker=energy_reference_pc_bruker,
+                clear_dictionary=True,
+            )
             if selected_energy is None:
                 return (
                     f"Loaded master pattern via Kikuchipy: {Path(p).name}. "
-                    "Energy axis unavailable, fallback energy=20 kV will be used."
+                    f"Energy axis unavailable, fallback energy=20 kV will be used; model={model_note}."
                 )
             return (
                 f"Loaded master pattern via Kikuchipy: {Path(p).name}. "
-                f"Using energy: {selected_energy:.3f} kV ({selection_note})."
+                f"Using {model_note}; upper energy selected {selected_energy:.3f} kV ({selection_note})."
             )
         except Exception:
-            hemis = load_master_hemis([p], target_beam_kv=None)
-            projector = XProjector(hemis[0], self.data.h, self.data.w)
-            self.master = MasterPatternModel(
-                kind="legacy",
-                path=p,
-                mp_signal=None,
-                projector=projector,
-                phase=None,
-                energy_kv=None,
-            )
-            self._invalidate_orientation_cache()
-            self._invalidate_residual_cache()
-            self.indexed_candidate_eulers_rad = None
-            return (
-                f"Loaded master pattern with legacy projector fallback: {Path(p).name}. "
-                "Kikuchipy DI/refinement is unavailable for this MP format."
-            )
+            self.master = previous_master
+            raise
 
     # ---------------------- Pattern extraction --------------------- #
 
@@ -4208,13 +4573,23 @@ class WorkflowSession:
         self._clear_residual_candidate_rows()
         self._invalidate_orientation_cache()
         self._invalidate_residual_cache()
+        energy_note = ""
+        if self.master is not None and getattr(
+            self.master, "energy_mode", MASTER_ENERGY_MODE_HIGHEST
+        ) == MASTER_ENERGY_MODE_GLOBAL:
+            self.set_master_energy_model(
+                MASTER_ENERGY_MODE_GLOBAL,
+                reference_pc_bruker=self.calibrated_center_pc_bruker,
+                clear_dictionary=False,
+            )
+            energy_note = " Global MP energy weights were refreshed for this center PC."
         center = self.calibrated_center_pc_custom
         span_x = abs(float(self.data.step_x)) * max(0, self.data.cols - 1)
         span_y = abs(float(self.data.step_y)) * max(0, self.data.rows - 1)
         return (
             f"Applied average of {indices.size} refined PC(s); center PC ({self.data.pc_output_convention})="
             f"({center[0]:.6f}, {center[1]:.6f}, {center[2]:.6f}). {correction_note}. "
-            f"Scan span={span_x:.3f} x {span_y:.3f} {self.data.scan_unit}."
+            f"Scan span={span_x:.3f} x {span_y:.3f} {self.data.scan_unit}.{energy_note}"
         )
 
     def apply_point_pc_to_full_map(self, index: int) -> str:
@@ -4533,6 +4908,11 @@ class WorkflowSession:
         if self.data is None or self.master is None or self.master.mp_signal is None or self.master.phase is None:
             raise RuntimeError("A Kikuchipy master pattern is required to build a dictionary.")
         pc = np.asarray(pc_bruker, dtype=np.float64).reshape(3)
+        self._ensure_global_master_reference_pc(pc)
+        master_energy_mode = getattr(self.master, "energy_mode", MASTER_ENERGY_MODE_HIGHEST)
+        master_energy_values = getattr(self.master, "energy_values_kv", None)
+        master_energy_weights = getattr(self.master, "energy_weights", None)
+        master_energy_reference_pc = getattr(self.master, "energy_reference_pc_bruker", None)
         factor = int(software_binning)
         crop_extent = self._binning_crop_extent(factor)
         top, bottom, left, right = crop_extent
@@ -4545,6 +4925,13 @@ class WorkflowSession:
             and np.allclose(existing.pc_bruker, pc, atol=1e-10, rtol=0.0)
             and existing.software_binning == factor
             and existing.crop_extent == crop_extent
+            and existing.master_energy_mode == master_energy_mode
+            and _optional_arrays_close(existing.master_energy_values_kv, master_energy_values)
+            and _optional_arrays_close(existing.master_energy_weights, master_energy_weights)
+            and _optional_arrays_close(
+                existing.master_energy_reference_pc_bruker,
+                master_energy_reference_pc,
+            )
         ):
             if progress_callback is not None:
                 progress_callback(100.0, "Dictionary already matches these settings.")
@@ -4605,6 +4992,7 @@ class WorkflowSession:
                 h5.attrs["resolution_deg"] = float(resolution_deg)
                 h5.attrs["software_binning"] = int(factor)
                 h5.attrs["pattern_dtype"] = storage_dtype.name
+                h5.attrs["master_energy_mode"] = str(master_energy_mode)
                 patterns_h5 = h5.create_dataset(
                     "patterns",
                     shape=(int(rots.size), *pattern_shape),
@@ -4616,6 +5004,21 @@ class WorkflowSession:
                 h5.create_dataset("eulers_rad", data=eulers, dtype=np.float64)
                 h5.create_dataset("pc_bruker", data=pc, dtype=np.float64)
                 h5.create_dataset("crop_extent", data=np.asarray(crop_extent, dtype=np.int64))
+                if master_energy_values is not None:
+                    h5.create_dataset(
+                        "master_energy_values_kv",
+                        data=np.asarray(master_energy_values, dtype=np.float64),
+                    )
+                if master_energy_weights is not None:
+                    h5.create_dataset(
+                        "master_energy_weights",
+                        data=np.asarray(master_energy_weights, dtype=np.float64),
+                    )
+                if master_energy_reference_pc is not None:
+                    h5.create_dataset(
+                        "master_energy_reference_pc_bruker",
+                        data=np.asarray(master_energy_reference_pc, dtype=np.float64),
+                    )
                 for start in range(0, int(rots.size), generation_chunk_size):
                     stop = min(int(rots.size), start + generation_chunk_size)
                     chunk_signal = self.master.mp_signal.get_patterns(
@@ -4657,6 +5060,18 @@ class WorkflowSession:
             pattern_dtype=storage_dtype.name,
             storage_path=str(temp_path),
             owns_storage=True,
+            master_energy_mode=master_energy_mode,
+            master_energy_values_kv=(
+                None if master_energy_values is None else np.asarray(master_energy_values).copy()
+            ),
+            master_energy_weights=(
+                None if master_energy_weights is None else np.asarray(master_energy_weights).copy()
+            ),
+            master_energy_reference_pc_bruker=(
+                None
+                if master_energy_reference_pc is None
+                else np.asarray(master_energy_reference_pc).copy()
+            ),
         )
         self._clear_dictionary_cache()
         self.dictionary_cache = cache
@@ -4666,6 +5081,7 @@ class WorkflowSession:
             "pc_bruker": pc.copy(),
             "software_binning": factor,
             "crop_extent": np.asarray(crop_extent, dtype=np.int64),
+            "master_energy_mode": master_energy_mode,
         }
         if progress_callback is not None:
             progress_callback(100.0, "Dictionary generation complete.")
@@ -5777,6 +6193,9 @@ class WorkflowSession:
                         self.master.kind,
                         self.master.path,
                         self.master.energy_kv,
+                        self.master.energy_mode,
+                        self.master.energy_values_kv,
+                        self.master.energy_weights,
                         int(self.data.h),
                         int(self.data.w),
                         int(self.data.cols),
@@ -6437,6 +6856,9 @@ class WorkflowSession:
                         self.master.kind,
                         self.master.path,
                         self.master.energy_kv,
+                        self.master.energy_mode,
+                        self.master.energy_values_kv,
+                        self.master.energy_weights,
                         int(self.data.h),
                         int(self.data.w),
                         int(self.data.cols),
@@ -6888,6 +7310,7 @@ class WorkflowSession:
                     h5.attrs["resolution_deg"] = float(cache.resolution_deg)
                     h5.attrs["software_binning"] = int(cache.software_binning)
                     h5.attrs["pattern_dtype"] = pattern_dtype.name
+                    h5.attrs["master_energy_mode"] = str(cache.master_energy_mode)
                     patterns_h5 = h5.create_dataset(
                         "patterns",
                         shape=(cache.rotation_count, *cache.pattern_shape),
@@ -6907,6 +7330,21 @@ class WorkflowSession:
                     h5.create_dataset("eulers_rad", data=eulers, dtype=np.float64)
                     h5.create_dataset("pc_bruker", data=cache.pc_bruker, dtype=np.float64)
                     h5.create_dataset("crop_extent", data=np.asarray(cache.crop_extent, dtype=np.int64))
+                    if cache.master_energy_values_kv is not None:
+                        h5.create_dataset(
+                            "master_energy_values_kv",
+                            data=np.asarray(cache.master_energy_values_kv, dtype=np.float64),
+                        )
+                    if cache.master_energy_weights is not None:
+                        h5.create_dataset(
+                            "master_energy_weights",
+                            data=np.asarray(cache.master_energy_weights, dtype=np.float64),
+                        )
+                    if cache.master_energy_reference_pc_bruker is not None:
+                        h5.create_dataset(
+                            "master_energy_reference_pc_bruker",
+                            data=np.asarray(cache.master_energy_reference_pc_bruker, dtype=np.float64),
+                        )
             os.replace(staged, out)
         except Exception:
             staged.unlink(missing_ok=True)
@@ -6953,6 +7391,25 @@ class WorkflowSession:
             eulers = np.asarray(h5["eulers_rad"][()], dtype=np.float64).reshape(-1, 3)
             pc_bruker = np.asarray(h5["pc_bruker"][()], dtype=np.float64).reshape(3)
             crop_extent = tuple(int(v) for v in np.asarray(h5["crop_extent"][()]).reshape(4))
+            energy_mode_value = h5.attrs.get("master_energy_mode", MASTER_ENERGY_MODE_HIGHEST)
+            if isinstance(energy_mode_value, bytes):
+                energy_mode_value = energy_mode_value.decode("utf-8", errors="replace")
+            master_energy_mode = str(energy_mode_value)
+            master_energy_values = (
+                np.asarray(h5["master_energy_values_kv"][()], dtype=np.float64).reshape(-1)
+                if "master_energy_values_kv" in h5
+                else None
+            )
+            master_energy_weights = (
+                np.asarray(h5["master_energy_weights"][()], dtype=np.float64).reshape(-1)
+                if "master_energy_weights" in h5
+                else None
+            )
+            master_energy_reference_pc = (
+                np.asarray(h5["master_energy_reference_pc_bruker"][()], dtype=np.float64).reshape(3)
+                if "master_energy_reference_pc_bruker" in h5
+                else None
+            )
         if pattern_count != eulers.shape[0]:
             raise ValueError("Dictionary pattern and rotation counts do not match.")
         expected_extent = self._binning_crop_extent(software_binning)
@@ -6967,6 +7424,26 @@ class WorkflowSession:
         )
         if pattern_shape != expected_shape:
             raise ValueError(f"Dictionary pattern shape {pattern_shape} does not match expected {expected_shape}.")
+        if master_energy_mode not in MASTER_ENERGY_MODES:
+            raise ValueError(f"Dictionary uses unknown master energy mode '{master_energy_mode}'.")
+        if master_energy_mode == MASTER_ENERGY_MODE_GLOBAL:
+            if (
+                master_energy_values is None
+                or master_energy_weights is None
+                or master_energy_reference_pc is None
+            ):
+                raise ValueError("Globally weighted dictionary is missing its master-energy metadata.")
+            self.set_master_energy_model(
+                MASTER_ENERGY_MODE_GLOBAL,
+                energy_values_kv=master_energy_values,
+                energy_weights=master_energy_weights,
+                reference_pc_bruker=master_energy_reference_pc,
+                clear_dictionary=True,
+            )
+        else:
+            if master_energy_values is not None and master_energy_values.size:
+                self.master.energy_kv = float(np.max(master_energy_values))
+            self.set_master_energy_model(MASTER_ENERGY_MODE_HIGHEST, clear_dictionary=True)
         rotations = Rotation.from_euler(eulers, degrees=False)
         xmap = CrystalMap(
             rotations=rotations,
@@ -6986,6 +7463,16 @@ class WorkflowSession:
             pattern_dtype=pattern_dtype,
             storage_path=str(path),
             owns_storage=False,
+            master_energy_mode=master_energy_mode,
+            master_energy_values_kv=(
+                None if master_energy_values is None else master_energy_values.copy()
+            ),
+            master_energy_weights=(
+                None if master_energy_weights is None else master_energy_weights.copy()
+            ),
+            master_energy_reference_pc_bruker=(
+                None if master_energy_reference_pc is None else master_energy_reference_pc.copy()
+            ),
         )
         self._clear_dictionary_cache()
         self.dictionary_cache = cache
@@ -6995,10 +7482,12 @@ class WorkflowSession:
             "pc_bruker": pc_bruker.copy(),
             "software_binning": software_binning,
             "crop_extent": np.asarray(crop_extent, dtype=np.int64),
+            "master_energy_mode": master_energy_mode,
         }
         return (
             f"Loaded disk-backed dictionary: {pattern_count} {pattern_dtype} patterns, "
-            f"shape={pattern_shape[0]}x{pattern_shape[1]}, software binning={software_binning}, from {path}"
+            f"shape={pattern_shape[0]}x{pattern_shape[1]}, software binning={software_binning}, "
+            f"master energy model={master_energy_mode}, from {path}"
         )
 
     @staticmethod
@@ -7181,12 +7670,38 @@ class WorkflowSession:
             ],
             separators=(",", ":"),
         )
+        master_energy_mode = str(
+            getattr(self.master, "energy_mode", MASTER_ENERGY_MODE_HIGHEST)
+            if self.master is not None
+            else MASTER_ENERGY_MODE_HIGHEST
+        )
+        master_energy_values = getattr(self.master, "energy_values_kv", None) if self.master is not None else None
+        master_energy_weights = getattr(self.master, "energy_weights", None) if self.master is not None else None
+        master_energy_reference_pc = (
+            getattr(self.master, "energy_reference_pc_bruker", None) if self.master is not None else None
+        )
         np.savez_compressed(
             out_path,
-            workflow_schema_version=np.asarray(2, dtype=np.int64),
+            workflow_schema_version=np.asarray(3, dtype=np.int64),
             pattern_path=np.asarray(self.data.pattern_path),
             orientation_path=np.asarray(self.data.orientation_path or ""),
             master_path=np.asarray(self.master.path if self.master is not None else ""),
+            master_energy_mode=np.asarray(master_energy_mode),
+            master_energy_values_kv=(
+                np.asarray(master_energy_values, dtype=np.float64)
+                if master_energy_values is not None
+                else np.empty(0, dtype=np.float64)
+            ),
+            master_energy_weights=(
+                np.asarray(master_energy_weights, dtype=np.float64)
+                if master_energy_weights is not None
+                else np.empty(0, dtype=np.float64)
+            ),
+            master_energy_reference_pc_bruker=(
+                np.asarray(master_energy_reference_pc, dtype=np.float64)
+                if master_energy_reference_pc is not None
+                else np.empty(0, dtype=np.float64)
+            ),
             initial_eulers_rad=(
                 self.initial_eulers_rad
                 if self.initial_eulers_rad is not None
@@ -7314,7 +7829,33 @@ class WorkflowSession:
                 twist_deg=float(state["twist"].item()),
             )
             load_note = self.load_input(pattern_path, orientation_path, geom)
-            master_note = self.load_master(master_path) if master_path else "No master pattern stored."
+            master_energy_mode = (
+                str(state["master_energy_mode"].item())
+                if "master_energy_mode" in state.files
+                else MASTER_ENERGY_MODE_HIGHEST
+            )
+            master_load_kwargs: dict[str, object] = {"energy_mode": master_energy_mode}
+            if master_energy_mode == MASTER_ENERGY_MODE_GLOBAL:
+                values = np.asarray(state["master_energy_values_kv"], dtype=np.float64).reshape(-1)
+                weights = np.asarray(state["master_energy_weights"], dtype=np.float64).reshape(-1)
+                reference_pc = np.asarray(
+                    state["master_energy_reference_pc_bruker"], dtype=np.float64
+                ).reshape(-1)
+                if values.size == 0 or values.size != weights.size or reference_pc.size != 3:
+                    raise ValueError("Saved workflow has incomplete global master-energy metadata.")
+                master_load_kwargs.update(
+                    energy_values_kv=values,
+                    energy_weights=weights,
+                    energy_reference_pc_bruker=reference_pc,
+                )
+            if not master_path:
+                master_note = "No master pattern stored."
+            elif master_energy_mode == MASTER_ENERGY_MODE_GLOBAL:
+                master_note = self.load_master(master_path, **master_load_kwargs)
+            else:
+                # Preserve compatibility with older integrations which replace
+                # load_master() with a one-argument loader.
+                master_note = self.load_master(master_path)
             mask_option = int(state["pattern_mask_option"].item()) if "pattern_mask_option" in state.files else -1
             self.set_pattern_mask_option(mask_option)
             dynamic_bg_enabled = bool(state["dynamic_bg_enabled"].item()) if "dynamic_bg_enabled" in state.files else False
