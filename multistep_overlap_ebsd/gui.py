@@ -111,11 +111,11 @@ class MultiStepOverlapGUI(tk.Tk):
         self.trust_euler_var = tk.DoubleVar(value=1.0)
         self.trust_pc_var = tk.DoubleVar(value=0.03)
         self.maxfev_var = tk.IntVar(value=25)
-        self.refine_full_resolution_var = tk.BooleanVar(value=False)
+        self.refine_full_resolution_var = tk.BooleanVar(value=True)
 
         self.di_res_deg_var = tk.DoubleVar(value=12.0)
         self.di_binning_var = tk.IntVar(value=4)
-        self.dictionary_keep_n_var = tk.IntVar(value=1)
+        self.dictionary_keep_n_var = tk.IntVar(value=4)
         self.dictionary_status_var = tk.StringVar(value="No dictionary generated or loaded.")
         self.dictionary_progress_var = tk.DoubleVar(value=0.0)
         self.reindex_progress_var = tk.DoubleVar(value=0.0)
@@ -139,12 +139,12 @@ class MultiStepOverlapGUI(tk.Tk):
         self.gain_fit_popsize_var = tk.IntVar(value=15)
         self.residual_trust_euler_var = tk.DoubleVar(value=2.0)
         self.residual_maxfev_var = tk.IntVar(value=25)
-        self.residual_refine_full_resolution_var = tk.BooleanVar(value=False)
-        self.residual_keep_n_var = tk.IntVar(value=1)
-        self.step3_parallel_cores_var = tk.IntVar(value=0)
+        self.residual_refine_full_resolution_var = tk.BooleanVar(value=True)
+        self.residual_keep_n_var = tk.IntVar(value=4)
+        self.step3_parallel_cores_var = tk.IntVar(value=1)
         self.overlap_mixture_trust_euler_var = tk.DoubleVar(value=1.0)
         self.overlap_mixture_maxfev_var = tk.IntVar(value=80)
-        self.step4_parallel_cores_var = tk.IntVar(value=0)
+        self.step4_parallel_cores_var = tk.IntVar(value=1)
         self.overlap_min_ncc_var = tk.StringVar(value="0.15")
         self.residual_ipf_ncc_var = tk.StringVar(value="0.15")
         self.overlap_mixture_residual_ncc_var = tk.StringVar(value=self.residual_ipf_ncc_var.get())
@@ -1837,7 +1837,7 @@ class MultiStepOverlapGUI(tk.Tk):
         try:
             return float(str(self.overlap_min_ncc_var.get()).strip())
         except Exception:
-            return 0.0
+            return 0.15
 
     def _selected_ipf_direction(self) -> tuple[str, str]:
         direction = str(self.ipf_direction_var.get()).strip().upper()
@@ -1863,13 +1863,13 @@ class MultiStepOverlapGUI(tk.Tk):
         try:
             return float(str(self.residual_ipf_ncc_var.get()).strip())
         except Exception:
-            return 0.0
+            return 0.15
 
     def _overlap_mixture_residual_ncc_threshold(self) -> float:
         try:
             return float(str(self.overlap_mixture_residual_ncc_var.get()).strip())
         except Exception:
-            return 0.0
+            return 0.15
 
     def _primary_threshold_mask(self) -> np.ndarray | None:
         if self.session.data is None:

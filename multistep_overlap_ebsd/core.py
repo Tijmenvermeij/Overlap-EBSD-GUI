@@ -4376,7 +4376,7 @@ class WorkflowSession:
         self,
         phase_id: int,
         *,
-        use_full_resolution: bool = False,
+        use_full_resolution: bool = True,
     ) -> tuple[int, tuple[int, int, int, int] | None, np.ndarray | None, str]:
         if self.data is None:
             raise RuntimeError("Load input data first.")
@@ -5065,7 +5065,7 @@ class WorkflowSession:
         self,
         indices: np.ndarray,
         phase_id: int,
-        keep_n: int = 1,
+        keep_n: int = 4,
         resolution_deg: float = 12.0,
         progress_callback: Callable[[float, str], None] | None = None,
     ) -> str:
@@ -5485,7 +5485,7 @@ class WorkflowSession:
         phase_id: int,
         trust_euler_deg: float = 1.0,
         maxfev: int = 50,
-        use_full_resolution: bool = False,
+        use_full_resolution: bool = True,
         progress_callback: Callable[[float, str], None] | None = None,
     ) -> str:
         """Run Kikuchipy orientation-only refinement after dictionary indexing."""
@@ -5802,7 +5802,7 @@ class WorkflowSession:
         index: int,
         *,
         blur_sigma: float = 0.0,
-        keep_n: int = 1,
+        keep_n: int = 4,
         residual_result: OverlapPointResult | None = None,
     ) -> OverlapPointResult:
         """Index one NCC-scaled residual with the dictionary generated in step 2."""
@@ -5992,7 +5992,7 @@ class WorkflowSession:
         *,
         trust_euler_deg: float = 2.0,
         maxfev: int = 50,
-        use_full_resolution: bool = False,
+        use_full_resolution: bool = True,
         progress_callback: Callable[[float, str], None] | None = None,
     ) -> OverlapPointResult:
         """Refine the residual dictionary match at dictionary or full resolution."""
@@ -6169,7 +6169,7 @@ class WorkflowSession:
         *,
         trust_euler_deg: float,
         maxfev: int,
-        use_full_resolution: bool = False,
+        use_full_resolution: bool = True,
         residual_results: dict[int, OverlapPointResult] | None = None,
     ) -> list[OverlapPointResult]:
         import kikuchipy as kp
@@ -6416,7 +6416,7 @@ class WorkflowSession:
         fit_bounds: list[tuple[float, float]] | None = None,
         write_patterns: bool = False,
         residual_output_path: str | None = None,
-        parallel_cores: int = 0,
+        parallel_cores: int = 1,
         selected_index: int | None = None,
         progress_callback: Callable[[float, str], None] | None = None,
     ) -> str:
@@ -6604,7 +6604,7 @@ class WorkflowSession:
         self,
         indices: np.ndarray,
         *,
-        keep_n: int = 1,
+        keep_n: int = 4,
         write_patterns: bool = False,
         selected_index: int | None = None,
         residual_results: dict[int, OverlapPointResult] | None = None,
@@ -6667,7 +6667,7 @@ class WorkflowSession:
         *,
         trust_euler_deg: float = 2.0,
         maxfev: int = 50,
-        use_full_resolution: bool = False,
+        use_full_resolution: bool = True,
         write_patterns: bool = False,
         selected_index: int | None = None,
         residual_results: dict[int, OverlapPointResult] | None = None,
@@ -7090,7 +7090,7 @@ class WorkflowSession:
         fit_maxiter: int = 40,
         fit_popsize: int = 8,
         fit_bounds: list[tuple[float, float]] | None = None,
-        parallel_cores: int = 0,
+        parallel_cores: int = 1,
         selected_index: int | None = None,
         progress_callback: Callable[[float, str], None] | None = None,
     ) -> str:
