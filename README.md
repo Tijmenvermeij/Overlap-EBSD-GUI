@@ -24,7 +24,8 @@ In practice, the application can:
 - Run dictionary indexing and post-index orientation refinement
 - Fit primary overlap residuals, index residuals, and refine residual matches
 - Fit overlap-mixture models for selected points or ROIs
-- Export reindexed maps, primary or residual ROI maps, workflow state, and optional residual patterns
+- Export primary or residual ROI maps as H5OINA or ANG (including the applied pattern-center map),
+  with optional primary/residual patterns; UP + ANG imports can be converted directly to H5OINA
 - Use a legacy projector fallback for older master-pattern formats
 
 The GUI starts with local example file paths filled in. Replace them with your own data or browse to matching files on disk.

@@ -143,8 +143,13 @@ class IpfDirectionSelectorTests(unittest.TestCase):
                 data=SimpleNamespace(pattern_path="/tmp/map.up1", source_type="h5oina")
             )
         )
+        up_h5_gui = SimpleNamespace(
+            session=up_gui.session,
+            roi_export_format_var=SimpleNamespace(get=lambda: "H5OINA"),
+        )
         self.assertEqual(MultiStepOverlapGUI._roi_export_suffix(h5_gui), ".h5oina")
         self.assertEqual(MultiStepOverlapGUI._roi_export_suffix(up_gui), ".ang")
+        self.assertEqual(MultiStepOverlapGUI._roi_export_suffix(up_h5_gui), ".h5oina")
         self.assertEqual(
             MultiStepOverlapGUI._path_with_single_suffix("/tmp/map.h5oina.ang", ".h5oina").name,
             "map.h5oina",
@@ -184,6 +189,52 @@ class IpfDirectionSelectorTests(unittest.TestCase):
         self.assertEqual(Path(residual_var.get()).name, "map_residual_roi.h5oina")
         self.assertEqual(Path(primary_path).name, "map_primary_roi.h5oina")
         self.assertEqual(Path(residual_path).name, "map_residual_roi.h5oina")
+
+    def test_up_ang_save_dialog_accepts_explicit_h5oina_output(self) -> None:
+        value = ["/tmp/map_primary_roi.ang"]
+        path_var = SimpleNamespace(get=lambda: value[0], set=lambda new: value.__setitem__(0, new))
+        gui_stub = SimpleNamespace(
+            session=SimpleNamespace(
+                data=SimpleNamespace(pattern_path="/tmp/map.up1", source_type="up_ang")
+            ),
+            _default_roi_export_path=lambda *, residual: "/tmp/map_primary_roi.ang",
+            _roi_export_suffix=lambda: ".ang",
+            _path_with_single_suffix=MultiStepOverlapGUI._path_with_single_suffix,
+        )
+
+        with patch(
+            "multistep_overlap_ebsd.gui.filedialog.asksaveasfilename",
+            return_value="/tmp/map_primary_roi.h5oina",
+        ):
+            output = MultiStepOverlapGUI._browse_roi_export(gui_stub, path_var, residual=False)
+
+        self.assertEqual(Path(output).name, "map_primary_roi.h5oina")
+        self.assertEqual(Path(path_var.get()).name, "map_primary_roi.h5oina")
+
+    def test_up_ang_path_sync_preserves_selected_h5oina_format(self) -> None:
+        def path_var(default: str):
+            value = [default]
+            return SimpleNamespace(get=lambda: value[0], set=lambda new: value.__setitem__(0, new))
+
+        primary_var = path_var("/tmp/map_primary_roi.h5oina")
+        residual_var = path_var("/tmp/map_residual_roi.h5oina")
+        gui_stub = SimpleNamespace(
+            session=SimpleNamespace(
+                data=SimpleNamespace(pattern_path="/tmp/map.up1", source_type="up_ang")
+            ),
+            primary_roi_export_path_var=primary_var,
+            residual_roi_export_path_var=residual_var,
+            _roi_export_suffix=lambda: ".ang",
+            _default_roi_export_path=lambda *, residual: (
+                f"/tmp/map_{'residual' if residual else 'primary'}_roi.ang"
+            ),
+            _path_with_single_suffix=MultiStepOverlapGUI._path_with_single_suffix,
+        )
+
+        MultiStepOverlapGUI._sync_roi_export_paths_to_source(gui_stub)
+
+        self.assertEqual(Path(primary_var.get()).suffix, ".h5oina")
+        self.assertEqual(Path(residual_var.get()).suffix, ".h5oina")
 
     def test_workflow_restore_paths_follow_loaded_source_type(self) -> None:
         def path_var(default: str):

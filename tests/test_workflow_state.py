@@ -370,6 +370,17 @@ class WorkflowStateTests(unittest.TestCase):
         )
         session.current_eulers_rad = np.zeros((6, 3), dtype=np.float64)
         session.current_phases = np.ones(6, dtype=np.int32)
+        session.current_pc_custom = np.array(
+            [
+                [0.41, 0.51, 0.61],
+                [0.42, 0.52, 0.62],
+                [0.43, 0.53, 0.63],
+                [0.44, 0.54, 0.64],
+                [0.45, 0.55, 0.65],
+                [0.46, 0.56, 0.66],
+            ],
+            dtype=np.float64,
+        )
         session.last_scores_map = np.ones((2, 3), dtype=np.float32)
         session.residual_eulers_rad = np.zeros((6, 3), dtype=np.float64)
         session.residual_phases = np.ones(6, dtype=np.int32)
@@ -411,6 +422,18 @@ class WorkflowStateTests(unittest.TestCase):
                 marker_group.attrs["Residual Pattern Encoding"],
                 "overlap-ebsd-residual-patterns-v1",
             )
+            np.testing.assert_allclose(
+                h5["1/Data Processing/Data/Pattern Center X"][()],
+                session.current_pc_custom[:, 0],
+            )
+            np.testing.assert_allclose(
+                h5["1/Data Processing/Data/Pattern Center Y"][()],
+                session.current_pc_custom[:, 1],
+            )
+            np.testing.assert_allclose(
+                h5["1/Data Processing/Data/Detector Distance"][()],
+                session.current_pc_custom[:, 2],
+            )
 
         primary_output = self.root / "exported_primary.h5oina"
         session.indexed_mask = np.ones(6, dtype=bool)
@@ -423,8 +446,12 @@ class WorkflowStateTests(unittest.TestCase):
             np.testing.assert_array_equal(h5[pattern_path][()], primary_patterns)
             export_group = h5["1/Data Processing/Overlap EBSD Indexing/Data"]
             self.assertEqual(int(export_group.attrs["Primary Patterns Included"]), 1)
+            np.testing.assert_allclose(
+                h5["1/Data Processing/Data/Pattern Center X"][()],
+                session.current_pc_custom[:, 0],
+            )
 
-    def test_primary_ang_export_can_include_companion_patterns_and_forces_ang_suffix(self) -> None:
+    def test_ang_roi_exports_update_pc_header_and_save_pc_map(self) -> None:
         source_up = self.root / "source.up1"
         source_up.write_bytes(b"UP-pattern-payload")
         source_ang = self.root / "source.ang"
@@ -444,23 +471,25 @@ class WorkflowStateTests(unittest.TestCase):
         )
         session = WorkflowSession()
         session.data = SimpleNamespace(
-            # The file extension remains authoritative even if stale state
-            # reports the wrong source type.
-            source_type="h5oina",
+            source_type="up_ang",
             pattern_path=str(source_up),
             orientation_path=str(source_ang),
             rows=1,
             cols=2,
             count=2,
             ang_angles_were_degrees=False,
+            ang_header_lines=["# synthetic ANG"],
+            pc_output_convention="oxford",
             up_pattern_reader=reader,
         )
         session.current_eulers_rad = np.zeros((2, 3), dtype=np.float64)
         session.current_phases = np.ones(2, dtype=np.int32)
+        session.current_pc_bruker = np.array([[0.40, 0.50, 0.60], [0.42, 0.52, 0.62]])
+        session.current_pc_custom = np.array([[0.45, 0.55, 0.65], [0.47, 0.57, 0.67]])
         session.last_scores_map = np.array([[0.8, 0.7]], dtype=np.float32)
         session.indexed_mask = np.ones(2, dtype=bool)
 
-        requested = self.root / "primary_result.h5oina"
+        requested = self.root / "primary_result.ang"
         session.export_primary_roi_results(
             (0, 0, 1, 2),
             str(requested),
@@ -470,8 +499,156 @@ class WorkflowStateTests(unittest.TestCase):
         actual_ang = self.root / "primary_result.ang"
         actual_up = self.root / "primary_result.up1"
         self.assertTrue(actual_ang.is_file())
-        self.assertFalse(requested.exists())
         self.assertEqual(actual_up.read_bytes(), source_up.read_bytes())
+        header = actual_ang.read_text(encoding="utf-8")
+        self.assertIn("# x-star           0.460000", header)
+        self.assertIn("# y-star           0.560000", header)
+        self.assertIn("# z-star           0.660000", header)
+        pc_map_path = self.root / "primary_result.pc_map.npz"
+        with np.load(pc_map_path) as pc_map:
+            np.testing.assert_allclose(pc_map["pc_oxford"], session.current_pc_custom.reshape(1, 2, 3))
+            np.testing.assert_allclose(pc_map["pc_bruker"], session.current_pc_bruker.reshape(1, 2, 3))
+
+        session.residual_eulers_rad = np.zeros((2, 3), dtype=np.float64)
+        session.residual_phases = np.ones(2, dtype=np.int32)
+        session.last_residual_scores_map = np.array([[0.6, 0.5]], dtype=np.float32)
+        residual_ang = self.root / "residual_result.ang"
+        session.export_residual_roi_results((0, 0, 1, 2), str(residual_ang), primary_ncc_threshold=0.0)
+        residual_header = residual_ang.read_text(encoding="utf-8")
+        self.assertIn("# x-star           0.460000", residual_header)
+        self.assertTrue((self.root / "residual_result.pc_map.npz").is_file())
+
+    def test_up_ang_primary_results_can_be_saved_as_reloadable_h5oina(self) -> None:
+        source_up = self.root / "source.up1"
+        source_up.write_bytes(b"UP-pattern-payload")
+        source_ang = self.root / "source.ang"
+        source_ang.write_text("# synthetic ANG\n", encoding="utf-8")
+        patterns = np.arange(4 * 2 * 3, dtype=np.uint8).reshape(4, 2, 3)
+        reader = SimpleNamespace(
+            dtype=np.dtype(np.uint8),
+            read_patterns=lambda indices: patterns[np.asarray(indices, dtype=np.int64)],
+        )
+        session = WorkflowSession()
+        session.data = SimpleNamespace(
+            source_type="up_ang",
+            h5_analysis_root=None,
+            pattern_path=str(source_up),
+            orientation_path=str(source_ang),
+            rows=2,
+            cols=2,
+            count=4,
+            h=2,
+            w=3,
+            step_x=0.5,
+            step_y=0.75,
+            scan_unit="um",
+            sample_tilt_deg=70.0,
+            detector_tilt_deg=1.5,
+            azimuthal_deg=0.0,
+            twist_deg=0.0,
+            beam_kv=20.0,
+            x_coords=np.array([0.0, 0.5, 0.0, 0.5]),
+            y_coords=np.array([0.0, 0.0, 0.75, 0.75]),
+            map_layers={"IQ": np.arange(4, dtype=np.float32).reshape(2, 2)},
+            ang_header_lines=[
+                "# Phase 1",
+                "# MaterialName Cu",
+                "# Symmetry 43",
+                "# LatticeConstants 3.615 3.615 3.615 90 90 90",
+            ],
+            phase_symmetries={},
+            phase_euler_corrections_rad={},
+            pc_output_convention="oxford",
+            up_pattern_reader=reader,
+        )
+        session.current_eulers_rad = np.arange(12, dtype=np.float64).reshape(4, 3) / 100.0
+        session.current_phases = np.ones(4, dtype=np.int32)
+        session.current_pc_custom = np.array(
+            [[0.41, 0.51, 0.61], [0.42, 0.52, 0.62], [0.43, 0.53, 0.63], [0.44, 0.54, 0.64]],
+            dtype=np.float64,
+        )
+        session.last_scores_map = np.array([[0.8, 0.7], [0.6, 0.9]], dtype=np.float32)
+        session.indexed_mask = np.ones(4, dtype=bool)
+
+        output = self.root / "primary_result.h5oina"
+        session.export_primary_roi_results(
+            (0, 0, 2, 2),
+            str(output),
+            include_primary_patterns=True,
+        )
+
+        with h5py.File(output, "r") as h5:
+            self.assertEqual(h5["Manufacturer"].asstr()[()], "Oxford Instruments")
+            np.testing.assert_array_equal(h5["1/EBSD/Data/Processed Patterns"][()], patterns)
+            np.testing.assert_allclose(
+                h5["1/Data Processing/Data/Pattern Center X"][()],
+                session.current_pc_custom[:, 0],
+            )
+            np.testing.assert_allclose(
+                h5["1/EBSD/Data/Detector Distance"][()],
+                session.current_pc_custom[:, 2],
+            )
+            np.testing.assert_allclose(
+                h5["1/Data Processing/Data/Euler"][()],
+                session.current_eulers_rad,
+            )
+            phase = h5["1/Data Processing/Header/Phases/1"]
+            self.assertEqual(phase["Phase Name"].asstr()[()], "Cu")
+            self.assertEqual(phase["Laue Group"].attrs["Symbol"], "m-3m")
+            np.testing.assert_allclose(phase["Lattice Dimensions"][()], [3.615, 3.615, 3.615])
+
+        import kikuchipy as kp
+
+        reloaded = kp.load(output, lazy=False)
+        np.testing.assert_array_equal(np.asarray(reloaded.data).reshape(4, 2, 3), patterns)
+        np.testing.assert_allclose(
+            np.asarray(reloaded.detector.pc_oxford()).reshape(4, 3),
+            session.current_pc_custom,
+            atol=1e-6,
+        )
+        restored_session = WorkflowSession()
+        restored_session.load_input(str(output), None, GeometryConfig())
+        np.testing.assert_allclose(
+            restored_session.current_pc_custom,
+            session.current_pc_custom,
+            atol=1e-6,
+        )
+        self.assertEqual(restored_session.data.phase_symmetries[1].name, "m-3m")
+
+        session.residual_eulers_rad = np.zeros((4, 3), dtype=np.float64)
+        session.residual_phases = np.ones(4, dtype=np.int32)
+        session.last_residual_scores_map = np.full((2, 2), 0.6, dtype=np.float32)
+        residual_values = np.array([[-3.0, -1.5, 0.0], [0.5, 1.5, 3.0]], dtype=np.float32)
+        session.residual_point_results[1] = OverlapPointResult(
+            index=1,
+            row=0,
+            col=1,
+            ncc_es=0.8,
+            scale=0.7,
+            ncc_residual_sim=0.1,
+            experimental=None,
+            simulated=None,
+            residual=residual_values,
+        )
+        residual_output = self.root / "residual_result.h5oina"
+        session.export_residual_roi_results(
+            (0, 0, 2, 2),
+            str(residual_output),
+            primary_ncc_threshold=0.0,
+            include_residual_patterns=True,
+        )
+        with h5py.File(residual_output, "r") as h5:
+            residual_patterns = h5["1/EBSD/Data/Processed Patterns"][()]
+            np.testing.assert_array_equal(residual_patterns[[0, 2, 3]], patterns[[0, 2, 3]])
+            self.assertFalse(np.array_equal(residual_patterns[1], patterns[1]))
+            np.testing.assert_allclose(
+                h5["1/EBSD/Data/Pattern Center Y"][()],
+                session.current_pc_custom[:, 1],
+            )
+            self.assertEqual(
+                h5["1/Data Processing/Overlap EBSD Indexing/Data"].attrs["Export Type"],
+                "residual",
+            )
 
     def test_parallel_core_count_zero_means_all_available(self) -> None:
         with patch("multistep_overlap_ebsd.core.os.cpu_count", return_value=8):

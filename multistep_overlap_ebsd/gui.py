@@ -151,6 +151,7 @@ class MultiStepOverlapGUI(tk.Tk):
         self.write_residual_patterns_var = tk.BooleanVar(value=False)
         self.include_primary_patterns_export_var = tk.BooleanVar(value=False)
         self.include_residual_patterns_export_var = tk.BooleanVar(value=False)
+        self.roi_export_format_var = tk.StringVar(value="H5OINA")
         self.residual_pattern_path_var = tk.StringVar(value=str((cwd / "residual_patterns.h5oina").resolve()))
         self.overlap_optimization_export_path_var = tk.StringVar(
             value=str((cwd / "overlap_optimization_results.h5").resolve())
@@ -1022,32 +1023,47 @@ class MultiStepOverlapGUI(tk.Tk):
         export_box = ttk.LabelFrame(parent, text="Export ROI indexing results", padding=8)
         export_box.grid(row=24, column=0, columnspan=2, sticky="we", pady=(10, 0))
         export_box.columnconfigure(0, weight=1)
+        ttk.Label(export_box, text="Output format").grid(row=0, column=0, sticky="w")
+        roi_format_box = ttk.Combobox(
+            export_box,
+            textvariable=self.roi_export_format_var,
+            values=("H5OINA", "ANG"),
+            state="readonly",
+            width=12,
+        )
+        roi_format_box.grid(row=0, column=1, sticky="e")
+        roi_format_box.bind("<<ComboboxSelected>>", lambda _event: self._sync_roi_export_paths_to_source())
+        ttk.Label(
+            export_box,
+            text="UP + ANG input can be saved in either format; H5OINA input remains H5OINA.",
+            wraplength=340,
+        ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(0, 4))
         ttk.Checkbutton(
             export_box,
             text="Include primary patterns with export",
             variable=self.include_primary_patterns_export_var,
-        ).grid(row=0, column=0, columnspan=2, sticky="w")
+        ).grid(row=2, column=0, columnspan=2, sticky="w")
         ttk.Label(
             export_box,
             text="H5OINA: Processed Patterns; ANG: companion .up1",
             wraplength=340,
-        ).grid(row=1, column=0, columnspan=2, sticky="w")
+        ).grid(row=3, column=0, columnspan=2, sticky="w")
         ttk.Button(export_box, text="Export Primary ROI Map", command=self._export_primary_roi_map).grid(
-            row=2, column=0, columnspan=2, sticky="we", pady=(4, 0)
+            row=4, column=0, columnspan=2, sticky="we", pady=(4, 0)
         )
-        ttk.Separator(export_box, orient=tk.HORIZONTAL).grid(row=3, column=0, columnspan=2, sticky="we", pady=8)
+        ttk.Separator(export_box, orient=tk.HORIZONTAL).grid(row=5, column=0, columnspan=2, sticky="we", pady=8)
         ttk.Checkbutton(
             export_box,
             text="Include residual patterns with export",
             variable=self.include_residual_patterns_export_var,
-        ).grid(row=4, column=0, columnspan=2, sticky="w")
+        ).grid(row=6, column=0, columnspan=2, sticky="w")
         ttk.Label(
             export_box,
             text="H5OINA: Processed Patterns; ANG: companion .up1",
             wraplength=340,
-        ).grid(row=5, column=0, columnspan=2, sticky="w")
+        ).grid(row=7, column=0, columnspan=2, sticky="w")
         ttk.Button(export_box, text="Export Residual ROI Map", command=self._export_residual_roi_map).grid(
-            row=6, column=0, columnspan=2, sticky="we", pady=(4, 0)
+            row=8, column=0, columnspan=2, sticky="we", pady=(4, 0)
         )
         bounds_box = ttk.LabelFrame(parent, text="Primary fit bounds", padding=8)
         bounds_box.grid(row=25, column=0, columnspan=2, sticky="we", pady=(8, 0))
@@ -1533,7 +1549,7 @@ class MultiStepOverlapGUI(tk.Tk):
             elif pattern_suffix in {".up1", ".up2"}:
                 source_path = self.session.data.orientation_path or self.orientation_path_var.get().strip()
                 source = Path(source_path) if source_path else None
-                suffix = ".ang"
+                suffix = self._roi_export_suffix()
         if source is not None and source.name:
             return str(source.with_name(f"{self._source_stem(source)}_{tag}_roi{suffix}").resolve())
         return str((Path.cwd() / f"{tag}_roi{suffix}").resolve())
@@ -1546,16 +1562,28 @@ class MultiStepOverlapGUI(tk.Tk):
         if pattern_suffix == ".h5oina":
             return ".h5oina"
         if pattern_suffix in {".up1", ".up2"}:
+            format_var = getattr(self, "roi_export_format_var", None)
+            if format_var is not None and str(format_var.get()).strip().upper() == "H5OINA":
+                return ".h5oina"
             return ".ang"
         return ".ang" if data.source_type == "up_ang" else ".h5oina"
 
     def _sync_roi_export_paths_to_source(self) -> None:
-        suffix = self._roi_export_suffix()
+        default_suffix = self._roi_export_suffix()
+        data = self.session.data
+        allow_h5oina = bool(
+            data is not None
+            and Path(getattr(data, "pattern_path", "")).suffix.lower() in {".up1", ".up2"}
+        )
+        explicit_format = getattr(self, "roi_export_format_var", None) is not None
         for variable, residual in (
             (self.primary_roi_export_path_var, False),
             (self.residual_roi_export_path_var, True),
         ):
             current = variable.get().strip() or self._default_roi_export_path(residual=residual)
+            suffix = Path(current).suffix.lower()
+            if explicit_format or suffix not in ({".ang", ".h5oina"} if allow_h5oina else {default_suffix}):
+                suffix = default_suffix
             variable.set(str(self._path_with_single_suffix(current, suffix)))
 
     def _default_overlap_optimization_export_path(self) -> str:
@@ -1586,8 +1614,17 @@ class MultiStepOverlapGUI(tk.Tk):
         return output_path
 
     def _browse_roi_export(self, var: tk.StringVar, *, residual: bool) -> str | None:
-        ext = self._roi_export_suffix()
+        default_ext = self._roi_export_suffix()
         current = Path(var.get().strip() or self._default_roi_export_path(residual=residual))
+        data = self.session.data
+        allow_h5oina = bool(
+            data is not None
+            and Path(getattr(data, "pattern_path", "")).suffix.lower() in {".up1", ".up2"}
+        )
+        allowed_extensions = {".ang", ".h5oina"} if allow_h5oina else {default_ext}
+        ext = current.suffix.lower()
+        if getattr(self, "roi_export_format_var", None) is not None or ext not in allowed_extensions:
+            ext = default_ext
         current = self._path_with_single_suffix(current, ext)
         # Tk adds ``defaultextension`` to ``initialfile`` on some platforms,
         # notably the native macOS save dialog.  Supplying the suffix in both
@@ -1606,7 +1643,10 @@ class MultiStepOverlapGUI(tk.Tk):
         )
         if not fn:
             return None
-        output_path = str(self._path_with_single_suffix(fn, ext))
+        selected_ext = Path(fn).suffix.lower()
+        if selected_ext not in allowed_extensions:
+            selected_ext = ext
+        output_path = str(self._path_with_single_suffix(fn, selected_ext))
         var.set(output_path)
         return output_path
 
@@ -2120,6 +2160,9 @@ class MultiStepOverlapGUI(tk.Tk):
                     msg = (
                         f"{msg} UP mode keeps patterns on disk and batches ROI indexing."
                     )
+                    self.roi_export_format_var.set("ANG")
+                else:
+                    self.roi_export_format_var.set("H5OINA")
                 self.residual_pattern_path_var.set(self._default_residual_pattern_path())
                 self.primary_roi_export_path_var.set(self._default_roi_export_path(residual=False))
                 self.residual_roi_export_path_var.set(self._default_roi_export_path(residual=True))
@@ -2156,6 +2199,9 @@ class MultiStepOverlapGUI(tk.Tk):
         if self.map_layer_var.get() not in layers and layers:
             self.map_layer_var.set(layers[0])
         self._sync_index_quality_layer_choices()
+        self.roi_export_format_var.set(
+            "ANG" if self.session.data.source_type == "up_ang" else "H5OINA"
+        )
         self._apply_workflow_ui_state(self.session.restored_ui_state)
         # The loaded input determines the valid solution-map format, even if
         # a saved UI path came from another source type or an older workflow.
@@ -2244,6 +2290,7 @@ class MultiStepOverlapGUI(tk.Tk):
             "write_residual_patterns": self.write_residual_patterns_var,
             "include_primary_patterns_export": self.include_primary_patterns_export_var,
             "include_residual_patterns_export": self.include_residual_patterns_export_var,
+            "roi_export_format": self.roi_export_format_var,
             "residual_pattern_path": self.residual_pattern_path_var,
             "primary_roi_export_path": self.primary_roi_export_path_var,
             "residual_roi_export_path": self.residual_roi_export_path_var,
@@ -2297,6 +2344,7 @@ class MultiStepOverlapGUI(tk.Tk):
             "write_residual_patterns": self.write_residual_patterns_var,
             "include_primary_patterns_export": self.include_primary_patterns_export_var,
             "include_residual_patterns_export": self.include_residual_patterns_export_var,
+            "roi_export_format": self.roi_export_format_var,
             "residual_pattern_path": self.residual_pattern_path_var,
             "primary_roi_export_path": self.primary_roi_export_path_var,
             "residual_roi_export_path": self.residual_roi_export_path_var,

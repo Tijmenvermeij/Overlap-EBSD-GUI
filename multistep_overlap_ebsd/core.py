@@ -1977,13 +1977,19 @@ def _h5_phase_symmetries(h5_file: h5py.File, roots: list[str] | None = None) -> 
                 phase_id = int(key)
             except (TypeError, ValueError):
                 continue
-            if "Space Group" not in group:
-                continue
-            try:
-                space_group = int(np.ravel(group["Space Group"][()])[0])
-                out[phase_id] = get_point_group(space_group, proper=False)
-            except Exception:
-                continue
+            if "Space Group" in group:
+                try:
+                    space_group = int(np.ravel(group["Space Group"][()])[0])
+                    out[phase_id] = get_point_group(space_group, proper=False)
+                    continue
+                except Exception:
+                    pass
+            if "Laue Group" in group:
+                symbol = group["Laue Group"].attrs.get("Symbol", "")
+                if isinstance(symbol, bytes):
+                    symbol = symbol.decode("utf-8", errors="replace")
+                if str(symbol).strip():
+                    out[phase_id] = _symmetry_from_ang_name(str(symbol))
     return out
 
 
@@ -2032,6 +2038,48 @@ def _ang_phase_symmetries(header_lines: list[str]) -> dict[int, object]:
             parts = txt.replace(":", " ").split()
             if len(parts) >= 2:
                 out[phase_id] = _symmetry_from_ang_name(parts[-1])
+    return out
+
+
+def _ang_phase_metadata(header_lines: list[str]) -> dict[int, dict[str, object]]:
+    """Extract phase names, lattice data, and EDAX symmetry IDs from ANG headers."""
+    out: dict[int, dict[str, object]] = {}
+    phase_id: int | None = None
+    for line in header_lines:
+        text = line.lstrip("#").strip()
+        if not text:
+            continue
+        parts = text.replace(":", " ").split()
+        if not parts:
+            continue
+        key = parts[0].lower()
+        value = text[len(parts[0]) :].lstrip(" :")
+        if key == "phase":
+            try:
+                phase_id = int(parts[-1])
+            except (ValueError, IndexError):
+                phase_id = None
+            if phase_id is not None:
+                out.setdefault(phase_id, {})
+            continue
+        if phase_id is None:
+            continue
+        phase = out.setdefault(phase_id, {})
+        if key == "materialname":
+            phase["name"] = value.strip()
+        elif key == "formula":
+            phase["formula"] = value.strip()
+        elif key == "info":
+            phase["reference"] = value.strip()
+        elif key == "symmetry" and len(parts) >= 2:
+            phase["symmetry"] = parts[-1]
+        elif key == "latticeconstants" and len(parts) >= 7:
+            try:
+                lattice = np.asarray([float(item) for item in parts[1:7]], dtype=np.float64)
+            except ValueError:
+                continue
+            phase["lattice_dimensions"] = lattice[:3]
+            phase["lattice_angles"] = np.deg2rad(lattice[3:])
     return out
 
 
@@ -2255,6 +2303,38 @@ def _parse_ang_header_with_lines(path: str) -> tuple[dict[str, str], list[str]]:
             if len(parts) == 2:
                 out[parts[0].strip().lower()] = parts[1].strip()
     return out, lines
+
+
+def _replace_ang_header_value(lines: list[str], key: str, value: float) -> list[str]:
+    """Return ANG header lines with one numeric field replaced or appended."""
+    out: list[str] = []
+    key_low = key.lower()
+    replaced = False
+    for line in lines:
+        if not line.startswith("#"):
+            out.append(line)
+            continue
+        text = line[1:].strip().lower()
+        field = text.split(":", 1)[0].split(None, 1)[0] if text else ""
+        if field == key_low:
+            out.append(f"# {key:<16} {float(value):.6f}")
+            replaced = True
+        else:
+            out.append(line)
+    if not replaced:
+        out.append(f"# {key:<16} {float(value):.6f}")
+    return out
+
+
+def _ang_header_with_pattern_center(lines: list[str], pattern_center: np.ndarray) -> list[str]:
+    """Store a representative Oxford pattern center in an ANG header."""
+    pc = np.asarray(pattern_center, dtype=np.float64).reshape(3)
+    if not np.all(np.isfinite(pc)):
+        raise ValueError("The pattern center to export contains non-finite values.")
+    updated = list(lines)
+    for key, value in zip(("x-star", "y-star", "z-star"), pc):
+        updated = _replace_ang_header_value(updated, key, float(value))
+    return updated
 
 
 def _parse_header_int(meta: dict[str, str], key: str, default: int | None = None) -> int | None:
@@ -8359,28 +8439,7 @@ class WorkflowSession:
             )
             pc_mean = np.mean(pc_custom_map.reshape(-1, 3), axis=0)
 
-            header = list(self.data.ang_header_lines)
-            def _replace_header_value(lines: list[str], key: str, value: float) -> list[str]:
-                out_lines = []
-                key_low = key.lower()
-                replaced = False
-                for line in lines:
-                    if not line.startswith("#"):
-                        out_lines.append(line)
-                        continue
-                    txt = line[1:].strip().lower()
-                    if txt.startswith(key_low):
-                        out_lines.append(f"# {key:<16} {value:.6f}")
-                        replaced = True
-                    else:
-                        out_lines.append(line)
-                if not replaced:
-                    out_lines.append(f"# {key:<16} {value:.6f}")
-                return out_lines
-
-            header = _replace_header_value(header, "x-star", float(pc_mean[0]))
-            header = _replace_header_value(header, "y-star", float(pc_mean[1]))
-            header = _replace_header_value(header, "z-star", float(pc_mean[2]))
+            header = _ang_header_with_pattern_center(self.data.ang_header_lines, pc_mean)
 
             with open(out, "w", encoding="utf-8") as f:
                 for line in header:
@@ -8517,6 +8576,258 @@ class WorkflowSession:
             raise RuntimeError(f"Residual pattern could not be materialized for point {idx}.")
         return _residual_to_uint8(materialized.residual)
 
+    def _write_current_pattern_centers_to_h5(
+        self,
+        h5: h5py.File,
+        *,
+        roots: list[str],
+    ) -> None:
+        """Write the live Oxford PC map to all H5OINA PC datasets."""
+        if self.data is None or self.current_pc_custom is None:
+            raise RuntimeError("Session pattern-center state is not initialized.")
+        rows = int(self.data.rows)
+        cols = int(self.data.cols)
+        pc_map = np.asarray(self.current_pc_custom, dtype=np.float64).reshape(rows, cols, 3)
+        if not np.all(np.isfinite(pc_map)):
+            raise ValueError("The pattern-center map to export contains non-finite values.")
+        root = roots[0] if roots else ""
+        fields = (
+            ("pcx", "Pattern Center X", pc_map[..., 0]),
+            ("pcy", "Pattern Center Y", pc_map[..., 1]),
+            ("pcz", "Detector Distance", pc_map[..., 2]),
+        )
+        for candidate_key, dataset_name, values in fields:
+            paths = _h5oina_existing_paths(
+                h5,
+                H5OINA_DATASET_CANDIDATES[candidate_key],
+                roots=roots,
+            )
+            if not paths:
+                prefix = f"{root}/" if root else ""
+                path = f"{prefix}Data Processing/Data/{dataset_name}"
+                h5.require_group(path.rsplit("/", 1)[0]).create_dataset(
+                    dataset_name,
+                    data=values.reshape(-1).astype(np.float32),
+                )
+                paths = [path]
+            for path in paths:
+                ds = h5[path]
+                flat = values.reshape(-1)
+                if int(ds.size) == flat.size:
+                    ds[...] = flat.reshape(ds.shape).astype(ds.dtype, copy=False)
+                    continue
+                parent_path, name = path.rsplit("/", 1)
+                attrs = dict(ds.attrs.items())
+                dtype = ds.dtype
+                del h5[path]
+                replacement = h5[parent_path].create_dataset(
+                    name,
+                    data=flat.astype(dtype, copy=False),
+                )
+                for attr_name, attr_value in attrs.items():
+                    replacement.attrs[attr_name] = attr_value
+
+    def _create_h5oina_from_up_ang(
+        self,
+        output_path: Path,
+        *,
+        include_patterns: bool,
+        progress_callback: Callable[[float, str], None] | None = None,
+    ) -> str | None:
+        """Create a minimal standards-shaped H5OINA container for UP+ANG data."""
+        if self.data is None or self.data.source_type != "up_ang":
+            raise RuntimeError("UP+ANG input data is required for H5OINA conversion.")
+        if self.current_pc_custom is None:
+            raise RuntimeError("Session pattern-center state is not initialized.")
+
+        rows = int(self.data.rows)
+        cols = int(self.data.cols)
+        count = rows * cols
+        h = int(self.data.h)
+        w = int(self.data.w)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        fd, staged_name = tempfile.mkstemp(
+            prefix=f".{output_path.name}.", suffix=".tmp", dir=output_path.parent
+        )
+        os.close(fd)
+        staged = Path(staged_name)
+        pattern_path: str | None = None
+        try:
+            if progress_callback is not None:
+                progress_callback(0.0, "Creating H5OINA metadata from ANG data...")
+            with h5py.File(staged, "w") as h5:
+                string_type = h5py.string_dtype(encoding="utf-8")
+                h5.create_dataset("Format Version", data="8.0", dtype=string_type)
+                index_ds = h5.create_dataset("Index", data="1", dtype=string_type)
+                index_ds.attrs["Type"] = "Single"
+                h5.create_dataset("Manufacturer", data="Oxford Instruments", dtype=string_type)
+                h5.create_dataset("Software Version", data="Overlap EBSD Indexing", dtype=string_type)
+
+                ebsd_data = h5.require_group("1/EBSD/Data")
+                ebsd_header = h5.require_group("1/EBSD/Header")
+                processing_data = h5.require_group("1/Data Processing/Data")
+                processing_header = h5.require_group("1/Data Processing/Header")
+
+                def header_dataset(name: str, value, *, unit: str | None = None) -> h5py.Dataset:
+                    ds = ebsd_header.create_dataset(name, data=value)
+                    if unit is not None:
+                        ds.attrs["Unit"] = unit
+                    return ds
+
+                header_dataset("Project Label", "Imported ANG", unit=None)
+                header_dataset("Analysis Label", "Overlap EBSD indexing export", unit=None)
+                processing_header.create_dataset("Project Label", data="Imported ANG", dtype=string_type)
+                processing_header.create_dataset(
+                    "Analysis Label",
+                    data="Overlap EBSD indexing export",
+                    dtype=string_type,
+                )
+                header_dataset("X Cells", np.int32(cols), unit="px")
+                header_dataset("Y Cells", np.int32(rows), unit="px")
+                header_dataset("X Step", np.float32(self.data.step_x), unit=self.data.scan_unit)
+                header_dataset("Y Step", np.float32(self.data.step_y), unit=self.data.scan_unit)
+                header_dataset("Pattern Height", np.int32(h), unit="px")
+                header_dataset("Pattern Width", np.int32(w), unit="px")
+                header_dataset("Tilt Angle", np.float32(np.deg2rad(self.data.sample_tilt_deg)), unit="rad")
+                header_dataset(
+                    "Detector Orientation Euler",
+                    np.deg2rad(
+                        np.asarray(
+                            [self.data.azimuthal_deg, 90.0 + self.data.detector_tilt_deg, self.data.twist_deg],
+                            dtype=np.float32,
+                        )
+                    ),
+                    unit="rad",
+                )
+                header_dataset("Camera Mode", f"Imported ({w}x{h} px)")
+                header_dataset("Specimen Orientation Euler", np.zeros(3, dtype=np.float32), unit="rad")
+                header_dataset("Scanning Rotation Angle", np.float32(0.0), unit="rad")
+                processing_header.create_dataset(
+                    "Specimen Orientation Euler",
+                    data=np.zeros(3, dtype=np.float32),
+                ).attrs["Unit"] = "rad"
+                processing_header.create_dataset(
+                    "Scanning Rotation Angle",
+                    data=np.float32(0.0),
+                ).attrs["Unit"] = "rad"
+                if self.data.beam_kv is not None and np.isfinite(float(self.data.beam_kv)):
+                    header_dataset("Beam Voltage", np.float32(self.data.beam_kv), unit="kV")
+
+                ang_phase_metadata = _ang_phase_metadata(
+                    list(getattr(self.data, "ang_header_lines", []) or [])
+                )
+                phase_symmetries = getattr(self.data, "phase_symmetries", {})
+                laue_groups = {
+                    "-1": 1,
+                    "2/m": 2,
+                    "mmm": 3,
+                    "-3": 4,
+                    "-3m": 5,
+                    "4/m": 6,
+                    "4/mmm": 7,
+                    "6/m": 8,
+                    "6/mmm": 9,
+                    "m-3": 10,
+                    "m-3m": 11,
+                }
+                phase_ids = sorted(
+                    int(value)
+                    for value in np.unique(np.asarray(self.current_phases, dtype=np.int32))
+                    if int(value) > 0
+                ) if self.current_phases is not None else []
+                for phase_id in phase_ids:
+                    metadata = ang_phase_metadata.get(phase_id, {})
+                    symmetry_value = metadata.get("symmetry")
+                    if symmetry_value is not None:
+                        laue_symbol = str(getattr(_symmetry_from_ang_name(str(symmetry_value)), "name", "-1"))
+                    else:
+                        laue_symbol = str(getattr(phase_symmetries.get(phase_id), "name", "-1"))
+                    if laue_symbol not in laue_groups:
+                        laue_symbol = "-1"
+                    phase_name = str(
+                        metadata.get("name")
+                        or metadata.get("formula")
+                        or f"Phase {phase_id}"
+                    )
+                    reference = str(metadata.get("reference") or "Imported from ANG")
+                    dimensions = np.asarray(
+                        metadata.get("lattice_dimensions", np.ones(3)),
+                        dtype=np.float32,
+                    ).reshape(3)
+                    angles = np.asarray(
+                        metadata.get("lattice_angles", np.full(3, np.pi / 2.0)),
+                        dtype=np.float32,
+                    ).reshape(3)
+                    for parent in (ebsd_header, processing_header):
+                        phase_group = parent.require_group(f"Phases/{phase_id}")
+                        phase_group.create_dataset("Phase Name", data=phase_name, dtype=string_type)
+                        phase_group.create_dataset("Reference", data=reference, dtype=string_type)
+                        phase_group.create_dataset("Lattice Angles", data=angles)
+                        phase_group.create_dataset("Lattice Dimensions", data=dimensions)
+                        laue_ds = phase_group.create_dataset(
+                            "Laue Group",
+                            data=np.int32(laue_groups[laue_symbol]),
+                        )
+                        laue_ds.attrs["Symbol"] = laue_symbol
+
+                x = np.asarray(self.data.x_coords, dtype=np.float32).reshape(-1)
+                y = np.asarray(self.data.y_coords, dtype=np.float32).reshape(-1)
+                for name, values in (("X", x), ("Y", y)):
+                    ds = ebsd_data.create_dataset(name, data=values)
+                    ds.attrs["Unit"] = self.data.scan_unit
+
+                zeros_euler = np.zeros((count, 3), dtype=np.float32)
+                zeros_phase = np.zeros(count, dtype=np.int32)
+                for group in (ebsd_data, processing_data):
+                    euler_ds = group.create_dataset("Euler", data=zeros_euler)
+                    euler_ds.attrs["Unit"] = "rad"
+                    group.create_dataset("Phase", data=zeros_phase)
+
+                pc_map = np.asarray(self.current_pc_custom, dtype=np.float32).reshape(count, 3)
+                for group in (ebsd_data, processing_data):
+                    group.create_dataset("Pattern Center X", data=pc_map[:, 0])
+                    group.create_dataset("Pattern Center Y", data=pc_map[:, 1])
+                    group.create_dataset("Detector Distance", data=pc_map[:, 2])
+
+                map_layers = getattr(self.data, "map_layers", {})
+                pattern_quality = map_layers.get("IQ") if isinstance(map_layers, dict) else None
+                if pattern_quality is not None:
+                    ebsd_data.create_dataset(
+                        "Pattern Quality",
+                        data=np.asarray(pattern_quality, dtype=np.float32).reshape(-1),
+                    )
+
+                if include_patterns:
+                    reader = self.data.up_pattern_reader
+                    if reader is None:
+                        raise RuntimeError("H5OINA pattern export requires a loaded UP pattern reader.")
+                    pattern_path = "1/EBSD/Data/Processed Patterns"
+                    chunk_patterns = _dictionary_storage_chunk_patterns((h, w), np.uint8)
+                    patterns_ds = ebsd_data.create_dataset(
+                        "Processed Patterns",
+                        shape=(count, h, w),
+                        dtype=np.uint8,
+                        chunks=(min(count, chunk_patterns), h, w),
+                    )
+                    batch_size = max(1, int((32 * 1024**2) / max(1, h * w * 4)))
+                    for start in range(0, count, batch_size):
+                        stop = min(count, start + batch_size)
+                        indices = np.arange(start, stop, dtype=np.int64)
+                        block = np.asarray(reader.read_patterns(indices), dtype=np.float32)
+                        if np.dtype(reader.dtype) == np.dtype(np.uint16):
+                            block = np.rint(block / 257.0)
+                        patterns_ds[start:stop] = np.clip(block, 0.0, 255.0).astype(np.uint8)
+                        if progress_callback is not None:
+                            progress_callback(
+                                100.0 * stop / count,
+                                f"Writing source patterns to H5OINA: {stop}/{count}...",
+                            )
+            os.replace(staged, output_path)
+            return pattern_path
+        except BaseException:
+            staged.unlink(missing_ok=True)
+            raise
+
     @staticmethod
     def _replace_h5_export_dataset(
         group: h5py.Group,
@@ -8564,7 +8875,7 @@ class WorkflowSession:
         if pattern_suffix == ".h5oina":
             export_source_type = "h5oina"
         elif pattern_suffix in {".up1", ".up2"}:
-            export_source_type = "up_ang"
+            export_source_type = "h5oina" if out.suffix.lower() == ".h5oina" else "up_ang"
         else:
             export_source_type = self.data.source_type
 
@@ -8663,7 +8974,8 @@ class WorkflowSession:
                 (residual and include_residual_patterns)
                 or (not residual and include_primary_patterns)
             )
-            if include_h5_patterns:
+            source_is_h5oina = pattern_suffix == ".h5oina"
+            if include_h5_patterns and source_is_h5oina:
                 with h5py.File(source_path, "r") as source_h5:
                     included_processed_path = _h5oina_first_path(
                         source_h5,
@@ -8686,12 +8998,19 @@ class WorkflowSession:
                 if progress_callback is not None:
                     progress_callback(copy_share * float(value) / 100.0, message)
 
-            _copy_h5oina_for_map_export(
-                source_path,
-                out,
-                included_processed_path=included_processed_path,
-                progress_callback=copy_progress,
-            )
+            if source_is_h5oina:
+                _copy_h5oina_for_map_export(
+                    source_path,
+                    out,
+                    included_processed_path=included_processed_path,
+                    progress_callback=copy_progress,
+                )
+            else:
+                included_processed_path = self._create_h5oina_from_up_ang(
+                    out,
+                    include_patterns=include_h5_patterns,
+                    progress_callback=copy_progress,
+                )
             if progress_callback is not None:
                 progress_callback(copy_share, "Writing ROI orientations and NCC maps...")
             with h5py.File(out, "r+") as h5:
@@ -8738,6 +9057,7 @@ class WorkflowSession:
                         h5[p_path], row_phase, is_euler=False,
                         rows=rows, cols=cols, r0=r0, r1=r1, c0=c0, c1=c1,
                     )
+                self._write_current_pattern_centers_to_h5(h5, roots=roots)
 
                 primary_ncc = np.zeros((rows, cols), dtype=np.float32)
                 primary_source = np.asarray(self.last_scores_map, dtype=np.float32).reshape(rows, cols)
@@ -8822,21 +9142,25 @@ class WorkflowSession:
                     stored_h5: h5py.File | None = None
                     stored_patterns: h5py.Dataset | None = None
                     stored_available: np.ndarray | None = None
+                    stored_up_reader: UPPatternReader | None = None
                     try:
                         if residual_store_path is not None and residual_store_path.exists():
-                            stored_h5 = h5py.File(residual_store_path, "r")
-                            stored_path = _h5oina_first_path(
-                                stored_h5,
-                                H5OINA_DATASET_CANDIDATES["processed_patterns"],
-                                roots=source_roots,
-                            )
-                            if stored_path is not None:
-                                stored_patterns = stored_h5[stored_path]
-                                stored_available = _h5_verified_residual_pattern_mask(
+                            if residual_store_path.suffix.lower() == ".h5oina":
+                                stored_h5 = h5py.File(residual_store_path, "r")
+                                stored_path = _h5oina_first_path(
                                     stored_h5,
+                                    H5OINA_DATASET_CANDIDATES["processed_patterns"],
                                     roots=source_roots,
-                                    expected_count=self.data.count,
                                 )
+                                if stored_path is not None:
+                                    stored_patterns = stored_h5[stored_path]
+                                    stored_available = _h5_verified_residual_pattern_mask(
+                                        stored_h5,
+                                        roots=source_roots,
+                                        expected_count=self.data.count,
+                                    )
+                            elif residual_store_path.suffix.lower() in {".up1", ".up2"}:
+                                stored_up_reader = _open_edax_up_reader(str(residual_store_path))
                         roi_residual_indices: list[int] = []
                         for candidate in residual_pattern_indices.tolist():
                             candidate = int(candidate)
@@ -8853,6 +9177,7 @@ class WorkflowSession:
                             residual_u8 = self._residual_pattern_u8(
                                 int(idx),
                                 stored_h5_patterns=verified_stored_patterns,
+                                stored_up_reader=stored_up_reader,
                                 cache_materialized=False,
                             )
                             _write_h5_pattern_at(
@@ -8890,6 +9215,8 @@ class WorkflowSession:
         # ANG export: rewrite only the ROI rows while preserving the original file layout.
         if self.data.orientation_path is None:
             raise RuntimeError("Missing ANG source metadata in session.")
+        if self.current_pc_custom is None:
+            raise RuntimeError("Session pattern-center state is not initialized.")
         if out == source_path:
             raise ValueError("ANG export path must be different from the source orientation file.")
         eulers_to_write = roi_eulers.copy()
@@ -8897,12 +9224,19 @@ class WorkflowSession:
             eulers_to_write = np.rad2deg(eulers_to_write)
         quality_to_write = np.asarray(roi_quality, dtype=np.float64)
         phase_to_write = np.asarray(roi_phase, dtype=np.int32)
+        pc_custom_map = np.asarray(self.current_pc_custom, dtype=np.float64).reshape(rows, cols, 3)
+        pc_mean = np.mean(pc_custom_map.reshape(-1, 3), axis=0)
+        header_lines = getattr(self.data, "ang_header_lines", None)
+        if header_lines is None:
+            _header, header_lines = _parse_ang_header_with_lines(str(source_path))
+        header = _ang_header_with_pattern_center(header_lines, pc_mean)
 
         with open(source_path, "r", encoding="utf-8", errors="replace") as src, open(out, "w", encoding="utf-8") as dst:
+            for line in header:
+                dst.write(line.rstrip("\n") + "\n")
             data_idx = 0
             for line in src:
                 if line.startswith("#") or not line.strip():
-                    dst.write(line if line.endswith("\n") else line + "\n")
                     continue
                 vals = np.fromstring(line, dtype=np.float64, sep=" ")
                 if vals.size < 8:
@@ -8935,6 +9269,14 @@ class WorkflowSession:
                         row_out.append(f"{float(v):.6f}")
                 dst.write(" ".join(row_out) + "\n")
                 data_idx += 1
+
+        pc_npz = out.with_suffix(".pc_map.npz")
+        pc_arrays: dict[str, np.ndarray] = {
+            f"pc_{self.data.pc_output_convention.lower()}": pc_custom_map,
+        }
+        if self.current_pc_bruker is not None:
+            pc_arrays["pc_bruker"] = np.asarray(self.current_pc_bruker, dtype=np.float64).reshape(rows, cols, 3)
+        np.savez_compressed(pc_npz, **pc_arrays)
 
         pattern_note = ""
         if not residual and include_primary_patterns:
@@ -8981,7 +9323,11 @@ class WorkflowSession:
                 f" Residual patterns were saved to {up1_path}; original patterns were retained at locations without residuals."
             )
 
-        return f"Exported {'residual' if residual else 'primary'} ROI map to {out}.{zero_note}{pattern_note}"
+        return (
+            f"Exported {'residual' if residual else 'primary'} ROI map to {out}.{zero_note} "
+            f"Updated x/y/z-star from the applied PC map and saved the per-point PC map to {pc_npz}."
+            f"{pattern_note}"
+        )
 
     def export_primary_roi_results(
         self,
