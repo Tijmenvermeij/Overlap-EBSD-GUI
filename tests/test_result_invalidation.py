@@ -184,7 +184,7 @@ class ResultInvalidationTests(unittest.TestCase):
         ):
             results = _compute_residual_roi_batch(payload)
         self.assertEqual(results[0].fitted_sigma, 1.25)
-        np.testing.assert_allclose(results[0].residual, s.residual_point_results[0].residual, atol=1e-6)
+        np.testing.assert_allclose(results[0].residual, s.get_residual_point_result(0).residual, atol=1e-6)
 
     def test_cancelled_residual_writer_aborts_and_keeps_completed_fit_valid(self) -> None:
         self._prepare_residual_simulation()

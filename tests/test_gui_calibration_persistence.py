@@ -6,6 +6,7 @@ from types import MethodType, SimpleNamespace
 from unittest.mock import Mock
 
 from multistep_overlap_ebsd.gui import MultiStepOverlapGUI
+from multistep_overlap_ebsd.cpu_fitting import FIT_METHOD_DEFAULT, FIT_METHOD_LABELS
 
 
 class _Value:
@@ -49,6 +50,7 @@ class CalibrationPersistenceTests(unittest.TestCase):
             _calibration_apply_state=state, _calibration_apply_session=session,
             _applied_calibration_settings=settings,
             use_scan_pc_shift_var=_Value(False), detector_px_size_var=_Value(""),
+            fit_method_var=_Value(FIT_METHOD_LABELS[FIT_METHOD_DEFAULT]),
             _update_calibration_application_controls=Mock(),
         )
 
@@ -94,6 +96,26 @@ class CalibrationPersistenceTests(unittest.TestCase):
                 self.assertEqual(restored.detector_px_size_var.get(), original.detector_px_size_var.get())
                 original._update_calibration_application_controls.assert_called_once_with()
                 restored._update_calibration_application_controls.assert_called_once_with()
+
+    def test_fit_method_round_trip_stores_stable_code_and_restores_display_label(self):
+        for method, label in FIT_METHOD_LABELS.items():
+            with self.subTest(method=method):
+                original = self.settings()
+                original.fit_method_var.set(label)
+                saved = json.loads(json.dumps(MultiStepOverlapGUI._workflow_ui_state(original)))
+                self.assertEqual(saved['fit_method'], method)
+                restored = self.settings()
+                MultiStepOverlapGUI._apply_workflow_ui_state(restored, saved)
+                self.assertEqual(restored.fit_method_var.get(), label)
+
+    def test_old_or_invalid_workflow_uses_fastest_fit_method(self):
+        self.assertEqual(FIT_METHOD_DEFAULT, 'staged')
+        for state in ({}, {'fit_method': 'unknown'}, {'fit_method': []}, {'fit_method': None}):
+            with self.subTest(state=state):
+                gui = self.settings()
+                gui.fit_method_var.set(FIT_METHOD_LABELS['joint'])
+                MultiStepOverlapGUI._apply_workflow_ui_state(gui, state)
+                self.assertEqual(gui.fit_method_var.get(), FIT_METHOD_LABELS[FIT_METHOD_DEFAULT])
 
     def test_old_workflow_clears_previous_session_application_warning(self):
         gui = self.settings(state="applied", settings=(True, 160.0))

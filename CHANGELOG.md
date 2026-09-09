@@ -1,5 +1,13 @@
 # Release notes
 
+## Unreleased
+
+- Add a shared Steps 3–4 fitting selector: blur then gain (default), blur then gain plus joint refinement, and joint search. Preserve the selection in workflows and Step 4 export settings.
+- Reduce primary gain fitting analytically where bounds permit; cache Gaussian blurs, coordinates and weighted moments. Step 4 retains its shared gain map and nonnegative mixture coefficients. Optional joint refinement retains the staged result if the final reconstructed residual would worsen.
+- Read H5OINA batches directly from verified pattern datasets, preserving conditioning and selection order. Batch worker projections with individual PCs and retain the selected master energy in each worker.
+- Store exact float32 residuals in a temporary disk cache and bound inspection images in both steps. Transfer compact worker results, read cached residuals in batches, and release temporary files when sessions are replaced or closed.
+- On the supplied Cu workflow, an 80-point residual-construction sample on 10 cores improved from 6.16 to 19.66 patterns/s including startup. Six Step 4 fits improved from 7.30 to 1.28 seconds with the default staged method. These are sample timings; see [validation details](docs/cpu_performance.md).
+
 ## 0.1 — 2026-09-09
 
 First usable GUI release for indexing overlapping EBSD/TKD patterns within a single crystal phase. Primary and secondary orientations use the same master-pattern phase; this release does not provide a simultaneous search across different phases.

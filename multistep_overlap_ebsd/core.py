@@ -5,6 +5,7 @@ import os
 import re
 import shutil
 import tempfile
+from collections import OrderedDict
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
@@ -18,6 +19,7 @@ from scipy.ndimage import gaussian_filter
 from scipy.optimize import differential_evolution, minimize
 
 from .live_updates import progress_batches
+from .cpu_fitting import FIT_METHOD_DEFAULT, optimize_primary, optimize_mixture, validate_fit_method
 
 from .legacy_projector import XProjector, load_master_hemis, ncc, normalize_zmuv
 
@@ -36,6 +38,80 @@ MASTER_ENERGY_MODES = {MASTER_ENERGY_MODE_HIGHEST, MASTER_ENERGY_MODE_GLOBAL}
 # Kikuchipy split them into navigation chunks for its threaded scheduler.
 KIKUCHIPY_PARALLEL_REFINEMENT_RECHUNK = True
 STEP4_RESULTS_FORMAT = "overlap-ebsd-step4-results-v1"
+INSPECTION_PATTERN_CACHE_SIZE = 4
+
+
+def _read_h5_patterns(
+    dataset: h5py.Dataset, indices: np.ndarray, *, rows: int, cols: int,
+) -> np.ndarray:
+    """Read just the requested images, preserving order and repeated indices."""
+    idx = np.asarray(indices, dtype=np.int64).reshape(-1)
+    if np.any(idx < 0) or np.any(idx >= rows * cols):
+        raise IndexError("Pattern index out of bounds.")
+    unique, inverse = np.unique(idx, return_inverse=True)
+    patterns = np.empty((unique.size, *dataset.shape[-2:]), dtype=dataset.dtype)
+    start = 0
+    while start < unique.size:
+        stop = start + 1
+        while stop < unique.size and unique[stop] == unique[stop - 1] + 1:
+            if dataset.ndim == 4 and unique[stop] // cols != unique[start] // cols:
+                break
+            stop += 1
+        first = int(unique[start])
+        if dataset.ndim == 3:
+            patterns[start:stop] = dataset[first:first + stop - start]
+        elif dataset.ndim == 4:
+            row, col = divmod(first, cols)
+            patterns[start:stop] = dataset[row, col:col + stop - start]
+        else:
+            raise ValueError(f"Unsupported HDF5 pattern shape {dataset.shape}.")
+        start = stop
+    return patterns[inverse]
+
+
+class _ResidualPatternStore:
+    """Session-owned, lossless float32 images with bounded resident memory.
+
+    HDF5 allocates a chunk only when a point is written. A large scan thus
+    needs neither a large in-memory image array nor a preallocated file.
+    """
+
+    def __init__(self, count: int, pattern_shape: tuple[int, int]) -> None:
+        fd, path = tempfile.mkstemp(prefix="overlap-ebsd-residual-", suffix=".h5")
+        os.close(fd)
+        self.path = path
+        self._h5 = h5py.File(path, "w", rdcc_nbytes=1024**2)
+        self.patterns = self._h5.create_dataset(
+            "residuals", shape=(int(count), *pattern_shape), dtype=np.float32,
+            chunks=(1, *pattern_shape),
+        )
+        self.available = np.zeros(int(count), dtype=bool)
+
+    def write(self, index: int, pattern: np.ndarray) -> None:
+        arr = np.asarray(pattern, dtype=np.float32)
+        if arr.shape != self.patterns.shape[1:]:
+            raise ValueError(f"Residual shape {arr.shape} does not match {self.patterns.shape[1:]}.")
+        self.patterns[int(index)] = arr
+        self.available[int(index)] = True
+
+    def read(self, indices: np.ndarray) -> np.ndarray:
+        idx = np.asarray(indices, dtype=np.int64).reshape(-1)
+        if not np.all(self.available[idx]):
+            raise KeyError("Residual cache does not contain every requested point.")
+        return _read_h5_patterns(self.patterns, idx, rows=1, cols=self.available.size)
+
+    def close(self) -> None:
+        h5 = getattr(self, "_h5", None)
+        self._h5 = None
+        if h5 is not None:
+            h5.close()
+        Path(self.path).unlink(missing_ok=True)
+
+    def __del__(self) -> None:
+        try:
+            self.close()
+        except Exception:
+            pass
 
 
 class _H5DatasetArray:
@@ -53,6 +129,28 @@ class _H5DatasetArray:
     def __getitem__(self, key):
         with h5py.File(self.path, "r") as h5:
             return h5[self.dataset_path][key]
+
+
+class _H5FlatPatternArray(_H5DatasetArray):
+    """Expose either H5OINA layout as a flat stack without a full-scan graph."""
+
+    def __init__(self, path: str | Path, dataset_path: str, *, rows: int, cols: int) -> None:
+        super().__init__(path, dataset_path)
+        self.rows, self.cols = int(rows), int(cols)
+        self.shape = (self.rows * self.cols, *self.shape[-2:])
+        self.ndim = 3
+
+    def __getitem__(self, key):
+        keys = key if isinstance(key, tuple) else (key,)
+        nav = keys[0]
+        if isinstance(nav, slice):
+            indices = np.arange(*nav.indices(self.shape[0]), dtype=np.int64)
+        else:
+            indices = np.asarray(nav, dtype=np.int64).reshape(-1)
+        with h5py.File(self.path, "r") as h5:
+            patterns = _read_h5_patterns(h5[self.dataset_path], indices, rows=self.rows, cols=self.cols)
+        out = patterns[(slice(None), *keys[1:])]
+        return out[0] if isinstance(nav, (int, np.integer)) else out
 
 
 def _optional_arrays_close(
@@ -1145,6 +1243,7 @@ def _fit_overlap_primary_pattern(
     popsize: int,
     seed: int,
     fit_bounds: list[tuple[float, float]] | None = None,
+    fit_method: str = FIT_METHOD_DEFAULT,
 ) -> PrimaryPatternFit:
     experimental = _normalize_weighted(experimental_raw, weights)
     simulated_unfitted = _normalize_weighted(simulated_raw, weights)
@@ -1162,36 +1261,10 @@ def _fit_overlap_primary_pattern(
         ssr = float(np.sum(weights * residual * residual))
         return ssr, blurred, gain_map, processed, fitted_ncc, residual
 
-    default_bounds = [
-        (0.1, 5.0),   # Gaussian sigma
-        (-1.5, 4.5),  # g_min
-        (0.0, 12.5),  # g_max
-        (0.1, 10.0),  # power p
-        (0.6, 1.4),   # ellipse a scale
-        (0.6, 1.4),   # ellipse b scale
-        (-0.15, 0.15),
-        (-0.15, 0.15),
-    ]
-    bounds = default_bounds if fit_bounds is None else [tuple(map(float, pair)) for pair in fit_bounds]
-    if len(bounds) != 8:
-        raise ValueError("Primary fit bounds must contain eight (low, high) pairs.")
-    for low, high in bounds:
-        if not np.isfinite(low) or not np.isfinite(high) or high <= low:
-            raise ValueError("Primary fit bounds must be finite and strictly increasing.")
-
-    def objective(params: np.ndarray) -> float:
-        return evaluate(params)[0]
-
-    optimization = differential_evolution(
-        objective,
-        bounds=bounds,
-        maxiter=max(1, int(maxiter)),
-        popsize=max(4, int(popsize)),
-        polish=True,
-        seed=int(seed),
-        disp=False,
-        updating="deferred",
-        workers=1,
+    optimization = optimize_primary(
+        experimental_raw, simulated_raw, weights,
+        maxiter=maxiter, popsize=popsize, seed=seed,
+        fit_bounds=fit_bounds, method=fit_method,
     )
     params = np.asarray(optimization.x, dtype=np.float64)
     _ssr, blurred, gain_map, processed, fitted_ncc, residual = evaluate(params)
@@ -1323,44 +1396,12 @@ def _fit_overlap_mixture_pattern(
     popsize: int,
     seed: int,
     fit_bounds: list[tuple[float, float]] | None = None,
+    fit_method: str = FIT_METHOD_DEFAULT,
 ) -> OverlapMixtureFit:
-    default_bounds = [
-        (0.1, 5.0),
-        (-1.5, 4.5),
-        (0.0, 12.5),
-        (0.1, 10.0),
-        (0.6, 1.4),
-        (0.6, 1.4),
-        (-0.15, 0.15),
-        (-0.15, 0.15),
-    ]
-    bounds = default_bounds if fit_bounds is None else [tuple(map(float, pair)) for pair in fit_bounds]
-    if len(bounds) != 8:
-        raise ValueError("Mixture fit bounds must contain eight (low, high) pairs.")
-    for low, high in bounds:
-        if not np.isfinite(low) or not np.isfinite(high) or high <= low:
-            raise ValueError("Mixture fit bounds must be finite and strictly increasing.")
-
-    def objective(params: np.ndarray) -> float:
-        fit = _evaluate_overlap_mixture_pattern(
-            experimental_raw,
-            primary_raw,
-            secondary_raw,
-            weights,
-            np.asarray(params, dtype=np.float64),
-        )
-        return float(np.sum(np.asarray(weights, dtype=np.float32) * fit.residual * fit.residual))
-
-    optimization = differential_evolution(
-        objective,
-        bounds=bounds,
-        maxiter=max(1, int(maxiter)),
-        popsize=max(4, int(popsize)),
-        polish=True,
-        seed=int(seed),
-        disp=False,
-        updating="deferred",
-        workers=1,
+    optimization = optimize_mixture(
+        experimental_raw, primary_raw, secondary_raw, weights,
+        maxiter=maxiter, popsize=popsize, seed=seed,
+        fit_bounds=fit_bounds, method=fit_method,
     )
     fit = _evaluate_overlap_mixture_pattern(
         experimental_raw,
@@ -1441,6 +1482,7 @@ def _overlap_mixture_result_from_raw_patterns(
     fit_maxiter: int,
     fit_popsize: int,
     fit_bounds: list[tuple[float, float]] | None,
+    fit_method: str = FIT_METHOD_DEFAULT,
 ) -> OverlapMixtureResult:
     fit = _fit_overlap_mixture_pattern(
         experimental_raw,
@@ -1451,6 +1493,7 @@ def _overlap_mixture_result_from_raw_patterns(
         popsize=int(fit_popsize),
         seed=int(index) + 7919,
         fit_bounds=fit_bounds,
+        fit_method=fit_method,
     )
     return _overlap_mixture_result_from_fit(
         index,
@@ -1465,6 +1508,7 @@ def _overlap_mixture_result_from_raw_patterns(
     )
 
 
+
 def _overlap_point_result_from_raw_patterns(
     index: int,
     row: int,
@@ -1477,6 +1521,7 @@ def _overlap_point_result_from_raw_patterns(
     fit_maxiter: int,
     fit_popsize: int,
     fit_bounds: list[tuple[float, float]] | None,
+    fit_method: str = FIT_METHOD_DEFAULT,
     blur_sigma: float = 0.0,
 ) -> OverlapPointResult:
     if fit_blur_gain:
@@ -1488,6 +1533,7 @@ def _overlap_point_result_from_raw_patterns(
             popsize=int(fit_popsize),
             seed=int(index),
             fit_bounds=fit_bounds,
+            fit_method=fit_method,
         )
     else:
         experimental = _normalize_weighted(experimental_raw, weights)
@@ -1538,6 +1584,7 @@ def _overlap_point_result_from_raw_patterns(
         fit_success=fit.success,
         fit_message=fit.message,
     )
+
 
 
 def _residual_to_uint8(residual_z: np.ndarray, zlim: float = 3.0, *, hist_norm: bool = False) -> np.ndarray:
@@ -1670,6 +1717,7 @@ def _init_residual_roi_worker(
     fit_popsize: int,
     fit_bounds: list[tuple[float, float]] | None,
     blur_sigma: float = 0.0,
+    fit_method: str = FIT_METHOD_DEFAULT,
 ) -> None:
     import kikuchipy as kp
 
@@ -1694,6 +1742,7 @@ def _init_residual_roi_worker(
         "fit_maxiter": int(fit_maxiter),
         "fit_popsize": int(fit_popsize),
         "blur_sigma": float(blur_sigma),
+        "fit_method": validate_fit_method(fit_method),
         "fit_bounds": None
         if fit_bounds is None
         else [tuple(map(float, pair)) for pair in fit_bounds],
@@ -1711,6 +1760,19 @@ def _init_residual_roi_worker(
                 np.asarray(master_energy_values_kv, dtype=np.float64),
                 np.asarray(master_energy_weights, dtype=np.float64),
             )
+        else:
+            # Retain only the selected energy in each worker. Repeated lazy
+            # projection graphs would otherwise reload its hemispheres.
+            axis_result = _energy_axis_from_master_signal(source_mp)
+            if axis_result is not None:
+                _energy_axis, energy_values = axis_result
+                requested_energy = float(master_energy_kv) if master_energy_kv is not None else 20.0
+                selected_energy = float(energy_values[np.argmin(np.abs(energy_values - requested_energy))])
+                source_mp = _master_signal_with_energy_weights(
+                    source_mp, np.asarray([selected_energy]), np.asarray([1.0]),
+                )
+            elif hasattr(source_mp, "compute"):
+                source_mp.compute(show_progressbar=False)
         state["mp_signal"] = source_mp
     else:
         hemis = load_master_hemis([str(master_path)])
@@ -1771,6 +1833,42 @@ def _residual_roi_worker_simulated_pattern(euler_rad: np.ndarray, pc: np.ndarray
     )
 
 
+def _residual_roi_worker_simulated_patterns(eulers_rad: np.ndarray, pcs: np.ndarray) -> np.ndarray:
+    """Project a bounded batch together, retaining each point's orientation/PC."""
+    if _RESIDUAL_ROI_WORKER_STATE is None:
+        raise RuntimeError("Residual ROI worker is not initialized.")
+    state = _RESIDUAL_ROI_WORKER_STATE
+    eulers = np.asarray(eulers_rad, dtype=np.float64).reshape(-1, 3)
+    pcs = np.asarray(pcs, dtype=np.float64).reshape(-1, 3)
+    if len(pcs) == 1:
+        pcs = np.broadcast_to(pcs, (len(eulers), 3))
+    if len(eulers) != len(pcs) or len(eulers) == 0:
+        raise ValueError("Projection batches need one PC per orientation and at least one orientation.")
+    if state["master_kind"] != "kikuchipy":
+        return np.stack([_residual_roi_worker_simulated_pattern(e, pc) for e, pc in zip(eulers, pcs)])
+
+    import kikuchipy as kp
+    from orix.quaternion import Rotation
+
+    if bool(state["kikuchipy_frame_active"]):
+        eulers = _left_multiply_eulers_zxz(eulers, angle_rad=np.deg2rad(90.0))
+    # A single shared PC uses Kikuchipy's fixed-PC kernel and computes detector
+    # rays once. Preserve varying PCs exactly when scan correction is active.
+    detector_pc = pcs[:1] if np.all(pcs == pcs[:1]) else pcs
+    detector = kp.detectors.EBSDDetector(
+        shape=(int(state["h"]), int(state["w"])), pc=detector_pc,
+        convention="bruker", sample_tilt=float(state["sample_tilt_deg"]),
+        tilt=float(state["detector_tilt_deg"]), azimuthal=float(state["azimuthal_deg"]),
+        twist=float(state["twist_deg"]),
+    )
+    signal = state["mp_signal"].get_patterns(
+        rotations=Rotation.from_euler(eulers, degrees=False), detector=detector,
+        energy=float(state["master_energy_kv"]) if state["master_energy_kv"] is not None else 20.0,
+        compute=True, show_progressbar=False,
+    )
+    return np.asarray(signal.data, dtype=np.float32).reshape(len(eulers), int(state["h"]), int(state["w"]))
+
+
 def _compute_residual_roi_batch(payload: ResidualBatchPayload) -> list[OverlapPointResult]:
     if _RESIDUAL_ROI_WORKER_STATE is None:
         raise RuntimeError("Residual ROI worker is not initialized.")
@@ -1800,10 +1898,10 @@ def _compute_residual_roi_batch(payload: ResidualBatchPayload) -> list[OverlapPo
 
     results: list[OverlapPointResult] = []
     master_kind = str(state["master_kind"])
+    simulated = _residual_roi_worker_simulated_patterns(eulers, pc_bruker if master_kind == "kikuchipy" else pc_custom)
     for i, idx in enumerate(indices.tolist()):
         row, col = divmod(int(idx), cols)
-        pc_use = pc_bruker[i] if master_kind == "kikuchipy" else pc_custom[i]
-        sim_raw = _residual_roi_worker_simulated_pattern(eulers[i], pc_use)
+        sim_raw = simulated[i]
         result = _overlap_point_result_from_raw_patterns(
             int(idx),
             row,
@@ -1816,8 +1914,13 @@ def _compute_residual_roi_batch(payload: ResidualBatchPayload) -> list[OverlapPo
             fit_popsize=fit_popsize,
             fit_bounds=fit_bounds,
             blur_sigma=float(state.get("blur_sigma", 0.0)),
+            fit_method=str(state.get("fit_method", FIT_METHOD_DEFAULT)),
         )
-        results.append(result)
+        # Only the residual is needed by ROI indexing. Inspection images can
+        # be reconstructed once when selected, avoiding six image transfers.
+        results.append(replace(result, experimental=None, simulated=None,
+                               simulated_unfitted=None, blurred_simulated=None,
+                               gain_map=None, secondary_simulated=None))
 
     return results
 
@@ -1855,11 +1958,14 @@ def _compute_overlap_mixture_roi_batch(payload: OverlapMixtureBatchPayload) -> l
 
     results: list[OverlapMixtureResult] = []
     master_kind = str(state["master_kind"])
+    pcs = pc_bruker if master_kind == "kikuchipy" else pc_custom
+    simulated = _residual_roi_worker_simulated_patterns(
+        np.concatenate((primary_eulers, secondary_eulers)), np.concatenate((pcs, pcs)),
+    )
     for i, idx in enumerate(indices.tolist()):
         row, col = divmod(int(idx), cols)
-        pc_use = pc_bruker[i] if master_kind == "kikuchipy" else pc_custom[i]
-        primary_raw = _residual_roi_worker_simulated_pattern(primary_eulers[i], pc_use)
-        secondary_raw = _residual_roi_worker_simulated_pattern(secondary_eulers[i], pc_use)
+        primary_raw = simulated[i]
+        secondary_raw = simulated[len(indices) + i]
         result = _overlap_mixture_result_from_raw_patterns(
             int(idx),
             row,
@@ -1875,8 +1981,11 @@ def _compute_overlap_mixture_roi_batch(payload: OverlapMixtureBatchPayload) -> l
             fit_maxiter=fit_maxiter,
             fit_popsize=fit_popsize,
             fit_bounds=fit_bounds,
+            fit_method=str(state.get("fit_method", FIT_METHOD_DEFAULT)),
         )
-        results.append(result)
+        results.append(replace(result, experimental=None, primary_simulated=None,
+                               secondary_simulated=None, combined_simulated=None,
+                               residual=None, gain_map=None))
 
     return results
 
@@ -2676,6 +2785,11 @@ class WorkflowSession:
         self.last_overlap: OverlapPointResult | None = None
         self.residual_pattern_output_path: str | None = None
         self._residual_pattern_source_cache: tuple[str, object] | None = None
+        self._residual_pattern_store: _ResidualPatternStore | None = None
+        self._residual_inspection_indices: OrderedDict[int, None] = OrderedDict()
+        self._mixture_inspection_indices: OrderedDict[int, None] = OrderedDict()
+        self._h5_pattern_source: tuple[object, str, str] | None = None
+        self._flat_pattern_source_cache: tuple[object, object] | None = None
         self.overlap_mixture_results: dict[int, OverlapMixtureResult] = {}
         self.last_overlap_mixture: OverlapMixtureResult | None = None
         self.overlap_primary_fraction_map: np.ndarray | None = None
@@ -2687,14 +2801,57 @@ class WorkflowSession:
 
     def __del__(self) -> None:
         try:
-            self._clear_dictionary_cache()
+            self.close()
         except Exception:
             pass
+
+    def close(self) -> None:
+        """Release session-owned caches and input handles; safe to call twice."""
+        data = self.data
+        master = self.master
+        cache = self.dictionary_cache
+        signals = (
+            getattr(data, "signal", None), getattr(master, "mp_signal", None),
+            getattr(master, "source_mp_signal", None), getattr(cache, "signal", None),
+        )
+        seen_arrays: set[int] = set()
+        handles: dict[object, object] = {}
+        for signal in signals:
+            array = getattr(signal, "data", None)
+            if not hasattr(array, "dask") or id(array) in seen_arrays:
+                continue
+            seen_arrays.add(id(array))
+            # Array proxies open and close each slice themselves, while
+            # NumPy-backed lazy signals own no file. Query actual handles
+            # quietly instead of calling LazySignal.close_file(), which logs
+            # warnings for both of these normal cases and for closed inputs.
+            from rsciio.utils.file import get_file_handle
+
+            handle = get_file_handle(array, warn=False)
+            if handle is not None:
+                # Different lazy views can expose distinct Python wrappers
+                # for the same HDF5 file; deduplicate by its native file ID.
+                handles[getattr(handle, "id", id(handle))] = handle
+        for handle in handles.values():
+            try:
+                handle.close()
+            except (OSError, ValueError):
+                pass
+        reader = getattr(data, "up_pattern_reader", None)
+        if isinstance(reader, UPPatternReader):
+            reader._pattern_memmap = None
+        self._invalidate_residual_cache()
+        self._clear_dictionary_cache()
+        self._h5_pattern_source = None
+        self._flat_pattern_source_cache = None
+        self._orientation_color_cache.clear()
+        self.data = None
+        self.master = None
 
     def _clear_dictionary_cache(self) -> None:
         cache = getattr(self, "dictionary_cache", None)
         self.dictionary_cache = None
-        if cache is None or not cache.owns_storage or not cache.storage_path:
+        if cache is None or not getattr(cache, "owns_storage", False) or not getattr(cache, "storage_path", None):
             return
         try:
             Path(cache.storage_path).unlink(missing_ok=True)
@@ -2891,6 +3048,9 @@ class WorkflowSession:
                 ]
             for index in selected.tolist():
                 self.residual_point_results.pop(index, None)
+                self._residual_inspection_indices.pop(index, None)
+            if self._residual_pattern_store is not None:
+                self._residual_pattern_store.available[selected] = False
             if self.last_overlap is not None and self.last_overlap.index in selected:
                 self.last_overlap = None
             self._clear_residual_candidate_rows(selected)
@@ -2907,6 +3067,8 @@ class WorkflowSession:
         self.last_residual_scores_map = None
         self.last_residual_indexed_indices = None
         self.residual_point_results.clear()
+        self._residual_inspection_indices.clear()
+        self._clear_residual_pattern_store()
         self.last_overlap = None
         self.residual_pattern_output_path = None
         self._clear_residual_pattern_source_cache()
@@ -2972,6 +3134,7 @@ class WorkflowSession:
             selected = np.unique(np.asarray(indices, dtype=np.int64).ravel())
             for index in selected.tolist():
                 self.overlap_mixture_results.pop(index, None)
+                self._mixture_inspection_indices.pop(index, None)
             if self.last_overlap_mixture is not None and self.last_overlap_mixture.index in selected:
                 self.last_overlap_mixture = None
             for values in (
@@ -2983,6 +3146,7 @@ class WorkflowSession:
                     values.reshape(-1)[selected] = np.nan
             return
         self.overlap_mixture_results.clear()
+        self._mixture_inspection_indices.clear()
         self.last_overlap_mixture = None
         self.overlap_primary_fraction_map = None
         self.overlap_secondary_fraction_map = None
@@ -2990,6 +3154,47 @@ class WorkflowSession:
 
     def _clear_residual_pattern_source_cache(self) -> None:
         self._residual_pattern_source_cache = None
+
+    def _clear_residual_pattern_store(self) -> None:
+        store = getattr(self, "_residual_pattern_store", None)
+        self._residual_pattern_store = None
+        if store is not None:
+            store.close()
+
+    def _cache_inspection_result(self, result, *, mixture: bool = False) -> None:
+        """Keep only a few selected points' full inspection images in memory."""
+        indices = self._mixture_inspection_indices if mixture else self._residual_inspection_indices
+        results = self.overlap_mixture_results if mixture else self.residual_point_results
+        idx = int(result.index)
+        results[idx] = result
+        indices[idx] = None
+        indices.move_to_end(idx)
+        while len(indices) > INSPECTION_PATTERN_CACHE_SIZE:
+            evicted, _ = indices.popitem(last=False)
+            old = results.get(evicted)
+            if old is not None:
+                results[evicted] = (
+                    self._strip_overlap_mixture_result(old) if mixture
+                    else self._strip_residual_point_result(old)
+                )
+
+    def _store_residual_result(self, result: OverlapPointResult, *, keep_patterns: bool = False) -> None:
+        """Retain fit metadata and exact residuals; bound full inspection images."""
+        if self.data is None:
+            raise RuntimeError("Load input data first.")
+        idx = int(result.index)
+        if result.residual is not None:
+            if self._residual_pattern_store is None:
+                self._residual_pattern_store = _ResidualPatternStore(
+                    self.data.count, (self.data.h, self.data.w),
+                )
+            self._residual_pattern_store.write(idx, result.residual)
+        if keep_patterns:
+            self._cache_inspection_result(result)
+            self.last_overlap = result
+        else:
+            self._residual_inspection_indices.pop(idx, None)
+            self.residual_point_results[idx] = self._strip_residual_point_result(result)
 
     def _kikuchipy_frame_active(self) -> bool:
         return self.data is not None and self.data.source_type == "h5oina"
@@ -3151,7 +3356,7 @@ class WorkflowSession:
             or (result.secondary_euler_rad is not None and result.secondary_simulated is None)
         ):
             result = self._materialize_residual_point_result(result)
-            self.residual_point_results[int(index)] = result
+        self._store_residual_result(result, keep_patterns=True)
         return result
 
     def get_primary_index_ncc(self, index: int) -> float | None:
@@ -3280,6 +3485,12 @@ class WorkflowSession:
         scale = float(result.scale)
         fitted_ncc = float(result.ncc_es)
         residual = experimental - scale * processed
+        store = self._residual_pattern_store
+        if (
+            self.residual_point_results.get(idx) is result
+            and store is not None and store.available[idx]
+        ):
+            residual = store.read(np.asarray([idx], dtype=np.int64))[0]
         ncc_unfitted = result.ncc_unfitted
         if ncc_unfitted is None:
             ncc_unfitted = _weighted_ncc(experimental, simulated_unfitted, weights)
@@ -3365,10 +3576,12 @@ class WorkflowSession:
     def _store_overlap_mixture_result(self, result: OverlapMixtureResult, *, keep_patterns: bool) -> None:
         self._ensure_overlap_mixture_state()
         idx = int(result.index)
-        stored = result if keep_patterns else self._strip_overlap_mixture_result(result)
-        self.overlap_mixture_results[idx] = stored
         if keep_patterns:
+            self._cache_inspection_result(result, mixture=True)
             self.last_overlap_mixture = result
+        else:
+            self._mixture_inspection_indices.pop(idx, None)
+            self.overlap_mixture_results[idx] = self._strip_overlap_mixture_result(result)
         if self.overlap_primary_fraction_map is not None:
             self.overlap_primary_fraction_map[int(result.row), int(result.col)] = float(result.primary_fraction)
         if self.overlap_secondary_fraction_map is not None:
@@ -3444,7 +3657,7 @@ class WorkflowSession:
             primary_euler_delta_deg=tuple(float(v) for v in result.primary_euler_delta_deg),
             secondary_euler_delta_deg=tuple(float(v) for v in result.secondary_euler_delta_deg),
         )
-        self.overlap_mixture_results[idx] = materialized
+        self._cache_inspection_result(materialized, mixture=True)
         self.last_overlap_mixture = materialized
         return materialized
 
@@ -3459,6 +3672,7 @@ class WorkflowSession:
             or result.residual is None
         ):
             result = self._materialize_overlap_mixture_result(result)
+        self._cache_inspection_result(result, mixture=True)
         return result
 
     # ------------------------- Data loading ------------------------ #
@@ -3468,6 +3682,8 @@ class WorkflowSession:
         from transforms3d.euler import euler2mat
 
         self.restored_ui_state = {}
+        self._h5_pattern_source = None
+        self._flat_pattern_source_cache = None
         p = str(Path(pattern_path).expanduser().resolve())
         if not Path(p).exists():
             raise FileNotFoundError(p)
@@ -3631,6 +3847,7 @@ class WorkflowSession:
                 scan_pc_correction_issue=scan_pc_issue,
                 up_pattern_reader=None,
             )
+            self._configure_h5_pattern_source()
             self.initial_eulers_rad = eulers.copy()
             # Keep the loaded source arrays immutable.  In particular, the
             # preliminary IPF uses ``data.phases`` as its original indexed
@@ -4052,12 +4269,76 @@ class WorkflowSession:
 
     # ---------------------- Pattern extraction --------------------- #
 
+    def _configure_h5_pattern_source(self) -> None:
+        """Remember the loader's exact unconditioned dataset for bounded reads.
+
+        Kikuchipy remains the input loader. Check its shape and sample pixels
+        before enabling direct reads, so padded or reordered input falls back
+        to the loaded signal instead of bypassing the loader's interpretation.
+        """
+        self._h5_pattern_source = None
+        self._flat_pattern_source_cache = None
+        data = self.data
+        if data is None or data.source_type != "h5oina":
+            return
+        try:
+            with h5py.File(data.pattern_path, "r") as h5:
+                roots = [data.h5_analysis_root] if data.h5_analysis_root is not None else None
+                path = _h5oina_first_path(h5, H5OINA_DATASET_CANDIDATES["processed_patterns"], roots=roots)
+                if path is None:
+                    return
+                dataset = h5[path]
+                if dataset.shape not in (
+                    (data.count, data.h, data.w), (data.rows, data.cols, data.h, data.w),
+                ):
+                    return
+                for idx in sorted({0, data.count // 2, data.count - 1}):
+                    row, col = divmod(idx, data.cols)
+                    loaded = data.signal.data[row, col]
+                    if hasattr(loaded, "compute"):
+                        loaded = loaded.compute()
+                    raw = _read_h5_patterns(dataset, np.asarray([idx]), rows=data.rows, cols=data.cols)[0]
+                    if not np.array_equal(raw, np.asarray(loaded), equal_nan=True):
+                        return
+                self._h5_pattern_source = (data.signal.data, data.pattern_path, path)
+        except (OSError, KeyError, ValueError):
+            return
+
+    def _direct_h5_pattern_source(self):
+        source = self._h5_pattern_source
+        if self.data is not None and source is not None and source[0] is self.data.signal.data:
+            return source
+        return None
+
+    def _flat_h5_pattern_data(self):
+        if self.data is None:
+            raise RuntimeError("Load input data first.")
+        data = self.data.signal.data
+        cached = self._flat_pattern_source_cache
+        if cached is None or cached[0] is not data:
+            source = self._direct_h5_pattern_source()
+            if source is not None:
+                import dask.array as da
+
+                proxy = _H5FlatPatternArray(source[1], source[2], rows=self.data.rows, cols=self.data.cols)
+                flat = da.from_array(proxy, chunks=(64, self.data.h, self.data.w), asarray=False)
+            else:
+                flat = data.reshape((-1, self.data.h, self.data.w))
+            self._flat_pattern_source_cache = (data, flat)
+        return self._flat_pattern_source_cache[1]
+
     def _pattern_at(self, index: int) -> np.ndarray:
         if self.data is None:
             raise RuntimeError("Load input data first.")
         idx = int(index)
         if self.data.source_type == "up_ang" and self.data.up_pattern_reader is not None:
             return self.data.up_pattern_reader.read_pattern(idx)
+        source = self._direct_h5_pattern_source()
+        if source is not None:
+            with h5py.File(source[1], "r") as h5:
+                return np.asarray(_read_h5_patterns(
+                    h5[source[2]], np.asarray([idx]), rows=self.data.rows, cols=self.data.cols,
+                )[0], dtype=np.float32)
         row, col = self.row_col_from_index(idx)
         arr = self.data.signal.data[row, col]
         if hasattr(arr, "compute"):
@@ -4138,12 +4419,19 @@ class WorkflowSession:
         if self.data is None or self.data.signal is None:
             raise RuntimeError("H5OINA selection requested without loaded signal data.")
         data = self.data.signal.data
-        flat = data.reshape((-1, self.data.h, self.data.w))
+        source = self._direct_h5_pattern_source()
+        if source is not None and selection.kind != "full":
+            with h5py.File(source[1], "r") as h5:
+                patterns = _read_h5_patterns(
+                    h5[source[2]], selection.indices, rows=self.data.rows, cols=self.data.cols,
+                )
+            return self._signal_from_pattern_data(patterns)
         if selection.kind == "point":
             row, col = self.row_col_from_index(int(selection.indices[0]))
             return self._signal_from_pattern_data(data[row, col])
         if selection.kind == "repeated_point":
-            pattern = flat[int(selection.indices[0])]
+            row, col = self.row_col_from_index(int(selection.indices[0]))
+            pattern = data[row, col]
             if hasattr(pattern, "compute"):
                 pattern = pattern.compute()
             repeated = np.repeat(np.asarray(pattern, dtype=np.float32)[np.newaxis, ...], selection.size, axis=0)
@@ -4152,8 +4440,8 @@ class WorkflowSession:
             roi = data[selection.r0 : selection.r1, selection.c0 : selection.c1].reshape((-1, self.data.h, self.data.w))
             return self._signal_from_pattern_data(roi)
         if selection.kind == "full":
-            return self._signal_from_pattern_data(flat)
-        return self._signal_from_pattern_data(flat[selection.indices.tolist()])
+            return self._signal_from_pattern_data(self._flat_h5_pattern_data())
+        return self._signal_from_pattern_data(self._flat_h5_pattern_data()[selection.indices.tolist()])
 
     def _materialize_signal_batch(self, sig):
         data = sig.data
@@ -4299,9 +4587,12 @@ class WorkflowSession:
 
         source: object
         if self.data.source_type == "h5oina":
-            import kikuchipy as kp
-
-            source = kp.load(path, lazy=True)
+            with h5py.File(path, "r") as h5:
+                dataset_path = _h5oina_first_path(
+                    h5, H5OINA_DATASET_CANDIDATES["processed_patterns"], roots=roots,
+                    label="residual processed patterns", required=True,
+                )
+            source = _H5FlatPatternArray(path, dataset_path, rows=self.data.rows, cols=self.data.cols)
         elif self.data.source_type == "up_ang":
             if self.data.up_pattern_reader is None:
                 raise RuntimeError("Residual UP pattern source requires a loaded UP reader.")
@@ -4362,25 +4653,41 @@ class WorkflowSession:
             )
 
         can_use_memory = True
-        memory_patterns: list[np.ndarray] = []
-        for pidx in idx.tolist():
+        memory_patterns: list[np.ndarray | None] = []
+        disk_positions: list[int] = []
+        store = self._residual_pattern_store
+        for position, pidx in enumerate(idx.tolist()):
             result = residual_results.get(int(pidx))
-            if result is None or result.residual is None:
+            if result is not None and result.residual is not None:
+                memory_patterns.append(np.asarray(result.residual, dtype=np.float32))
+            elif (
+                result is not None and self.residual_point_results.get(int(pidx)) is result
+                and store is not None and store.available[int(pidx)]
+            ):
+                memory_patterns.append(None)
+                disk_positions.append(position)
+            else:
                 can_use_memory = False
                 break
-            memory_patterns.append(np.asarray(result.residual, dtype=np.float32))
 
         if can_use_memory:
-            return signal_from_patterns(np.stack(memory_patterns, axis=0))
+            if not disk_positions:
+                return signal_from_patterns(np.stack(memory_patterns, axis=0))
+            positions = np.asarray(disk_positions, dtype=np.int64)
+            disk_patterns = store.read(idx[positions])
+            if positions.size == idx.size:
+                return signal_from_patterns(disk_patterns)
+            patterns = np.empty((idx.size, self.data.h, self.data.w), dtype=np.float32)
+            patterns[positions] = disk_patterns
+            for position, pattern in enumerate(memory_patterns):
+                if pattern is not None:
+                    patterns[position] = pattern
+            return signal_from_patterns(patterns)
 
         source = self._load_residual_pattern_source(idx)
         if source is not None:
             if self.data.source_type == "h5oina":
-                flat = source.data.reshape((-1, self.data.h, self.data.w))
-                sub = flat[idx.tolist()]
-                if getattr(sub, "ndim", 0) == 2:
-                    sub = sub[np.newaxis, ...]
-                sig = kp.signals.LazyEBSD(sub)
+                return signal_from_patterns(source[idx.tolist()])
             else:
                 assert isinstance(source, UPPatternReader)
                 patterns = source.read_patterns(idx)
@@ -4404,9 +4711,11 @@ class WorkflowSession:
             result = residual_results.get(int(pidx))
             if result is None:
                 result = self.analyze_overlap_point(int(pidx))
-                residual_results[int(pidx)] = result
             if result.residual is None:
                 result = self._materialize_residual_point_result(result)
+            if residual_results is self.residual_point_results:
+                self._store_residual_result(result)
+            else:
                 residual_results[int(pidx)] = result
             fallback_patterns.append(np.asarray(result.residual, dtype=np.float32))
         return signal_from_patterns(np.stack(fallback_patterns, axis=0))
@@ -5948,6 +6257,7 @@ class WorkflowSession:
         popsize: int,
         seed: int,
         fit_bounds: list[tuple[float, float]] | None = None,
+        fit_method: str = FIT_METHOD_DEFAULT,
     ) -> PrimaryPatternFit:
         """Fit the paper's Gaussian blur and elliptical power-law gain model."""
         return _fit_overlap_primary_pattern(
@@ -5958,7 +6268,9 @@ class WorkflowSession:
             popsize=int(popsize),
             seed=int(seed),
             fit_bounds=fit_bounds,
+            fit_method=fit_method,
         )
+
 
     def _kikuchipy_pattern_ncc(self, experimental: np.ndarray, simulated: np.ndarray) -> float:
         """Score one pattern pair with Kikuchipy's NCC metric and the active signal mask."""
@@ -6043,8 +6355,10 @@ class WorkflowSession:
         fit_maxiter: int = 40,
         fit_popsize: int = 8,
         fit_bounds: list[tuple[float, float]] | None = None,
+        fit_method: str = FIT_METHOD_DEFAULT,
         store_result: bool = True,
     ) -> OverlapPointResult:
+        fit_method = validate_fit_method(fit_method)
         if self.data is None or self.master is None:
             raise RuntimeError("Load both input data and master pattern first.")
         if self.current_eulers_rad is None or self.current_pc_bruker is None or self.current_pc_custom is None:
@@ -6065,15 +6379,17 @@ class WorkflowSession:
             fit_maxiter=int(fit_maxiter),
             fit_popsize=int(fit_popsize),
             fit_bounds=fit_bounds,
+            fit_method=fit_method,
             blur_sigma=float(blur_sigma),
         )
         if store_result:
             self._invalidate_residual_cache(np.asarray([idx], dtype=np.int64))
-            self.residual_point_results[int(idx)] = result
+            self._store_residual_result(result, keep_patterns=True)
             self.last_overlap = result
         self._ensure_residual_state()
         self._invalidate_residual_color_cache()
         return result
+
 
     def index_overlap_residual(
         self,
@@ -6151,7 +6467,7 @@ class WorkflowSession:
         result.secondary_simulated = secondary_sim
         if keep_n > 1 and self.residual_candidate_eulers_rad is not None:
             self.residual_candidate_eulers_rad[int(index)] = candidate_eulers[0]
-        self.residual_point_results[int(index)] = result
+        self._store_residual_result(result, keep_patterns=True)
         self._ensure_residual_state()
         self.residual_eulers_rad[int(index)] = np.asarray(secondary_euler, dtype=np.float64).reshape(3)
         self.residual_phases[int(index)] = int(self.current_phases[int(index)])
@@ -6429,7 +6745,7 @@ class WorkflowSession:
         if progress_callback is not None:
             progress_callback(85.0, "Applying refined residual orientation...")
         result.secondary_refined = True
-        self.residual_point_results[int(result.index)] = result
+        self._store_residual_result(result, keep_patterns=True)
         self._ensure_residual_state()
         self.residual_eulers_rad[idx] = np.asarray(result.secondary_euler_rad, dtype=np.float64).reshape(3)
         self.residual_phases[idx] = int(self.current_phases[idx])
@@ -6694,12 +7010,14 @@ class WorkflowSession:
         fit_maxiter: int = 40,
         fit_popsize: int = 8,
         fit_bounds: list[tuple[float, float]] | None = None,
+        fit_method: str = FIT_METHOD_DEFAULT,
         write_patterns: bool = False,
         residual_output_path: str | None = None,
         parallel_cores: int = 1,
         selected_index: int | None = None,
         progress_callback: Callable[[float, str], None] | None = None,
     ) -> str:
+        fit_method = validate_fit_method(fit_method)
         if self.data is None or self.master is None:
             raise RuntimeError("Load both input data and master pattern first.")
         if self.current_eulers_rad is None or self.current_pc_bruker is None or self.current_pc_custom is None:
@@ -6733,7 +7051,7 @@ class WorkflowSession:
             if writer is not None and result.residual is not None:
                 writer.write(idx, result.residual)
             self._invalidate_residual_cache(np.asarray([idx], dtype=np.int64))
-            self.residual_point_results[idx] = result if not write_patterns else self._strip_residual_point_result(result)
+            self._store_residual_result(result, keep_patterns=False)
             if target is not None and idx == target:
                 selected_result = result
 
@@ -6746,6 +7064,7 @@ class WorkflowSession:
                     fit_maxiter=int(fit_maxiter),
                     fit_popsize=int(fit_popsize),
                     fit_bounds=fit_bounds,
+                    fit_method=fit_method,
                     store_result=False,
                 )
                 store_result(result)
@@ -6823,6 +7142,7 @@ class WorkflowSession:
                             int(fit_popsize),
                             fit_bounds,
                             blur_sigma,
+                            fit_method,
                         )
                         ctx = get_context("spawn")
                         with ProcessPoolExecutor(
@@ -6901,6 +7221,7 @@ class WorkflowSession:
 
         note = f" Residual patterns written to {writer.output_path}." if writer is not None else ""
         return f"Computed primary residuals for {selected.size} point(s) in ROI.{note}"
+
 
     def index_overlap_residual_indices(
         self,
@@ -7047,7 +7368,10 @@ class WorkflowSession:
             )
             for result in batch_results:
                 idx = int(result.index)
-                residual_results[idx] = result if not write_patterns else self._strip_residual_point_result(result)
+                if residual_results is self.residual_point_results:
+                    self._store_residual_result(result, keep_patterns=(idx == target))
+                else:
+                    residual_results[idx] = result if not write_patterns else self._strip_residual_point_result(result)
                 if result.secondary_euler_rad is not None:
                     self.residual_eulers_rad[idx] = np.asarray(result.secondary_euler_rad, dtype=np.float64).reshape(3)
                 if self.last_residual_scores_map is not None:
@@ -7086,8 +7410,10 @@ class WorkflowSession:
         fit_maxiter: int = 40,
         fit_popsize: int = 8,
         fit_bounds: list[tuple[float, float]] | None = None,
+        fit_method: str = FIT_METHOD_DEFAULT,
         store_result: bool = True,
     ) -> OverlapMixtureResult:
+        fit_method = validate_fit_method(fit_method)
         if self.data is None or self.master is None:
             raise RuntimeError("Load both input data and master pattern first.")
         if self.current_eulers_rad is None or self.current_pc_bruker is None or self.current_pc_custom is None:
@@ -7121,10 +7447,12 @@ class WorkflowSession:
             fit_maxiter=int(fit_maxiter),
             fit_popsize=int(fit_popsize),
             fit_bounds=fit_bounds,
+            fit_method=fit_method,
         )
         if store_result:
             self._store_overlap_mixture_result(result, keep_patterns=True)
         return result
+
 
     def refine_overlap_mixture_orientations(
         self,
@@ -7394,10 +7722,12 @@ class WorkflowSession:
         fit_maxiter: int = 40,
         fit_popsize: int = 8,
         fit_bounds: list[tuple[float, float]] | None = None,
+        fit_method: str = FIT_METHOD_DEFAULT,
         parallel_cores: int = 1,
         selected_index: int | None = None,
         progress_callback: Callable[[float, str], None] | None = None,
     ) -> str:
+        fit_method = validate_fit_method(fit_method)
         if self.data is None or self.master is None:
             raise RuntimeError("Load both input data and master pattern first.")
         if self.current_eulers_rad is None or self.current_pc_bruker is None or self.current_pc_custom is None:
@@ -7425,6 +7755,7 @@ class WorkflowSession:
                     fit_maxiter=int(fit_maxiter),
                     fit_popsize=int(fit_popsize),
                     fit_bounds=fit_bounds,
+                    fit_method=fit_method,
                     store_result=False,
                 )
                 store_result(result)
@@ -7504,6 +7835,8 @@ class WorkflowSession:
                         int(fit_maxiter),
                         int(fit_popsize),
                         fit_bounds,
+                        0.0,
+                        fit_method,
                     )
                     ctx = get_context("spawn")
                     with ProcessPoolExecutor(
@@ -7561,6 +7894,7 @@ class WorkflowSession:
 
         skipped_note = f" Skipped {skipped} point(s) without residual orientation." if skipped > 0 else ""
         return f"Fitted overlap mixtures for {selected.size} point(s) in ROI.{skipped_note}"
+
 
     def export_overlap_optimization_results(
         self,
@@ -8869,6 +9203,9 @@ class WorkflowSession:
             raise RuntimeError(f"No residual pattern is registered for point {idx}.")
         if result.residual is not None:
             return _residual_to_uint8(result.residual)
+        store = self._residual_pattern_store
+        if store is not None and store.available[idx]:
+            return _residual_to_uint8(store.read(np.asarray([idx], dtype=np.int64))[0])
         if stored_h5_patterns is not None:
             stored = _h5_pattern_at(stored_h5_patterns, idx, rows=self.data.rows, cols=self.data.cols)
             return _stored_pattern_to_uint8(stored, stored_h5_patterns.dtype)
@@ -8877,7 +9214,7 @@ class WorkflowSession:
             return _stored_pattern_to_uint8(stored, stored_up_reader.dtype)
         materialized = self._materialize_residual_point_result(result)
         if cache_materialized:
-            self.residual_point_results[idx] = materialized
+            self._store_residual_result(materialized)
         if materialized.residual is None:
             raise RuntimeError(f"Residual pattern could not be materialized for point {idx}.")
         return _residual_to_uint8(materialized.residual)

@@ -6,6 +6,8 @@ from pathlib import Path
 import tkinter as tk
 from tkinter import ttk
 
+from .cpu_fitting import FIT_METHOD_LABELS
+
 
 class CollapsibleSection(ttk.Frame):
     """Disclosure that preserves the values and widgets inside it."""
@@ -329,6 +331,7 @@ class GUIControls:
         self._hint(parent, "Retained matches, refinement range, evaluation limit and full-resolution choice are shared with tab 2.")
         self._action(parent, "Edit shared indexing settings…", lambda: self._show_section(self._refinement_section, 1))
         self._field(parent, "Minimum primary NCC for residual work", self.overlap_min_ncc_var)
+        self._build_fit_method_controls(parent)
         self._action(parent, "Analyze residual ROI", self._run_residual_roi_analysis)
         self._field(parent, "Minimum residual NCC shown in maps", self.residual_ipf_ncc_var)
         self._hint(parent, "Display threshold: hides weak residual orientations. The processing threshold for mixture fitting is in tab 4.")
@@ -380,6 +383,15 @@ class GUIControls:
             ttk.Entry(row, textvariable=high, width=8).pack(side=tk.RIGHT, padx=(4, 0))
             ttk.Entry(row, textvariable=low, width=8).pack(side=tk.RIGHT)
 
+    def _build_fit_method_controls(self, parent):
+        ttk.Label(parent, text="Blur / gain fitting method · tabs 3 and 4").pack(anchor="w", pady=(5, 2))
+        combo = ttk.Combobox(
+            parent, textvariable=self.fit_method_var, values=tuple(FIT_METHOD_LABELS.values()),
+            state="readonly", width=32,
+        )
+        combo.pack(fill=tk.X, pady=2)
+        self._hint(parent, "Blur then gain is fastest. Joint refinement takes longer and can improve the fit. The choice is shared by both tabs.")
+
     def _build_overlap_optimization_workspace(self, parent):
         left, right = self._workspace_panes(parent)
         controls = self._scrollable_controls(left)
@@ -391,6 +403,7 @@ class GUIControls:
 
     def _build_overlap_optimization_tab(self, parent):
         self._field(parent, "Minimum residual NCC for mixture fitting", self.overlap_mixture_residual_ncc_var)
+        self._build_fit_method_controls(parent)
         self._action(parent, "Fit mixture for ROI", self._fit_overlap_mixture_roi)
         self._action(parent, "Fit selected-point mixture", self._fit_overlap_mixture)
         self._progress(parent, self.overlap_optimization_progress_var, self.overlap_optimization_status_var)

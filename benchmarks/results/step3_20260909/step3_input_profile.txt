@@ -1,0 +1,26 @@
+         9218968 function calls (9217195 primitive calls) in 1.976 seconds
+
+   Ordered by: cumulative time
+   List reduced from 856 to 20 due to restriction <20>
+
+   ncalls  tottime  percall  cumtime  percall filename:lineno(function)
+        4    0.000    0.000    1.471    0.368 core.py:4176(_signal_from_indices)
+        4    0.000    0.000    1.471    0.368 core.py:4137(_signal_from_h5_selection)
+        4    0.002    0.001    1.351    0.338 core.py:2255(reshape)
+        4    0.220    0.055    1.349    0.337 reshape.py:283(reshape)
+   381492    0.921    0.000    0.999    0.000 _task_spec.py:647(__init__)
+  368/312    0.000    0.000    0.542    0.002 functools.py:982(__get__)
+        4    0.000    0.000    0.492    0.123 _expr.py:1149(__dask_graph__)
+        4    0.000    0.000    0.492    0.123 _expr.py:1133(_optimized_dsk)
+        4    0.029    0.007    0.492    0.123 optimization.py:37(optimize)
+        4    0.000    0.000    0.461    0.115 highlevelgraph.py:729(cull)
+       20    0.090    0.005    0.162    0.008 highlevelgraph.py:127(cull)
+  186/172    0.017    0.000    0.154    0.001 {built-in method builtins.any}
+       28    0.000    0.000    0.153    0.005 highlevelgraph.py:753(<genexpr>)
+       14    0.000    0.000    0.153    0.011 highlevelgraph.py:96(has_legacy_tasks)
+        4    0.003    0.001    0.146    0.036 highlevelgraph.py:580(get_all_external_keys)
+   476739    0.050    0.000    0.136    0.000 highlevelgraph.py:103(<genexpr>)
+      7/4    0.000    0.000    0.123    0.031 base.py:353(compute)
+      7/4    0.000    0.000    0.123    0.031 base.py:601(compute)
+      7/4    0.000    0.000    0.122    0.030 threaded.py:62(get)
+      7/4    0.000    0.000    0.122    0.030 local.py:382(get_async)

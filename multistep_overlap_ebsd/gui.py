@@ -15,6 +15,7 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
 from .gui_controls import GUIControls
+from .cpu_fitting import FIT_METHOD_DEFAULT, FIT_METHOD_LABELS, validate_fit_method
 from .live_updates import LiveUpdateGate
 from .version import __version__
 
@@ -39,6 +40,16 @@ MASTER_ENERGY_MODE_LABELS = {
     MASTER_ENERGY_MODE_HIGHEST: "Highest available energy",
     MASTER_ENERGY_MODE_GLOBAL: "Global MC-weighted (EMsoft)",
 }
+
+
+def _selected_fit_method(gui) -> str:
+    """Read the shared fit choice before launching a worker."""
+    variable = getattr(gui, "fit_method_var", None)
+    value = variable.get() if variable is not None else FIT_METHOD_DEFAULT
+    for method, label in FIT_METHOD_LABELS.items():
+        if value == label:
+            return method
+    return validate_fit_method(value)
 
 
 class MultiStepOverlapGUI(GUIControls, tk.Tk):
@@ -153,6 +164,7 @@ class MultiStepOverlapGUI(GUIControls, tk.Tk):
         self.residual_roi_export_path_var = tk.StringVar(value=str((cwd / "residual_roi_map.h5oina").resolve()))
         self.blur_sigma_var = tk.DoubleVar(value=0.0)
         self.fit_blur_gain_var = tk.BooleanVar(value=True)
+        self.fit_method_var = tk.StringVar(value=FIT_METHOD_LABELS[FIT_METHOD_DEFAULT])
         self.gain_fit_maxiter_var = tk.IntVar(value=80)
         self.gain_fit_popsize_var = tk.IntVar(value=15)
         self.residual_trust_euler_var = self.trust_euler_var
@@ -345,7 +357,9 @@ class MultiStepOverlapGUI(GUIControls, tk.Tk):
                 "Wait for the current operation to finish before closing the application.",
             )
             return
-        self.session._clear_dictionary_cache()
+        # An active worker can still use the dictionary and lossless residual
+        # cache. Release both only after the existing busy/worker guard passes.
+        self.session.close()
         self.destroy()
 
     def _set_busy(self, flag: bool) -> None:
@@ -1664,6 +1678,7 @@ class MultiStepOverlapGUI(GUIControls, tk.Tk):
             "ipf_direction": self.ipf_direction_var,
         }
         state = {key: variable.get() for key, variable in variables.items()}
+        state["fit_method"] = _selected_fit_method(self)
         state["primary_fit_bounds"] = [
             [float(low.get()), float(high.get())] for _label, low, high in self.primary_fit_bound_specs
         ]
@@ -1690,6 +1705,11 @@ class MultiStepOverlapGUI(GUIControls, tk.Tk):
 
     def _apply_workflow_ui_state(self, state: dict[str, object]) -> None:
         state = dict(state)
+        try:
+            fit_method = validate_fit_method(state.get("fit_method", FIT_METHOD_DEFAULT))
+        except (TypeError, ValueError):
+            fit_method = FIT_METHOD_DEFAULT
+        self.fit_method_var.set(FIT_METHOD_LABELS[fit_method])
         if self.session.data is not None:
             state.setdefault("roi_r0", 0)
             state.setdefault("roi_c0", 0)
@@ -1878,13 +1898,13 @@ class MultiStepOverlapGUI(GUIControls, tk.Tk):
             try:
                 return restored.restore_workflow_state(restore_path)
             except Exception:
-                restored._clear_dictionary_cache()
+                restored.close()
                 raise
         def commit(_message):
             previous = self.session
             self.session = restored
             self._pending_restore_path = restore_path
-            previous._clear_dictionary_cache()
+            previous.close()
         self._run_threaded(action, on_success=commit, sync_conditioning=False)
 
     @_guarded_action
@@ -2338,6 +2358,7 @@ class MultiStepOverlapGUI(GUIControls, tk.Tk):
             blur_sigma = float(self.blur_sigma_var.get())
             if not np.isfinite(blur_sigma) or blur_sigma < 0:
                 raise ValueError("Manual blur sigma must be finite and non-negative.")
+            fit_method = _selected_fit_method(self)
             fit_maxiter = int(self.gain_fit_maxiter_var.get())
             fit_popsize = int(self.gain_fit_popsize_var.get())
             fit_bounds = self._primary_fit_bounds() if fit_blur_gain or include_step4 else None
@@ -2458,6 +2479,7 @@ class MultiStepOverlapGUI(GUIControls, tk.Tk):
                 fit_blur_gain=fit_blur_gain,
                 blur_sigma=blur_sigma,
                 fit_maxiter=fit_maxiter,
+                fit_method=fit_method,
                 fit_popsize=fit_popsize,
                 fit_bounds=fit_bounds if fit_blur_gain else None,
                 write_patterns=write_patterns,
@@ -2536,6 +2558,7 @@ class MultiStepOverlapGUI(GUIControls, tk.Tk):
             mixture_msg = self.session.compute_overlap_mixture_indices(
                 overlap_indices,
                 fit_maxiter=fit_maxiter,
+                fit_method=fit_method,
                 fit_popsize=fit_popsize,
                 fit_bounds=fit_bounds,
                 parallel_cores=step4_parallel_cores,
@@ -2603,6 +2626,7 @@ class MultiStepOverlapGUI(GUIControls, tk.Tk):
         blur_sigma = float(self.blur_sigma_var.get())
         if not np.isfinite(blur_sigma) or blur_sigma < 0:
             raise ValueError("Manual blur sigma must be finite and non-negative.")
+        fit_method = _selected_fit_method(self)
         fit_maxiter = int(self.gain_fit_maxiter_var.get())
         fit_popsize = int(self.gain_fit_popsize_var.get())
         fit_bounds = self._primary_fit_bounds() if fit_blur_gain else None
@@ -2623,6 +2647,7 @@ class MultiStepOverlapGUI(GUIControls, tk.Tk):
         def action():
             messages = [self.session.compute_overlap_residual_indices(
                 indices, fit_blur_gain=fit_blur_gain, blur_sigma=blur_sigma, fit_maxiter=fit_maxiter,
+                fit_method=fit_method,
                 fit_popsize=fit_popsize, fit_bounds=fit_bounds, parallel_cores=parallel_cores,
                 write_patterns=write_patterns, residual_output_path=output if write_patterns else None,
                 selected_index=selected_index, progress_callback=progress(0),
@@ -2649,6 +2674,7 @@ class MultiStepOverlapGUI(GUIControls, tk.Tk):
         index = int(self.index_var.get())
         blur_sigma = float(self.blur_sigma_var.get())
         fit_blur_gain = bool(self.fit_blur_gain_var.get())
+        fit_method = _selected_fit_method(self)
         fit_maxiter = int(self.gain_fit_maxiter_var.get())
         fit_popsize = int(self.gain_fit_popsize_var.get())
         try:
@@ -2666,6 +2692,7 @@ class MultiStepOverlapGUI(GUIControls, tk.Tk):
                 blur_sigma=blur_sigma,
                 fit_blur_gain=fit_blur_gain,
                 fit_maxiter=fit_maxiter,
+                fit_method=fit_method,
                 fit_popsize=fit_popsize,
                 fit_bounds=fit_bounds,
             )
@@ -2807,6 +2834,7 @@ class MultiStepOverlapGUI(GUIControls, tk.Tk):
         blur_sigma = float(self.blur_sigma_var.get())
         if not np.isfinite(blur_sigma) or blur_sigma < 0:
             raise ValueError("Manual blur sigma must be finite and non-negative.")
+        fit_method = _selected_fit_method(self)
         fit_maxiter = int(self.gain_fit_maxiter_var.get())
         fit_popsize = int(self.gain_fit_popsize_var.get())
         parallel_cores = int(self.step3_parallel_cores_var.get())
@@ -2832,6 +2860,7 @@ class MultiStepOverlapGUI(GUIControls, tk.Tk):
                 fit_blur_gain=fit_blur_gain,
                 blur_sigma=blur_sigma,
                 fit_maxiter=fit_maxiter,
+                fit_method=fit_method,
                 fit_popsize=fit_popsize,
                 fit_bounds=fit_bounds,
                 write_patterns=write_patterns,
@@ -2960,6 +2989,7 @@ class MultiStepOverlapGUI(GUIControls, tk.Tk):
             messagebox.showerror("Error", "Load input data first.")
             return
         index = int(self.index_var.get())
+        fit_method = _selected_fit_method(self)
         fit_maxiter = int(self.gain_fit_maxiter_var.get())
         fit_popsize = int(self.gain_fit_popsize_var.get())
         residual_result = self.session.get_residual_point_result(index)
@@ -2988,6 +3018,7 @@ class MultiStepOverlapGUI(GUIControls, tk.Tk):
                 index,
                 residual_result=current_result,
                 fit_maxiter=fit_maxiter,
+                fit_method=fit_method,
                 fit_popsize=fit_popsize,
                 fit_bounds=fit_bounds,
             )
@@ -3068,6 +3099,7 @@ class MultiStepOverlapGUI(GUIControls, tk.Tk):
             self._refresh_plot()
             return
         selected_index = int(self.index_var.get())
+        fit_method = _selected_fit_method(self)
         fit_maxiter = int(self.gain_fit_maxiter_var.get())
         fit_popsize = int(self.gain_fit_popsize_var.get())
         parallel_cores = int(self.step4_parallel_cores_var.get())
@@ -3086,6 +3118,7 @@ class MultiStepOverlapGUI(GUIControls, tk.Tk):
             msg = self.session.compute_overlap_mixture_indices(
                 indices,
                 fit_maxiter=fit_maxiter,
+                fit_method=fit_method,
                 fit_popsize=fit_popsize,
                 fit_bounds=fit_bounds,
                 parallel_cores=parallel_cores,
@@ -3113,6 +3146,7 @@ class MultiStepOverlapGUI(GUIControls, tk.Tk):
         bounds = self._roi_bounds()
         try:
             settings = {
+                "fit_method": _selected_fit_method(self),
                 "fit_max_iterations": int(self.gain_fit_maxiter_var.get()),
                 "fit_population_size": int(self.gain_fit_popsize_var.get()),
                 "minimum_primary_ncc": float(self._residual_ncc_threshold()),

@@ -1,0 +1,46 @@
+[
+  {
+    "indices": [
+      1085,
+      1480,
+      4569,
+      4622
+    ],
+    "current_seconds": 0.3131784169236198,
+    "direct_seconds": 0.0017169170314446092,
+    "max_abs_difference": 0.0
+  },
+  {
+    "indices": [
+      4743,
+      5994,
+      8264,
+      8685
+    ],
+    "current_seconds": 0.27189383294899017,
+    "direct_seconds": 0.0016016250010579824,
+    "max_abs_difference": 0.0
+  },
+  {
+    "indices": [
+      9641,
+      11799,
+      11925,
+      12771
+    ],
+    "current_seconds": 0.4208295840071514,
+    "direct_seconds": 0.001566499937325716,
+    "max_abs_difference": 0.0
+  },
+  {
+    "indices": [
+      15101,
+      16436,
+      19287,
+      20185
+    ],
+    "current_seconds": 0.33511583402287215,
+    "direct_seconds": 0.0016300829593092203,
+    "max_abs_difference": 0.0
+  }
+]

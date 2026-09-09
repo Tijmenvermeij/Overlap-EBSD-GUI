@@ -26,6 +26,8 @@ Maps update during processing with a **5-second target**, preserving the selecte
 
 - Dictionary spacing **1.5°**, software binning **2**, and **5 retained matches**. Primary and residual indexing share refinement settings.
 - Refinement uses full-resolution patterns and a search range following the dictionary spacing; both can be adjusted. New master loads use the highest available energy.
+- Steps 3 and 4 share a **Blur / gain fitting method** selector. **Blur then gain (fastest)** is the default; choose **Blur then gain + joint refinement** to further optimize both together, or **Joint blur and gain** for a joint search. The choice is saved with the workflow.
+- Residuals are cached at full float32 precision in temporary disk storage, with only a few selected-point inspection images kept in memory. The cache is removed on normal shutdown; saved workflows reconstruct images from the saved fits. See [CPU fitting and performance](docs/cpu_performance.md).
 - Save dictionaries explicitly to retain them beyond the session. Workflow save/restore preserves settings, calibration and results.
 - Export primary/residual results as H5OINA or ANG, with optional patterns. ROI exports retain the full scan dimensions and mark the ROI results. Per-point PCs are preserved; keep ANG `.pc_map.npz` companions with their ANG files.
 

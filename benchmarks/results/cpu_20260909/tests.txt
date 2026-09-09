@@ -1,0 +1,19 @@
+......................../Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/orix/crystal_map/_phase.py:145: DeprecationWarning: 'diffpy.structure.Structure.placeInLattice' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Structure.place_in_lattice' instead.
+  new_value.placeInLattice(Lattice(base=new_matrix))
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/orix/crystal_map/_phase.py:145: DeprecationWarning: 'diffpy.structure.Structure.placeInLattice' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Structure.place_in_lattice' instead.
+  new_value.placeInLattice(Lattice(base=new_matrix))
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/orix/crystal_map/_phase.py:145: DeprecationWarning: 'diffpy.structure.Structure.placeInLattice' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Structure.place_in_lattice' instead.
+  new_value.placeInLattice(Lattice(base=new_matrix))
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/orix/crystal_map/_phase.py:145: DeprecationWarning: 'diffpy.structure.Structure.placeInLattice' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Structure.place_in_lattice' instead.
+  new_value.placeInLattice(Lattice(base=new_matrix))
+./Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/orix/crystal_map/_phase.py:145: DeprecationWarning: 'diffpy.structure.Structure.placeInLattice' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Structure.place_in_lattice' instead.
+  new_value.placeInLattice(Lattice(base=new_matrix))
+../Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/orix/crystal_map/_phase.py:145: DeprecationWarning: 'diffpy.structure.Structure.placeInLattice' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Structure.place_in_lattice' instead.
+  new_value.placeInLattice(Lattice(base=new_matrix))
+../Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/orix/crystal_map/_phase.py:145: DeprecationWarning: 'diffpy.structure.Structure.placeInLattice' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Structure.place_in_lattice' instead.
+  new_value.placeInLattice(Lattice(base=new_matrix))
+.....................................................................................................................
+----------------------------------------------------------------------
+Ran 146 tests in 3.875s
+
+OK

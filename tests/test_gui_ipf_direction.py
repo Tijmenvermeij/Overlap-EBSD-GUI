@@ -93,28 +93,28 @@ class IpfDirectionSelectorTests(unittest.TestCase):
         sync_index.assert_called_once_with()
 
     def test_close_waits_for_active_worker(self) -> None:
-        gui_stub = SimpleNamespace(
-            busy=True,
-            _worker_thread=None,
-            session=Mock(),
-            destroy=Mock(),
-        )
-        with patch("multistep_overlap_ebsd.gui.messagebox.showinfo") as showinfo:
-            MultiStepOverlapGUI._on_close(gui_stub)
-        showinfo.assert_called_once()
-        gui_stub.session._clear_dictionary_cache.assert_not_called()
-        gui_stub.destroy.assert_not_called()
+        for busy, worker in ((True, None), (False, Mock(is_alive=Mock(return_value=True)))):
+            with self.subTest(busy=busy):
+                gui_stub = SimpleNamespace(
+                    busy=busy, _worker_thread=worker, session=Mock(), destroy=Mock(),
+                )
+                with patch("multistep_overlap_ebsd.gui.messagebox.showinfo") as showinfo:
+                    MultiStepOverlapGUI._on_close(gui_stub)
+                showinfo.assert_called_once()
+                gui_stub.session.close.assert_not_called()
+                gui_stub.destroy.assert_not_called()
 
-    def test_idle_close_cleans_temporary_dictionary_cache(self) -> None:
-        gui_stub = SimpleNamespace(
-            busy=False,
-            _worker_thread=None,
-            session=Mock(),
-            destroy=Mock(),
-        )
-        MultiStepOverlapGUI._on_close(gui_stub)
-        gui_stub.session._clear_dictionary_cache.assert_called_once()
-        gui_stub.destroy.assert_called_once()
+    def test_idle_close_releases_session_caches_before_destroying_window(self) -> None:
+        for worker in (None, Mock(is_alive=Mock(return_value=False))):
+            with self.subTest(worker=worker):
+                events = []
+                gui_stub = SimpleNamespace(
+                    busy=False, _worker_thread=worker,
+                    session=Mock(close=Mock(side_effect=lambda: events.append('close'))),
+                    destroy=Mock(side_effect=lambda: events.append('destroy')),
+                )
+                MultiStepOverlapGUI._on_close(gui_stub)
+                self.assertEqual(events, ['close', 'destroy'])
 
     def test_primary_map_mask_hides_source_orientations(self) -> None:
         gui_stub = SimpleNamespace(

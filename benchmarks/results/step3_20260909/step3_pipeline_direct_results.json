@@ -1,0 +1,202 @@
+{
+  "count": 80,
+  "cores": 10,
+  "seconds": 10.39270020800177,
+  "direct_h5_dataset": "1/EBSD/Data/Processed Patterns",
+  "patterns_per_second": 7.697710739159462,
+  "image_bytes": 38338560,
+  "indices": [
+    1085,
+    1480,
+    4569,
+    4622,
+    4743,
+    5994,
+    8264,
+    8685,
+    9641,
+    11799,
+    11925,
+    12771,
+    15101,
+    16436,
+    19287,
+    20185,
+    20482,
+    22478,
+    23109,
+    24819,
+    25218,
+    25776,
+    28683,
+    30252,
+    32516,
+    32576,
+    33784,
+    35078,
+    35981,
+    36492,
+    36835,
+    37956,
+    38095,
+    38588,
+    40121,
+    40548,
+    42711,
+    42739,
+    43280,
+    43357,
+    44241,
+    45970,
+    46001,
+    46544,
+    48968,
+    50072,
+    50415,
+    50546,
+    50549,
+    52198,
+    52918,
+    54341,
+    54768,
+    54986,
+    57959,
+    58593,
+    60399,
+    60407,
+    61592,
+    65644,
+    66500,
+    66837,
+    70763,
+    70961,
+    74095,
+    74712,
+    74958,
+    77272,
+    77852,
+    77990,
+    78540,
+    81428,
+    81448,
+    84882,
+    85643,
+    86970,
+    87150,
+    88730,
+    91117,
+    95133
+  ],
+  "progress": [
+    {
+      "seconds": 0.0004278330598026514,
+      "percent": 0.0,
+      "message": "Preparing residual calculations for 80 point(s)..."
+    },
+    {
+      "seconds": 0.0004563749535009265,
+      "percent": 0.0,
+      "message": "Computing residuals for 80 point(s) on 10 core(s)..."
+    },
+    {
+      "seconds": 4.559043874964118,
+      "percent": 5.0,
+      "message": "Computed residual 4/80 point(s)..."
+    },
+    {
+      "seconds": 4.814182042027824,
+      "percent": 10.0,
+      "message": "Computed residual 8/80 point(s)..."
+    },
+    {
+      "seconds": 5.22040933300741,
+      "percent": 15.0,
+      "message": "Computed residual 12/80 point(s)..."
+    },
+    {
+      "seconds": 5.378259125049226,
+      "percent": 20.0,
+      "message": "Computed residual 16/80 point(s)..."
+    },
+    {
+      "seconds": 5.479126750025898,
+      "percent": 25.0,
+      "message": "Computed residual 20/80 point(s)..."
+    },
+    {
+      "seconds": 5.503932791994885,
+      "percent": 30.0,
+      "message": "Computed residual 24/80 point(s)..."
+    },
+    {
+      "seconds": 5.5655387920560315,
+      "percent": 35.0,
+      "message": "Computed residual 28/80 point(s)..."
+    },
+    {
+      "seconds": 5.610381333041005,
+      "percent": 40.0,
+      "message": "Computed residual 32/80 point(s)..."
+    },
+    {
+      "seconds": 5.67826650000643,
+      "percent": 45.0,
+      "message": "Computed residual 36/80 point(s)..."
+    },
+    {
+      "seconds": 5.964288457995281,
+      "percent": 50.0,
+      "message": "Computed residual 40/80 point(s)..."
+    },
+    {
+      "seconds": 8.317890292033553,
+      "percent": 55.0,
+      "message": "Computed residual 44/80 point(s)..."
+    },
+    {
+      "seconds": 8.458472582977265,
+      "percent": 60.0,
+      "message": "Computed residual 48/80 point(s)..."
+    },
+    {
+      "seconds": 8.505411667050794,
+      "percent": 65.0,
+      "message": "Computed residual 52/80 point(s)..."
+    },
+    {
+      "seconds": 8.581524417037144,
+      "percent": 70.0,
+      "message": "Computed residual 56/80 point(s)..."
+    },
+    {
+      "seconds": 8.998900957987644,
+      "percent": 75.0,
+      "message": "Computed residual 60/80 point(s)..."
+    },
+    {
+      "seconds": 9.085706499987282,
+      "percent": 80.0,
+      "message": "Computed residual 64/80 point(s)..."
+    },
+    {
+      "seconds": 9.474046832998283,
+      "percent": 85.0,
+      "message": "Computed residual 68/80 point(s)..."
+    },
+    {
+      "seconds": 9.663868083036505,
+      "percent": 90.0,
+      "message": "Computed residual 72/80 point(s)..."
+    },
+    {
+      "seconds": 9.837085042032413,
+      "percent": 95.0,
+      "message": "Computed residual 76/80 point(s)..."
+    },
+    {
+      "seconds": 9.955573125043884,
+      "percent": 100.0,
+      "message": "Computed residual 80/80 point(s)..."
+    }
+  ]
+}

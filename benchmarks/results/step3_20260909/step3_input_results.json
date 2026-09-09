@@ -1,0 +1,40 @@
+{
+  "batch_patterns": 4,
+  "indices": [
+    1085,
+    1480,
+    4569,
+    4622,
+    4743,
+    5994,
+    8264,
+    8685,
+    9641,
+    11799,
+    11925,
+    12771,
+    15101,
+    16436,
+    19287,
+    20185
+  ],
+  "current_seconds": [
+    0.5000718749361113,
+    0.42862608400173485,
+    0.5641747909830883,
+    0.4829217919614166
+  ],
+  "h5_direct_seconds": [
+    0.0017410829896107316,
+    0.001612875028513372,
+    0.0016373340040445328,
+    0.0016860420582816005
+  ],
+  "max_abs_differences": [
+    0.0,
+    0.0,
+    0.0,
+    0.0
+  ],
+  "scope": "Saved workflow has no mask/background conditioning; exact original float32 pixels compared. Profiling enabled only for current path."
+}

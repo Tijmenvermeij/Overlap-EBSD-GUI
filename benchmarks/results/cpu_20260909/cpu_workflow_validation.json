@@ -1,0 +1,209 @@
+{
+  "timings": {
+    "residuals": 0.8968501250492409,
+    "residual_indexing": 6.001518292003311,
+    "residual_refinement": 0.5912034580251202,
+    "parallel_mixture_3cores": 2.776753499987535
+  },
+  "fits": [
+    {
+      "index": 8925,
+      "method": "baseline",
+      "seconds": 1.040052333031781,
+      "ncc": 0.38861150094202557,
+      "residual_rms": 0.9214016740581978,
+      "primary_fraction": 0.5851734981899241,
+      "secondary_fraction": 0.41482650181007596,
+      "sigma": 0.6781856379238806,
+      "success": true
+    },
+    {
+      "index": 8925,
+      "method": "staged",
+      "seconds": 0.18674124998506159,
+      "ncc": 0.39249727069246076,
+      "residual_rms": 0.9197531348357733,
+      "primary_fraction": 0.5850122365635032,
+      "secondary_fraction": 0.4149877634364968,
+      "sigma": 0.7115976076052296,
+      "success": true
+    },
+    {
+      "index": 8925,
+      "method": "staged_joint",
+      "seconds": 0.3845681248931214,
+      "ncc": 0.39321141463137055,
+      "residual_rms": 0.919448056625547,
+      "primary_fraction": 0.5832711450170444,
+      "secondary_fraction": 0.4167288549829557,
+      "sigma": 0.7284214409388278,
+      "success": true
+    },
+    {
+      "index": 60632,
+      "method": "baseline",
+      "seconds": 1.0142042079241946,
+      "ncc": 0.5444903005279622,
+      "residual_rms": 0.8387671463783067,
+      "primary_fraction": 0.5560401195567841,
+      "secondary_fraction": 0.4439598804432158,
+      "sigma": 1.2533779486045251,
+      "success": true
+    },
+    {
+      "index": 60632,
+      "method": "staged",
+      "seconds": 0.23540374997537583,
+      "ncc": 0.5459583731975972,
+      "residual_rms": 0.8378123126248949,
+      "primary_fraction": 0.5575329485373997,
+      "secondary_fraction": 0.44246705146260024,
+      "sigma": 1.242465362976262,
+      "success": true
+    },
+    {
+      "index": 60632,
+      "method": "staged_joint",
+      "seconds": 0.23608745797537267,
+      "ncc": 0.5459583731975972,
+      "residual_rms": 0.8378123126248949,
+      "primary_fraction": 0.5575329485373997,
+      "secondary_fraction": 0.44246705146260024,
+      "sigma": 1.242465362976262,
+      "success": true
+    },
+    {
+      "index": 33022,
+      "method": "baseline",
+      "seconds": 1.3253859169781208,
+      "ncc": 0.5634112753700922,
+      "residual_rms": 0.8261766211681858,
+      "primary_fraction": 0.6403284097458944,
+      "secondary_fraction": 0.3596715902541056,
+      "sigma": 0.7236993376272063,
+      "success": true
+    },
+    {
+      "index": 33022,
+      "method": "staged",
+      "seconds": 0.21799074998125434,
+      "ncc": 0.5638843443615185,
+      "residual_rms": 0.8258538158460526,
+      "primary_fraction": 0.6408698678962761,
+      "secondary_fraction": 0.35913013210372396,
+      "sigma": 0.7022884435764436,
+      "success": true
+    },
+    {
+      "index": 33022,
+      "method": "staged_joint",
+      "seconds": 0.29642666690051556,
+      "ncc": 0.563885456563225,
+      "residual_rms": 0.825853048580073,
+      "primary_fraction": 0.6408755814991633,
+      "secondary_fraction": 0.3591244185008366,
+      "sigma": 0.7061673899236842,
+      "success": true
+    },
+    {
+      "index": 51645,
+      "method": "baseline",
+      "seconds": 1.0717065409990028,
+      "ncc": 0.5696254702342404,
+      "residual_rms": 0.8219043989020837,
+      "primary_fraction": 0.8409008553266897,
+      "secondary_fraction": 0.1590991446733103,
+      "sigma": 0.5731336597936239,
+      "success": true
+    },
+    {
+      "index": 51645,
+      "method": "staged",
+      "seconds": 0.21546183293685317,
+      "ncc": 0.5698502615648287,
+      "residual_rms": 0.8217485444300392,
+      "primary_fraction": 0.8422373441162327,
+      "secondary_fraction": 0.15776265588376734,
+      "sigma": 0.5956959872719388,
+      "success": true
+    },
+    {
+      "index": 51645,
+      "method": "staged_joint",
+      "seconds": 0.49681329098530114,
+      "ncc": 0.5719842522398395,
+      "residual_rms": 0.8202646034019337,
+      "primary_fraction": 0.8418952247940671,
+      "secondary_fraction": 0.15810477520593283,
+      "sigma": 0.6001717544024161,
+      "success": true
+    },
+    {
+      "index": 71701,
+      "method": "baseline",
+      "seconds": 1.596291417023167,
+      "ncc": 0.6451566514239303,
+      "residual_rms": 0.7640503335664337,
+      "primary_fraction": 0.8443292438063474,
+      "secondary_fraction": 0.15567075619365262,
+      "sigma": 0.6790447323371365,
+      "success": true
+    },
+    {
+      "index": 71701,
+      "method": "staged",
+      "seconds": 0.16987712506670505,
+      "ncc": 0.6443290997370557,
+      "residual_rms": 0.7647483482355394,
+      "primary_fraction": 0.8455552398291987,
+      "secondary_fraction": 0.1544447601708013,
+      "sigma": 0.6734186813383881,
+      "success": true
+    },
+    {
+      "index": 71701,
+      "method": "staged_joint",
+      "seconds": 0.31905816693324596,
+      "ncc": 0.6443860803508082,
+      "residual_rms": 0.7647003305932011,
+      "primary_fraction": 0.8455930493305719,
+      "secondary_fraction": 0.1544069506694281,
+      "sigma": 0.6751688045755858,
+      "success": true
+    },
+    {
+      "index": 31077,
+      "method": "baseline",
+      "seconds": 1.2556187500013039,
+      "ncc": 0.5907549966215513,
+      "residual_rms": 0.8068510008883364,
+      "primary_fraction": 0.8560690598798946,
+      "secondary_fraction": 0.1439309401201054,
+      "sigma": 0.668567618247324,
+      "success": true
+    },
+    {
+      "index": 31077,
+      "method": "staged",
+      "seconds": 0.2552531670080498,
+      "ncc": 0.5919916462186408,
+      "residual_rms": 0.8059440715012244,
+      "primary_fraction": 0.838362501053639,
+      "secondary_fraction": 0.16163749894636098,
+      "sigma": 0.6682198477499219,
+      "success": true
+    },
+    {
+      "index": 31077,
+      "method": "staged_joint",
+      "seconds": 0.5517194160493091,
+      "ncc": 0.593175983159654,
+      "residual_rms": 0.8050728126170206,
+      "primary_fraction": 0.8398403162377341,
+      "secondary_fraction": 0.16015968376226594,
+      "sigma": 0.6640529989983851,
+      "success": true
+    }
+  ],
+  "validation": "Residual indexing/refinement, parallel Step 4 and exact workflow reconstruction passed."
+}

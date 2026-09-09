@@ -1,0 +1,36 @@
+         203138 function calls in 0.392 seconds
+
+   Ordered by: cumulative time
+   List reduced from 258 to 30 due to restriction <30>
+
+   ncalls  tottime  percall  cumtime  percall filename:lineno(function)
+        1    0.000    0.000    0.392    0.392 core.py:1139(_fit_overlap_primary_pattern)
+        1    0.000    0.000    0.391    0.391 _util.py:291(wrapper)
+        1    0.000    0.000    0.391    0.391 _differentialevolution.py:25(differential_evolution)
+        1    0.000    0.000    0.391    0.391 _differentialevolution.py:1185(solve)
+      882    0.000    0.000    0.385    0.000 _util.py:587(__call__)
+      882    0.000    0.000    0.385    0.000 core.py:1182(objective)
+      883    0.027    0.000    0.385    0.000 core.py:1153(evaluate)
+        6    0.000    0.000    0.317    0.053 _differentialevolution.py:1368(_calculate_population_energies)
+        5    0.000    0.000    0.264    0.053 {built-in method builtins.next}
+        5    0.000    0.000    0.264    0.053 _differentialevolution.py:1601(__next__)
+      883    0.096    0.000    0.113    0.000 core.py:1108(_power_gain_map)
+      883    0.002    0.000    0.111    0.000 _filters.py:756(gaussian_filter)
+     3538    0.062    0.000    0.109    0.000 core.py:1083(_normalize_weighted)
+     1766    0.001    0.000    0.103    0.000 _filters.py:687(gaussian_filter1d)
+     1766    0.003    0.000    0.093    0.000 _filters.py:555(correlate1d)
+     1766    0.087    0.000    0.087    0.000 {built-in method scipy.ndimage._nd_image.correlate1d}
+      885    0.013    0.000    0.076    0.000 core.py:1098(_weighted_ncc)
+        1    0.000    0.000    0.072    0.072 _minimize.py:54(minimize)
+        1    0.000    0.000    0.071    0.071 _lbfgsb_py.py:294(_minimize_lbfgsb)
+      162    0.000    0.000    0.069    0.000 _util.py:600(__call__)
+      162    0.000    0.000    0.069    0.000 _differentialevolution.py:1293(_f)
+       18    0.000    0.000    0.067    0.004 _differentiable_functions.py:409(fun_and_grad)
+       19    0.000    0.000    0.063    0.003 _differentiable_functions.py:371(_update_grad)
+       18    0.000    0.000    0.063    0.004 _differentiable_functions.py:35(__call__)
+       18    0.000    0.000    0.063    0.004 _numdiff.py:278(approx_derivative)
+       18    0.000    0.000    0.063    0.003 _numdiff.py:663(_dense_difference)
+      144    0.000    0.000    0.062    0.000 _numdiff.py:871(__call__)
+    15133    0.041    0.000    0.041    0.000 {method 'reduce' of 'numpy.ufunc' objects}
+     8845    0.004    0.000    0.036    0.000 fromnumeric.py:2304(sum)
+     8850    0.005    0.000    0.032    0.000 fromnumeric.py:66(_wrapreduction)

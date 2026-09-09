@@ -1,0 +1,201 @@
+{
+  "count": 80,
+  "cores": 10,
+  "seconds": 12.987768083927222,
+  "patterns_per_second": 6.159641863254593,
+  "image_bytes": 38338560,
+  "indices": [
+    1085,
+    1480,
+    4569,
+    4622,
+    4743,
+    5994,
+    8264,
+    8685,
+    9641,
+    11799,
+    11925,
+    12771,
+    15101,
+    16436,
+    19287,
+    20185,
+    20482,
+    22478,
+    23109,
+    24819,
+    25218,
+    25776,
+    28683,
+    30252,
+    32516,
+    32576,
+    33784,
+    35078,
+    35981,
+    36492,
+    36835,
+    37956,
+    38095,
+    38588,
+    40121,
+    40548,
+    42711,
+    42739,
+    43280,
+    43357,
+    44241,
+    45970,
+    46001,
+    46544,
+    48968,
+    50072,
+    50415,
+    50546,
+    50549,
+    52198,
+    52918,
+    54341,
+    54768,
+    54986,
+    57959,
+    58593,
+    60399,
+    60407,
+    61592,
+    65644,
+    66500,
+    66837,
+    70763,
+    70961,
+    74095,
+    74712,
+    74958,
+    77272,
+    77852,
+    77990,
+    78540,
+    81428,
+    81448,
+    84882,
+    85643,
+    86970,
+    87150,
+    88730,
+    91117,
+    95133
+  ],
+  "progress": [
+    {
+      "seconds": 7.587496656924486e-05,
+      "percent": 0.0,
+      "message": "Preparing residual calculations for 80 point(s)..."
+    },
+    {
+      "seconds": 0.0001093749888241291,
+      "percent": 0.0,
+      "message": "Computing residuals for 80 point(s) on 10 core(s)..."
+    },
+    {
+      "seconds": 9.326398708974011,
+      "percent": 5.0,
+      "message": "Computed residual 4/80 point(s)..."
+    },
+    {
+      "seconds": 9.326731125009246,
+      "percent": 10.0,
+      "message": "Computed residual 8/80 point(s)..."
+    },
+    {
+      "seconds": 9.327203958993778,
+      "percent": 15.0,
+      "message": "Computed residual 12/80 point(s)..."
+    },
+    {
+      "seconds": 9.32731562491972,
+      "percent": 20.0,
+      "message": "Computed residual 16/80 point(s)..."
+    },
+    {
+      "seconds": 9.327508167014457,
+      "percent": 25.0,
+      "message": "Computed residual 20/80 point(s)..."
+    },
+    {
+      "seconds": 9.327696749940515,
+      "percent": 30.0,
+      "message": "Computed residual 24/80 point(s)..."
+    },
+    {
+      "seconds": 9.327816249919124,
+      "percent": 35.0,
+      "message": "Computed residual 28/80 point(s)..."
+    },
+    {
+      "seconds": 9.327887499937788,
+      "percent": 40.0,
+      "message": "Computed residual 32/80 point(s)..."
+    },
+    {
+      "seconds": 9.327961583971046,
+      "percent": 45.0,
+      "message": "Computed residual 36/80 point(s)..."
+    },
+    {
+      "seconds": 9.32800437498372,
+      "percent": 50.0,
+      "message": "Computed residual 40/80 point(s)..."
+    },
+    {
+      "seconds": 9.32804654201027,
+      "percent": 55.0,
+      "message": "Computed residual 44/80 point(s)..."
+    },
+    {
+      "seconds": 9.328194791916758,
+      "percent": 60.0,
+      "message": "Computed residual 48/80 point(s)..."
+    },
+    {
+      "seconds": 9.46172183402814,
+      "percent": 65.0,
+      "message": "Computed residual 52/80 point(s)..."
+    },
+    {
+      "seconds": 10.401994499959983,
+      "percent": 70.0,
+      "message": "Computed residual 56/80 point(s)..."
+    },
+    {
+      "seconds": 10.470431291963905,
+      "percent": 75.0,
+      "message": "Computed residual 60/80 point(s)..."
+    },
+    {
+      "seconds": 10.664109749952331,
+      "percent": 80.0,
+      "message": "Computed residual 64/80 point(s)..."
+    },
+    {
+      "seconds": 11.511229666997679,
+      "percent": 85.0,
+      "message": "Computed residual 68/80 point(s)..."
+    },
+    {
+      "seconds": 11.622153959004208,
+      "percent": 90.0,
+      "message": "Computed residual 72/80 point(s)..."
+    },
+    {
+      "seconds": 12.576198042021133,
+      "percent": 95.0,
+      "message": "Computed residual 76/80 point(s)..."
+    },
+    {
+      "seconds": 12.59564816695638,
+      "percent": 100.0,
+      "message": "Computed residual 80/80 point(s)..."
+    }
+  ]
+}
