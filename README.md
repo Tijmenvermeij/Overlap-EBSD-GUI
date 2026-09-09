@@ -1,70 +1,38 @@
-# Overlap EBSD Indexing
+# Overlap EBSD/TKD Indexing
 
-This repository implements the multi-step overlap-EBSD workflow described by Grzegorz Cios, Aimo Winkelmann, Tomasz Tokarski, Wiktor Bednarczyk, and Piotr Bała in the article [Resolving Overlapping EBSD Patterns by Experiment-Simulation Residuals Analysis](https://arxiv.org/abs/2601.14155).
+**Version 0.1** — a GUI for resolving overlapping EBSD/TKD patterns within a **single crystal phase**, using calibration, dictionary indexing, residual analysis and mixture fitting. Built around [kikuchipy](https://github.com/pyxem/kikuchipy).
 
-The paper's core idea is preserved here: fit the simulated pattern with a blur and gain model, normalize it, subtract the NCC-scaled simulation from the measured pattern, and use the residual for follow-up indexing, refinement, and overlap-mixture analysis.
+## Install and run
 
-The example code referenced by the paper is available on Zenodo as [Cu_residuals.py](https://zenodo.org/api/records/17079414/files/Cu_residuals.py/content), within the Zenodo record [10.5281/zenodo.17079414](https://zenodo.org/records/17079414).
-
-## Current Workflow
-
-The GUI is launched from `multistep_overlap_ebsd_gui.py` and is organized into four stages:
-
-1. Load and PC Calibration
-2. Dictionary Indexing
-3. Overlap Indexing
-4. Overlap Optimization
-
-In practice, the application can:
-
-- Load Oxford `.h5oina` data or EDAX `.up1` / `.up2` patterns with a companion `.ang` file
-- Calibrate or edit pattern centers
-- Build, save, load, and reuse [kikuchipy](https://github.com/pyxem/kikuchipy) dictionaries
-- Select either the highest MP energy or EMsoft-style globally MC-weighted energies when loading an MP
-- Run dictionary indexing and post-index orientation refinement
-- Fit primary overlap residuals, index residuals, and refine residual matches
-- Fit overlap-mixture models for selected points or ROIs
-- Export primary or residual ROI maps as H5OINA or ANG (including the applied pattern-center map),
-  with optional primary/residual patterns; UP + ANG imports can be converted directly to H5OINA
-- Use a legacy projector fallback for older master-pattern formats
-
-The GUI starts with local example file paths filled in. Replace them with your own data or browse to matching files on disk.
-
-## Requirements
-
-- Python 3.10 or newer
-- The packages listed in `requirements_gui.txt`
-- `tkinter` available in your Python installation
-
-Install the Python dependencies with:
+Requires Python 3.10+ and `tkinter`. Tested with Python 3.12 and kikuchipy 0.12.1; see [release notes](CHANGELOG.md) for the tested environment.
 
 ```bash
-pip install -r requirements_gui.txt
-```
-
-## Run
-
-Launch the GUI with:
-
-```bash
+python -m pip install -r requirements_gui.txt
 python multistep_overlap_ebsd_gui.py
 ```
 
-## Repository Layout
+## Workflow
 
-- `multistep_overlap_ebsd/` main package code
-- `multistep_overlap_ebsd_gui.py` GUI launcher
-- `requirements_gui.txt` runtime dependencies
+1. **Load and calibrate:** open Oxford `.h5oina`, or EDAX `.up1`/`.up2` with a companion `.ang`, then load a matching master pattern. If recalibrating, optimize calibration points and then **Apply average PC to map**.
+2. **Dictionary indexing:** generate or load a dictionary, select a region of interest (ROI), and index it. Automatic orientation refinement is enabled by default.
+3. **Residual indexing:** fit and subtract the primary simulated pattern, then index and refine the residual to find a second orientation of the same phase.
+4. **Mixture optimization:** fit the two orientations together and inspect the NCC and contribution maps.
 
-## Notes
+**Run steps 2–3** and **Run steps 2–4** automate the corresponding stages. Workflow Open/Save, shared pattern conditioning, Cancel, and worker-core controls are available across tabs. The core limit applies to parallel residual and mixture fits and defaults to **1**.
 
-- Large EBSD datasets, generated dictionaries, residual exports, logs, and caches are ignored by git.
-- Generated dictionaries use disk-backed, chunked `uint8` patterns. Generation first uses a temporary cache;
-  **Save Dictionary** keeps it under the suggested master-pattern/binning/resolution filename. Existing v1
-  `float32` dictionaries remain loadable and are read lazily.
-- The selected master-pattern energy model is shared by dictionary generation, pattern display, refinement,
-  residual analysis, and overlap-mixture fitting. Global weighting projects the EMsoft Monte Carlo energy
-  histogram onto one representative detector and collapses the MP once, so subsequent simulations have the
-  same cost as single-energy simulations. It requires `EMData/MCOpenCL/accum_e` in the MP HDF5 file.
-  Dictionaries and workflow files store the weights and reference PC.
-- `ReferenceCodes/`, `EMSphInx Studio/`, `_Depr/`, the local paper copies, and the deprecated launcher are ignored by git and are not part of the current workflow.
+Maps update during processing with a **5-second target**, preserving the selected tab, inspection point and zoom. Updates and cancellation wait for completed work; slow batches or individual optimizations can take longer.
+
+## Defaults and results
+
+- Dictionary spacing **1.5°**, software binning **2**, and **5 retained matches**. Primary and residual indexing share refinement settings.
+- Refinement uses full-resolution patterns and a search range following the dictionary spacing; both can be adjusted. New master loads use the highest available energy.
+- Save dictionaries explicitly to retain them beyond the session. Workflow save/restore preserves settings, calibration and results.
+- Export primary/residual results as H5OINA or ANG, with optional patterns. ROI exports retain the full scan dimensions and mark the ROI results. Per-point PCs are preserved; keep ANG `.pc_map.npz` companions with their ANG files.
+
+## Geometry and scope
+
+H5OINA geometry is imported automatically. UP + ANG starts at a **70° sample tilt**; check it for your acquisition, especially TKD. Scan-position PC correction is off by default and requires a valid physical detector-pixel scale. See [calibration and detector geometry](docs/calibration.md) for assumptions and supported geometry.
+
+This release searches one phase at a time. Mixture coefficients are fitted pattern contributions, not calibrated volume fractions. Experimental accuracy requires validation on representative data; [release notes](CHANGELOG.md) describe the software checks and limitations.
+
+Based on Cios et al., [Resolving Overlapping EBSD Patterns by Experiment-Simulation Residuals Analysis](https://arxiv.org/abs/2601.14155).

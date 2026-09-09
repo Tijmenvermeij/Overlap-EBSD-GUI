@@ -302,6 +302,8 @@ class IpfDirectionSelectorTests(unittest.TestCase):
             _browse_primary_roi_export=picker,
             _set_overlap_progress=Mock(),
             after=lambda _delay, callback: callback(),
+            _post_ui=lambda callback: callback(),
+            _check_job_cancelled=lambda: None,
             _run_threaded=lambda action: action(),
         )
 
@@ -331,6 +333,8 @@ class IpfDirectionSelectorTests(unittest.TestCase):
             _browse_residual_roi_export=Mock(return_value="/tmp/map_residual_roi.h5oina"),
             _set_overlap_progress=progress,
             after=lambda _delay, callback: callback(),
+            _post_ui=lambda callback: callback(),
+            _check_job_cancelled=lambda: None,
             _run_threaded=lambda action: action(),
         )
 
@@ -395,9 +399,13 @@ class IpfDirectionSelectorTests(unittest.TestCase):
             di_res_deg_var=variable(1.2),
             dictionary_keep_n_var=variable(2),
             trust_euler_var=variable(1.0),
+            _index_refinement_settings=lambda: (1.0, 25, False),
+            _sync_pattern_conditioning_settings=lambda: None,
+            auto_refine_var=variable(True),
             maxfev_var=variable(25),
             refine_full_resolution_var=variable(False),
             fit_blur_gain_var=variable(True),
+            blur_sigma_var=variable(0.0),
             gain_fit_maxiter_var=variable(40),
             gain_fit_popsize_var=variable(8),
             residual_trust_euler_var=variable(2.0),
@@ -427,6 +435,8 @@ class IpfDirectionSelectorTests(unittest.TestCase):
             ),
             _log=lambda _message: None,
             after=lambda _delay, callback: callback(),
+            _post_ui=lambda callback: callback(),
+            _check_job_cancelled=lambda: None,
             _run_threaded=lambda action: outcome.append(action()),
         )
 
@@ -498,6 +508,30 @@ class IpfDirectionSelectorTests(unittest.TestCase):
         )
         self.assertIn("Steps 2–3 ROI analysis finished for 2 point(s)", outcome[0])
         self.assertIn("Step 4 mixture fitting was not run", outcome[0])
+
+        gui_stub.auto_refine_var = variable(False)
+        gui_stub._index_refinement_settings = Mock(
+            side_effect=AssertionError("Disabled refinement must not read optimizer settings")
+        )
+        gui_stub.step4_parallel_cores_var = variable(1)
+        gui_stub._overlap_mixture_residual_ncc_threshold = lambda: 0.6
+        for include_step4 in (False, True):
+            call_order.clear()
+            complete_progress.clear()
+            outcome.clear()
+            with patch("multistep_overlap_ebsd.gui.messagebox.showerror") as showerror:
+                MultiStepOverlapGUI._run_complete_roi_analysis(gui_stub, include_step4=include_step4)
+            showerror.assert_not_called()
+            expected = ["primary indexing", "residual generation", "residual indexing"]
+            if include_step4:
+                expected.append("overlap optimization")
+            self.assertEqual(call_order, expected)
+            skipped = [message for _value, message in complete_progress if "skipped (auto-refine off)" in message]
+            self.assertEqual(len(skipped), 2)
+            self.assertIn("Primary refinement", skipped[0])
+            self.assertIn("Residual refinement", skipped[1])
+            self.assertEqual(complete_progress[-1][0], 100.0)
+            self.assertIn("Orientation refinement skipped (auto-refine off)", outcome[0])
 
 
 if __name__ == "__main__":

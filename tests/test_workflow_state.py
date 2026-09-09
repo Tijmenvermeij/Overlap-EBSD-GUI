@@ -481,6 +481,8 @@ class WorkflowStateTests(unittest.TestCase):
             ang_header_lines=["# synthetic ANG"],
             pc_output_convention="oxford",
             up_pattern_reader=reader,
+            h=reader.h,
+            w=reader.w,
         )
         session.current_eulers_rad = np.zeros((2, 3), dtype=np.float64)
         session.current_phases = np.ones(2, dtype=np.int32)

@@ -3,6 +3,7 @@ from __future__ import annotations
 import threading
 import traceback
 import warnings
+import os
 from pathlib import Path
 
 import numpy as np
@@ -12,6 +13,10 @@ from matplotlib.patches import Rectangle
 
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
+
+from .gui_controls import GUIControls
+from .live_updates import LiveUpdateGate
+from .version import __version__
 
 from .core import (
     MASTER_ENERGY_MODE_GLOBAL,
@@ -36,11 +41,14 @@ MASTER_ENERGY_MODE_LABELS = {
 }
 
 
-class MultiStepOverlapGUI(tk.Tk):
+class MultiStepOverlapGUI(GUIControls, tk.Tk):
     def __init__(self) -> None:
         super().__init__()
-        self.title("Overlap EBSD Multi-Step Workflow")
-        self.geometry("1680x980")
+        self.title(f"Overlap EBSD/TKD Indexing — v{__version__}")
+        width = min(1480, max(1000, self.winfo_screenwidth() - 40))
+        height = min(920, max(680, self.winfo_screenheight() - 100))
+        self.geometry(f"{width}x{height}")
+        self.minsize(1000, 680)
 
         self.session = WorkflowSession()
         self.last_overlap: OverlapPointResult | None = None
@@ -49,6 +57,9 @@ class MultiStepOverlapGUI(tk.Tk):
         self._worker_thread: threading.Thread | None = None
         self._suspend_point_trace = False
         self._live_refresh_after_id: str | None = None
+        self._job_update_gate = None
+        self._job_result_views = set()
+        self.live_update_status_var = tk.StringVar(value="Live maps: refresh about every 5 s as results become available.")
         self._residual_colorbar = None
         self._euler_step_deg = 0.01
         self._pc_step = 0.001
@@ -73,17 +84,19 @@ class MultiStepOverlapGUI(tk.Tk):
         self._pending_restore_path: str | None = None
 
         cwd = Path.cwd()
-        self.pattern_path_var = tk.StringVar(value=str((cwd / "PJablonski 45 Site 1 Map Data 2.h5oina").resolve()))
-        self.orientation_path_var = tk.StringVar(value=str((cwd / "insitu Specimen 1 0 Map Data 3_BW123.ang").resolve()))
-        self.master_path_var = tk.StringVar(value=str((cwd / "Cu-master_20kV.h5").resolve()))
+        self.pattern_path_var = tk.StringVar(value="")
+        self.orientation_path_var = tk.StringVar(value="")
+        self.master_path_var = tk.StringVar(value="")
+        self.source_type_var = tk.StringVar(value="H5OINA")
+        self.pattern_input_label_var = tk.StringVar(value="Patterns + orientations (.h5oina)")
+        self.detector_pixel_source_var = tk.StringVar(value="Load data to read detector calibration.")
+        self.context_summary_var = tk.StringVar(value="No data loaded · No master pattern · No dictionary")
+        self.phase_summary_var = tk.StringVar(value="Indexing phase comes from the loaded master pattern.")
         self.master_energy_mode_var = tk.StringVar(
             value=MASTER_ENERGY_MODE_LABELS[MASTER_ENERGY_MODE_HIGHEST]
         )
         self.export_path_var = tk.StringVar(value=str((cwd / "reindexed_output.h5oina").resolve()))
-        initial_source = Path(self.pattern_path_var.get())
-        initial_workflow_path = str(
-            (cwd / f"{self._source_stem(initial_source)}_overlap_workflow.npz").resolve()
-        )
+        initial_workflow_path = str((cwd / "overlap_workflow.npz").resolve())
         self.workflow_path_var = tk.StringVar(value=initial_workflow_path)
         self._auto_workflow_path: str | None = initial_workflow_path
 
@@ -96,8 +109,8 @@ class MultiStepOverlapGUI(tk.Tk):
         self.col_var = tk.IntVar(value=0)
         self.roi_r0_var = tk.IntVar(value=0)
         self.roi_c0_var = tk.IntVar(value=0)
-        self.roi_nrows_var = tk.IntVar(value=31)
-        self.roi_ncols_var = tk.IntVar(value=31)
+        self.roi_nrows_var = tk.IntVar(value=0)
+        self.roi_ncols_var = tk.IntVar(value=0)
         self.roi_r1_var = self.roi_nrows_var
         self.roi_c1_var = self.roi_ncols_var
         self.euler1_deg_var = tk.DoubleVar(value=0.0)
@@ -108,14 +121,19 @@ class MultiStepOverlapGUI(tk.Tk):
         self.pcz_var = tk.DoubleVar(value=0.0)
         self.pc_conv_label_var = tk.StringVar(value="PC convention: -")
 
-        self.trust_euler_var = tk.DoubleVar(value=1.0)
+        self.trust_euler_var = tk.DoubleVar(value=1.5)
         self.trust_pc_var = tk.DoubleVar(value=0.03)
         self.maxfev_var = tk.IntVar(value=25)
         self.refine_full_resolution_var = tk.BooleanVar(value=True)
+        self.auto_refine_var = tk.BooleanVar(value=True)
+        self.follow_dictionary_trust_var = tk.BooleanVar(value=True)
+        self.calibration_trust_euler_var = tk.DoubleVar(value=1.0)
+        self.calibration_maxfev_var = tk.IntVar(value=25)
 
-        self.di_res_deg_var = tk.DoubleVar(value=12.0)
-        self.di_binning_var = tk.IntVar(value=4)
-        self.dictionary_keep_n_var = tk.IntVar(value=4)
+        self.di_res_deg_var = tk.DoubleVar(value=1.5)
+        self.di_binning_var = tk.StringVar(value="2")
+        self.dictionary_binned_size_var = tk.StringVar(value="Load input data to see the binned pattern size.")
+        self.dictionary_keep_n_var = tk.IntVar(value=5)
         self.dictionary_status_var = tk.StringVar(value="No dictionary generated or loaded.")
         self.dictionary_progress_var = tk.DoubleVar(value=0.0)
         self.reindex_progress_var = tk.DoubleVar(value=0.0)
@@ -128,7 +146,7 @@ class MultiStepOverlapGUI(tk.Tk):
         self.overlap_optimization_status_var = tk.StringVar(value="Overlap optimization not started.")
         self.refinement_progress_var = tk.DoubleVar(value=0.0)
         self.refinement_progress_status_var = tk.StringVar(value="Orientation refinement not started.")
-        initial_dictionary_path = str((cwd / "Cu-master_20kV_dictionary_bin4_12deg.h5").resolve())
+        initial_dictionary_path = str((cwd / "dictionary_bin2_1p5deg.h5").resolve())
         self._auto_dictionary_path: str | None = initial_dictionary_path
         self.dictionary_path_var = tk.StringVar(value=initial_dictionary_path)
         self.primary_roi_export_path_var = tk.StringVar(value=str((cwd / "primary_roi_map.h5oina").resolve()))
@@ -137,14 +155,15 @@ class MultiStepOverlapGUI(tk.Tk):
         self.fit_blur_gain_var = tk.BooleanVar(value=True)
         self.gain_fit_maxiter_var = tk.IntVar(value=80)
         self.gain_fit_popsize_var = tk.IntVar(value=15)
-        self.residual_trust_euler_var = tk.DoubleVar(value=2.0)
-        self.residual_maxfev_var = tk.IntVar(value=25)
-        self.residual_refine_full_resolution_var = tk.BooleanVar(value=True)
-        self.residual_keep_n_var = tk.IntVar(value=4)
-        self.step3_parallel_cores_var = tk.IntVar(value=1)
+        self.residual_trust_euler_var = self.trust_euler_var
+        self.residual_maxfev_var = self.maxfev_var
+        self.residual_refine_full_resolution_var = self.refine_full_resolution_var
+        self.residual_keep_n_var = self.dictionary_keep_n_var
+        self.parallel_cores_var = tk.IntVar(value=1)
+        self.step3_parallel_cores_var = self.parallel_cores_var
         self.overlap_mixture_trust_euler_var = tk.DoubleVar(value=1.0)
         self.overlap_mixture_maxfev_var = tk.IntVar(value=80)
-        self.step4_parallel_cores_var = tk.IntVar(value=1)
+        self.step4_parallel_cores_var = self.parallel_cores_var
         self.overlap_min_ncc_var = tk.StringVar(value="0.15")
         self.residual_ipf_ncc_var = tk.StringVar(value="0.15")
         self.overlap_mixture_residual_ncc_var = tk.StringVar(value=self.residual_ipf_ncc_var.get())
@@ -167,15 +186,22 @@ class MultiStepOverlapGUI(tk.Tk):
             ("Ellipse x offset", tk.DoubleVar(value=-0.15), tk.DoubleVar(value=0.15)),
         ]
         self.use_scan_pc_shift_var = tk.BooleanVar(value=False)
-        self.detector_px_size_var = tk.DoubleVar(value=1.0)
+        self.detector_px_size_var = tk.StringVar(value="")
         self.detector_binning_var = tk.DoubleVar(value=1.0)
         self.calibration_summary_var = tk.StringVar(value="No calibration points selected.")
+        self.calibration_statistics_var = tk.StringVar(value="")
+        self._completed_calibration_report = None
+        self.calibration_apply_status_var = tk.StringVar(value="Optimize first, then apply the average PC to the map.")
+        self._calibration_apply_state = "none"
+        self._calibration_apply_session = self.session
+        self._applied_calibration_settings = None
         self._roi_drag_view_index: int | None = None
         self._roi_drag_axis = None
         self._roi_drag_start: tuple[float, float] | None = None
         self._roi_drag_last: tuple[float, float] | None = None
         self._roi_drag_patch: Rectangle | None = None
         self.pattern_mask_option_var = tk.IntVar(value=-1)
+        self.pattern_mask_mode_var = tk.StringVar(value="Automatic")
         self.pattern_mask_status_var = tk.StringVar(value=f"Mask: {self.session.pattern_mask_description()}")
         self.dynamic_bg_enabled_var = tk.BooleanVar(value=False)
         self.dynamic_bg_std_var = tk.StringVar(value="0")
@@ -191,314 +217,23 @@ class MultiStepOverlapGUI(tk.Tk):
         self._progress_pulse_active: set[str] = set()
 
         self._build_ui()
+        self.di_res_deg_var.trace_add("write", self._sync_refinement_settings)
+        self.di_binning_var.trace_add("write", self._update_dictionary_binned_size)
+        self.follow_dictionary_trust_var.trace_add("write", self._sync_refinement_settings)
+        self.pattern_mask_option_var.trace_add("write", self._sync_mask_mode)
+        self.use_scan_pc_shift_var.trace_add("write", self._update_calibration_application_controls)
+        self.detector_px_size_var.trace_add("write", self._update_calibration_application_controls)
+        self._sync_refinement_settings()
+        self._update_dictionary_binned_size()
+        self._sync_input_type_controls()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self._attach_point_value_traces()
         self._attach_threshold_value_traces()
         self._attach_entry_commit_handlers()
+        self._update_mode_controls()
 
     # ---------------------------- UI ---------------------------- #
 
-    def _build_ui(self) -> None:
-        self.workflow_notebook = ttk.Notebook(self)
-        self.workflow_notebook.pack(fill=tk.BOTH, expand=True)
-
-        tab_calibration = ttk.Frame(self.workflow_notebook)
-        tab_indexing = ttk.Frame(self.workflow_notebook)
-        tab_overlap = ttk.Frame(self.workflow_notebook)
-        tab_overlap_optimization = ttk.Frame(self.workflow_notebook)
-        self.workflow_notebook.add(tab_calibration, text="1. Load and PC Calibration")
-        self.workflow_notebook.add(tab_indexing, text="2. Dictionary Indexing")
-        self.workflow_notebook.add(tab_overlap, text="3. Overlap Indexing")
-        self.workflow_notebook.add(tab_overlap_optimization, text="4. Overlap Optimization")
-
-        self._build_calibration_workspace(tab_calibration)
-        self._build_indexing_workspace(tab_indexing)
-        self._build_overlap_workspace(tab_overlap)
-        self._build_overlap_optimization_workspace(tab_overlap_optimization)
-        self.workflow_notebook.bind("<<NotebookTabChanged>>", self._on_workspace_changed)
-
-        ttk.Label(self, textvariable=self.status_var, padding=(8, 4), anchor="w").pack(fill=tk.X)
-        self._activate_plot_view(0)
-        self._draw_instruction("Load data and a master pattern to start.")
-
-    def _workspace_panes(self, parent: ttk.Frame) -> tuple[ttk.Frame, ttk.Frame]:
-        paned = ttk.Panedwindow(parent, orient=tk.HORIZONTAL)
-        paned.pack(fill=tk.BOTH, expand=True)
-        left = ttk.Frame(paned, width=440)
-        right = ttk.Frame(paned, padding=8)
-        paned.add(left, weight=0)
-        paned.add(right, weight=1)
-        return left, right
-
-    def _scrollable_controls(self, parent: ttk.Frame) -> ttk.Frame:
-        canvas = tk.Canvas(parent, highlightthickness=0, borderwidth=0, width=430)
-        scrollbar = ttk.Scrollbar(parent, orient=tk.VERTICAL, command=canvas.yview)
-        canvas.configure(yscrollcommand=scrollbar.set)
-        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        controls = ttk.Frame(canvas, padding=8)
-        window_id = canvas.create_window((0, 0), window=controls, anchor="nw")
-        controls.bind("<Configure>", lambda _e: canvas.configure(scrollregion=canvas.bbox("all")))
-        canvas.bind("<Configure>", lambda e: canvas.itemconfigure(window_id, width=e.width))
-
-        def wheel(event) -> None:
-            if getattr(event, "num", None) == 4:
-                canvas.yview_scroll(-1, "units")
-            elif getattr(event, "num", None) == 5:
-                canvas.yview_scroll(1, "units")
-            elif getattr(event, "delta", 0):
-                canvas.yview_scroll(-1 if event.delta > 0 else 1, "units")
-
-        controls.bind("<Enter>", lambda _e: self.bind_all("<MouseWheel>", wheel))
-        controls.bind("<Leave>", lambda _e: self.unbind_all("<MouseWheel>"))
-        return controls
-
-    def _build_calibration_workspace(self, parent: ttk.Frame) -> None:
-        left, right = self._workspace_panes(parent)
-        controls = self._scrollable_controls(left)
-        self._build_input_controls(controls)
-        calibration = ttk.LabelFrame(controls, text="PC Calibration", padding=8)
-        calibration.pack(fill=tk.X, pady=4)
-        self._build_refine_tab(calibration)
-        self._build_workflow_controls(controls)
-        self._build_selection_controls(controls, include_roi=False)
-        self._build_point_editor_controls(controls)
-        self._build_info_and_log(controls, log_height=8)
-        self._build_plot_area(right, 0)
-
-    def _build_indexing_workspace(self, parent: ttk.Frame) -> None:
-        left, right = self._workspace_panes(parent)
-        controls = self._scrollable_controls(left)
-        self._build_roi_controls(controls)
-        indexing = ttk.LabelFrame(controls, text="Kikuchipy Dictionary Indexing", padding=8)
-        indexing.pack(fill=tk.X, pady=4)
-        self._build_index_tab(indexing)
-        refinement = ttk.LabelFrame(controls, text="Post-index Orientation Refinement", padding=8)
-        refinement.pack(fill=tk.X, pady=4)
-        ttk.Label(refinement, text="trust Euler (deg)").grid(row=0, column=0, sticky="w")
-        ttk.Entry(refinement, textvariable=self.trust_euler_var, width=10).grid(row=0, column=1, sticky="w")
-        ttk.Label(refinement, text="max evaluations").grid(row=1, column=0, sticky="w")
-        ttk.Entry(refinement, textvariable=self.maxfev_var, width=10).grid(row=1, column=1, sticky="w")
-        ttk.Checkbutton(
-            refinement,
-            text="Use full-resolution patterns for refinement",
-            variable=self.refine_full_resolution_var,
-        ).grid(row=2, column=0, columnspan=2, sticky="w", pady=(6, 0))
-        self.btn_refine_indexed = ttk.Button(
-            refinement,
-            text="Refine Last Indexed Orientations",
-            command=self._refine_last_indexed,
-        )
-        self.btn_refine_indexed.grid(row=3, column=0, columnspan=2, sticky="we", pady=(8, 0))
-        self.refinement_progress_bar = ttk.Progressbar(
-            refinement,
-            variable=self.refinement_progress_var,
-            maximum=100.0,
-            mode="determinate",
-        )
-        self.refinement_progress_bar.grid(row=4, column=0, columnspan=2, sticky="we", pady=(6, 0))
-        ttk.Label(
-            refinement,
-            textvariable=self.refinement_progress_status_var,
-            wraplength=390,
-        ).grid(row=5, column=0, columnspan=2, sticky="w", pady=(2, 0))
-        refinement.columnconfigure(0, weight=1)
-        self._build_selection_controls(controls, include_roi=False)
-        self._build_info_and_log(controls, log_height=8)
-        self._build_plot_area(right, 1)
-
-    def _build_overlap_workspace(self, parent: ttk.Frame) -> None:
-        left, right = self._workspace_panes(parent)
-        controls = self._scrollable_controls(left)
-        overlap = ttk.LabelFrame(controls, text="Primary Subtraction and Residual Indexing", padding=8)
-        overlap.pack(fill=tk.X, pady=4)
-        self._build_overlap_tab(overlap)
-        ttk.Label(
-            controls,
-            text="Paper model: fit Gaussian σ and an elliptical power-law gain mask, normalize S′, then subtract Zexp − NCC(E,S′)·S′. The ROI is set in tab 2 and reused here; it is read-only on this tab.",
-            wraplength=390,
-        ).pack(fill=tk.X, pady=(0, 4))
-        self._build_selection_controls(controls, include_roi=False)
-        self._build_info_and_log(controls, log_height=10)
-        self._build_plot_area(right, 2, fixed_ipf=True)
-
-    def _build_overlap_optimization_workspace(self, parent: ttk.Frame) -> None:
-        left, right = self._workspace_panes(parent)
-        controls = self._scrollable_controls(left)
-        optimization = ttk.LabelFrame(controls, text="Shared Gain/Blur Mixture Fit", padding=8)
-        optimization.pack(fill=tk.X, pady=4)
-        self._build_overlap_optimization_tab(optimization)
-        ttk.Label(
-            controls,
-            text="The ROI is defined in tab 2 and reused here; it is read-only on this tab.",
-            wraplength=390,
-        ).pack(fill=tk.X, pady=(0, 4))
-        self._build_selection_controls(controls, include_roi=False)
-        self._build_info_and_log(controls, log_height=8)
-        self._build_plot_area(right, 3, fixed_ipf=True)
-
-    def _build_input_controls(self, parent: ttk.Frame) -> None:
-        io_box = ttk.LabelFrame(parent, text="Input Data", padding=8)
-        io_box.pack(fill=tk.X, pady=4)
-        ttk.Label(io_box, text="Patterns (.h5oina / .up1 / .up2)").grid(row=0, column=0, sticky="w")
-        ttk.Entry(io_box, textvariable=self.pattern_path_var, width=42).grid(row=1, column=0, sticky="we")
-        ttk.Button(io_box, text="Browse", command=self._browse_patterns).grid(row=1, column=1, padx=4)
-        ttk.Label(io_box, text="Orientations (.ang for UP files)").grid(row=2, column=0, sticky="w", pady=(6, 0))
-        ttk.Entry(io_box, textvariable=self.orientation_path_var, width=42).grid(row=3, column=0, sticky="we")
-        ttk.Button(io_box, text="Browse", command=self._browse_orientation).grid(row=3, column=1, padx=4)
-        ttk.Label(io_box, text="Master pattern").grid(row=4, column=0, sticky="w", pady=(6, 0))
-        ttk.Entry(io_box, textvariable=self.master_path_var, width=42).grid(row=5, column=0, sticky="we")
-        ttk.Button(io_box, text="Browse", command=self._browse_master).grid(row=5, column=1, padx=4)
-        io_box.columnconfigure(0, weight=1)
-
-        geometry = ttk.LabelFrame(parent, text="Geometry and Loading", padding=8)
-        geometry.pack(fill=tk.X, pady=4)
-        ttk.Label(geometry, text="sample tilt (.up1/.up2 load only)").grid(row=0, column=0, sticky="w")
-        ttk.Entry(geometry, textvariable=self.sample_tilt_var, width=10).grid(row=0, column=1, sticky="w")
-        ttk.Label(geometry, text="detector tilt (.up1/.up2 load only)").grid(row=1, column=0, sticky="w")
-        ttk.Entry(geometry, textvariable=self.detector_tilt_var, width=10).grid(row=1, column=1, sticky="w")
-        ttk.Label(
-            geometry,
-            text="H5OINA uses geometry from the file; these fields only affect .up1/.up2 loading.",
-            wraplength=390,
-        ).grid(row=2, column=0, columnspan=2, sticky="w", pady=(2, 0))
-        ttk.Label(geometry, text="pattern mask (-1/0/N px)").grid(row=3, column=0, sticky="w", pady=(6, 0))
-        ttk.Entry(geometry, textvariable=self.pattern_mask_option_var, width=10).grid(row=3, column=1, sticky="w", pady=(6, 0))
-        ttk.Label(geometry, textvariable=self.pattern_mask_status_var, wraplength=390).grid(
-            row=4, column=0, columnspan=2, sticky="w", pady=(2, 0)
-        )
-        bg_controls = ttk.Frame(geometry)
-        bg_controls.grid(row=5, column=0, columnspan=2, sticky="w", pady=(6, 0))
-        ttk.Checkbutton(
-            bg_controls,
-            text="dynamic BG subtraction",
-            variable=self.dynamic_bg_enabled_var,
-            command=self._on_value_commit,
-        ).pack(side=tk.LEFT)
-        ttk.Label(bg_controls, text="std px (0=auto)").pack(side=tk.LEFT, padx=(12, 4))
-        ttk.Entry(bg_controls, textvariable=self.dynamic_bg_std_var, width=10).pack(side=tk.LEFT)
-        ttk.Label(geometry, textvariable=self.dynamic_bg_status_var, wraplength=390).grid(
-            row=6, column=0, columnspan=2, sticky="w", pady=(2, 0)
-        )
-        ttk.Label(geometry, text="MP energy model (applied on load)").grid(
-            row=7, column=0, sticky="w", pady=(7, 0)
-        )
-        ttk.Combobox(
-            geometry,
-            textvariable=self.master_energy_mode_var,
-            values=list(MASTER_ENERGY_MODE_LABELS.values()),
-            state="readonly",
-            width=28,
-        ).grid(row=7, column=1, sticky="we", pady=(7, 0))
-        ttk.Button(geometry, text="Load Input Data", command=self._load_input).grid(row=8, column=0, sticky="we", pady=(8, 0))
-        ttk.Button(geometry, text="Load Master Pattern", command=self._load_master).grid(row=8, column=1, sticky="we", pady=(8, 0))
-
-    def _build_workflow_controls(self, parent: ttk.Frame) -> None:
-        box = ttk.LabelFrame(parent, text="Workflow Save and Restore", padding=8)
-        box.pack(fill=tk.X, pady=4)
-        ttk.Label(box, text="workflow file").grid(row=0, column=0, columnspan=3, sticky="w")
-        ttk.Entry(box, textvariable=self.workflow_path_var, width=40).grid(
-            row=1, column=0, columnspan=3, sticky="we", pady=(2, 0)
-        )
-        ttk.Button(box, text="Save Workflow", command=self._save_workflow).grid(
-            row=2, column=0, sticky="we", pady=(5, 0)
-        )
-        ttk.Button(box, text="Save As...", command=self._save_workflow_as).grid(
-            row=2, column=1, sticky="we", padx=4, pady=(5, 0)
-        )
-        ttk.Button(box, text="Open...", command=self._restore_workflow).grid(
-            row=2, column=2, sticky="we", pady=(5, 0)
-        )
-        ttk.Label(
-            box,
-            text="Save is immediate. Large pattern data are referenced, not duplicated; saved dictionaries are linked when available.",
-            wraplength=390,
-        ).grid(row=3, column=0, columnspan=3, sticky="w", pady=(4, 0))
-        for column in range(3):
-            box.columnconfigure(column, weight=1)
-
-    def _build_selection_controls(self, parent: ttk.Frame, *, include_roi: bool) -> None:
-        box = ttk.LabelFrame(parent, text="Map Selection", padding=8)
-        box.pack(fill=tk.X, pady=4)
-        ttk.Label(box, text="phase ID").grid(row=0, column=0, sticky="w")
-        ttk.Entry(box, textvariable=self.phase_id_var, width=8).grid(row=0, column=1, sticky="w")
-        ttk.Label(box, text="index").grid(row=1, column=0, sticky="w")
-        ttk.Entry(box, textvariable=self.index_var, width=10).grid(row=1, column=1, sticky="w")
-        ttk.Button(box, text="Index → Row/Col", command=self._sync_row_col_from_index).grid(row=1, column=2, padx=4)
-        ttk.Label(box, text="row").grid(row=2, column=0, sticky="w")
-        ttk.Entry(box, textvariable=self.row_var, width=10).grid(row=2, column=1, sticky="w")
-        ttk.Label(box, text="column").grid(row=3, column=0, sticky="w")
-        ttk.Entry(box, textvariable=self.col_var, width=10).grid(row=3, column=1, sticky="w")
-        ttk.Button(box, text="Row/Col → Index", command=self._sync_index_from_row_col).grid(row=3, column=2, padx=4)
-        if include_roi:
-            ttk.Label(box, text="ROI r0, c0, nrows, ncols").grid(row=4, column=0, columnspan=3, sticky="w", pady=(8, 0))
-            roi = ttk.Frame(box)
-            roi.grid(row=5, column=0, columnspan=3, sticky="w")
-            for variable in (self.roi_r0_var, self.roi_c0_var, self.roi_nrows_var, self.roi_ncols_var):
-                ttk.Entry(roi, textvariable=variable, width=7).pack(side=tk.LEFT, padx=2)
-            ttk.Button(box, text="Center ROI on Selected Point", command=self._center_roi_on_selected).grid(
-                row=6, column=0, columnspan=3, sticky="we", pady=(4, 0)
-            )
-            ttk.Button(box, text="Use Full Map", command=self._use_full_map_roi).grid(
-                row=7, column=0, columnspan=3, sticky="we", pady=(4, 0)
-            )
-            ttk.Label(
-                box,
-                text="ROI edits update the maps automatically. Hold Shift and drag on any map to draw an ROI.",
-                wraplength=380,
-            ).grid(row=8, column=0, columnspan=3, sticky="w", pady=(4, 0))
-
-    def _build_roi_controls(self, parent: ttk.Frame) -> None:
-        box = ttk.LabelFrame(parent, text="ROI Selection", padding=8)
-        box.pack(fill=tk.X, pady=4)
-        ttk.Label(box, text="r0, c0, nrows, ncols").grid(row=0, column=0, columnspan=3, sticky="w")
-        roi = ttk.Frame(box)
-        roi.grid(row=1, column=0, columnspan=3, sticky="w")
-        for variable in (self.roi_r0_var, self.roi_c0_var, self.roi_nrows_var, self.roi_ncols_var):
-            ttk.Entry(roi, textvariable=variable, width=7).pack(side=tk.LEFT, padx=2)
-        ttk.Button(box, text="Center ROI on Selected Point", command=self._center_roi_on_selected).grid(
-            row=2, column=0, columnspan=3, sticky="we", pady=(4, 0)
-        )
-        ttk.Button(box, text="Use Full Map", command=self._use_full_map_roi).grid(
-            row=3, column=0, columnspan=3, sticky="we", pady=(4, 0)
-        )
-        ttk.Label(
-            box,
-            text="ROI edits update automatically. Hold Shift and drag on any map to draw an ROI.",
-            wraplength=380,
-        ).grid(row=4, column=0, columnspan=3, sticky="w", pady=(4, 0))
-
-    def _build_point_editor_controls(self, parent: ttk.Frame) -> None:
-        box = ttk.LabelFrame(parent, text="Selected Point Orientation and PC", padding=8)
-        box.pack(fill=tk.X, pady=4)
-        labels = ("Euler φ1 (deg)", "Euler Φ (deg)", "Euler φ2 (deg)")
-        variables = (self.euler1_deg_var, self.euler2_deg_var, self.euler3_deg_var)
-        for row, (label, variable) in enumerate(zip(labels, variables)):
-            ttk.Label(box, text=label).grid(row=row, column=0, sticky="w")
-            ttk.Spinbox(box, textvariable=variable, from_=-720, to=720, increment=self._euler_step_deg, width=12).grid(row=row, column=1, sticky="w")
-        for offset, (label, variable) in enumerate(zip(("PC x", "PC y", "PC z"), (self.pcx_var, self.pcy_var, self.pcz_var)), start=3):
-            ttk.Label(box, text=label).grid(row=offset, column=0, sticky="w")
-            ttk.Spinbox(box, textvariable=variable, from_=-2, to=2, increment=self._pc_step, width=12).grid(row=offset, column=1, sticky="w")
-        ttk.Label(box, textvariable=self.pc_conv_label_var).grid(row=6, column=0, columnspan=2, sticky="w", pady=(4, 0))
-        ttk.Button(box, text="Read Current Values", command=self._load_selected_point_values).grid(row=7, column=0, sticky="we", pady=(6, 0))
-        ttk.Button(box, text="Apply Edited Values", command=self._apply_selected_point_values).grid(row=7, column=1, sticky="we", pady=(6, 0))
-
-    def _build_info_and_log(self, parent: ttk.Frame, *, log_height: int) -> None:
-        info_box = ttk.LabelFrame(parent, text="Current Status", padding=4)
-        info_box.pack(fill=tk.X, pady=4)
-        info = tk.Text(info_box, height=7, wrap=tk.WORD)
-        info.pack(fill=tk.X)
-        info.configure(state=tk.DISABLED)
-        self.info_texts.append(info)
-        if self.info_text is None:
-            self.info_text = info
-        log_box = ttk.LabelFrame(parent, text="Log", padding=4)
-        log_box.pack(fill=tk.BOTH, expand=True, pady=4)
-        log = tk.Text(log_box, height=log_height, wrap=tk.WORD)
-        log.pack(fill=tk.BOTH, expand=True)
-        self.log_texts.append(log)
-        if not hasattr(self, "log_text"):
-            self.log_text = log
 
     def _build_plot_area(
         self,
@@ -578,6 +313,7 @@ class MultiStepOverlapGUI(tk.Tk):
             "combo": combo,
             "ipf_combo": ipf_combo,
             "colorbar": None,
+            "toolbar": toolbar,
         }
         if view_index == 0:
             self.map_layer_combo = combo
@@ -594,586 +330,10 @@ class MultiStepOverlapGUI(tk.Tk):
             return
         index = int(self.workflow_notebook.index(self.workflow_notebook.select()))
         self._activate_plot_view(index)
-        self._refresh_plot()
+        self._update_calibration_application_controls()
+        if not self.busy:
+            self._refresh_plot()
 
-    def _build_scrollable_left(self, parent: ttk.Frame) -> None:
-        self._left_canvas = tk.Canvas(parent, highlightthickness=0, borderwidth=0)
-        vscroll = ttk.Scrollbar(parent, orient=tk.VERTICAL, command=self._left_canvas.yview)
-        self._left_canvas.configure(yscrollcommand=vscroll.set)
-        self._left_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        vscroll.pack(side=tk.RIGHT, fill=tk.Y)
-
-        self._left_controls_frame = ttk.Frame(self._left_canvas, padding=8)
-        self._left_canvas_window_id = self._left_canvas.create_window(
-            (0, 0),
-            window=self._left_controls_frame,
-            anchor="nw",
-        )
-
-        self._left_controls_frame.bind("<Configure>", self._on_left_content_configure)
-        self._left_canvas.bind("<Configure>", self._on_left_canvas_configure)
-        self._left_controls_frame.bind("<Enter>", self._bind_left_mousewheel)
-        self._left_controls_frame.bind("<Leave>", self._unbind_left_mousewheel)
-        self._left_canvas.bind("<Enter>", self._bind_left_mousewheel)
-        self._left_canvas.bind("<Leave>", self._unbind_left_mousewheel)
-
-        self._build_left(self._left_controls_frame)
-
-    def _on_left_content_configure(self, _event: tk.Event) -> None:
-        if self._left_canvas is None:
-            return
-        self._left_canvas.configure(scrollregion=self._left_canvas.bbox("all"))
-
-    def _on_left_canvas_configure(self, event: tk.Event) -> None:
-        if self._left_canvas is None or self._left_canvas_window_id is None:
-            return
-        self._left_canvas.itemconfigure(self._left_canvas_window_id, width=event.width)
-
-    def _bind_left_mousewheel(self, _event: tk.Event) -> None:
-        self.bind_all("<MouseWheel>", self._on_left_mousewheel)
-        self.bind_all("<Button-4>", self._on_left_mousewheel)
-        self.bind_all("<Button-5>", self._on_left_mousewheel)
-
-    def _unbind_left_mousewheel(self, _event: tk.Event) -> None:
-        self.unbind_all("<MouseWheel>")
-        self.unbind_all("<Button-4>")
-        self.unbind_all("<Button-5>")
-
-    def _on_left_mousewheel(self, event: tk.Event) -> None:
-        if self._left_canvas is None:
-            return
-        if hasattr(event, "num") and event.num == 4:
-            self._left_canvas.yview_scroll(-1, "units")
-            return
-        if hasattr(event, "num") and event.num == 5:
-            self._left_canvas.yview_scroll(1, "units")
-            return
-        delta = getattr(event, "delta", 0)
-        if delta == 0:
-            return
-        step = -1 if delta > 0 else 1
-        self._left_canvas.yview_scroll(step, "units")
-
-    def _build_left(self, parent: ttk.Frame) -> None:
-        io_box = ttk.LabelFrame(parent, text="Input / Output", padding=8)
-        io_box.pack(fill=tk.X, pady=4)
-
-        ttk.Label(io_box, text="Patterns (.h5oina / .up1 / .up2)").grid(row=0, column=0, sticky="w")
-        ttk.Entry(io_box, textvariable=self.pattern_path_var, width=52).grid(row=1, column=0, sticky="we")
-        ttk.Button(io_box, text="Browse", command=self._browse_patterns).grid(row=1, column=1, padx=4)
-
-        ttk.Label(io_box, text="Orientation (.ang, for .up1/.up2)").grid(row=2, column=0, sticky="w", pady=(6, 0))
-        ttk.Entry(io_box, textvariable=self.orientation_path_var, width=52).grid(row=3, column=0, sticky="we")
-        ttk.Button(io_box, text="Browse", command=self._browse_orientation).grid(row=3, column=1, padx=4)
-
-        ttk.Label(io_box, text="Master pattern (.h5/.hdf5/.sdf5)").grid(row=4, column=0, sticky="w", pady=(6, 0))
-        ttk.Entry(io_box, textvariable=self.master_path_var, width=52).grid(row=5, column=0, sticky="we")
-        ttk.Button(io_box, text="Browse", command=self._browse_master).grid(row=5, column=1, padx=4)
-
-        ttk.Label(io_box, text="Export path").grid(row=6, column=0, sticky="w", pady=(6, 0))
-        ttk.Entry(io_box, textvariable=self.export_path_var, width=52).grid(row=7, column=0, sticky="we")
-        ttk.Button(io_box, text="Browse", command=self._browse_export).grid(row=7, column=1, padx=4)
-
-        io_box.columnconfigure(0, weight=1)
-
-        geom_box = ttk.LabelFrame(parent, text="Geometry / Loading", padding=8)
-        geom_box.pack(fill=tk.X, pady=4)
-        ttk.Label(geom_box, text="sample tilt (.up1/.up2 load only)").grid(row=0, column=0, sticky="w")
-        ttk.Entry(geom_box, textvariable=self.sample_tilt_var, width=10).grid(row=0, column=1, sticky="w")
-        ttk.Label(geom_box, text="detector tilt (.up1/.up2 load only)").grid(row=1, column=0, sticky="w")
-        ttk.Entry(geom_box, textvariable=self.detector_tilt_var, width=10).grid(row=1, column=1, sticky="w")
-        ttk.Label(
-            geom_box,
-            text="H5OINA uses geometry from the file; these fields only affect .up1/.up2 loading.",
-            wraplength=390,
-        ).grid(row=2, column=0, columnspan=2, sticky="w", pady=(2, 0))
-        ttk.Label(geom_box, text="MP energy model (applied on load)").grid(
-            row=3, column=0, sticky="w", pady=(7, 0)
-        )
-        ttk.Combobox(
-            geom_box,
-            textvariable=self.master_energy_mode_var,
-            values=list(MASTER_ENERGY_MODE_LABELS.values()),
-            state="readonly",
-            width=28,
-        ).grid(row=3, column=1, sticky="we", pady=(7, 0))
-        ttk.Button(geom_box, text="Load Input Data", command=self._load_input).grid(row=4, column=0, sticky="we", pady=(8, 0))
-        ttk.Button(geom_box, text="Load Master", command=self._load_master).grid(row=4, column=1, sticky="we", pady=(8, 0))
-        ttk.Button(geom_box, text="Export Re-indexed Results", command=self._export_results).grid(row=5, column=0, columnspan=2, sticky="we", pady=(6, 0))
-        ttk.Button(geom_box, text="Save Workflow State", command=self._save_workflow).grid(row=6, column=0, sticky="we", pady=(4, 0))
-        ttk.Button(geom_box, text="Open Workflow State", command=self._restore_workflow).grid(row=6, column=1, sticky="we", pady=(4, 0))
-
-        select_box = ttk.LabelFrame(parent, text="Selection", padding=8)
-        select_box.pack(fill=tk.X, pady=4)
-        ttk.Label(select_box, text="phase ID").grid(row=0, column=0, sticky="w")
-        ttk.Entry(select_box, textvariable=self.phase_id_var, width=8).grid(row=0, column=1, sticky="w")
-        ttk.Label(select_box, text="index").grid(row=1, column=0, sticky="w")
-        ttk.Entry(select_box, textvariable=self.index_var, width=10).grid(row=1, column=1, sticky="w")
-        ttk.Button(select_box, text="Index -> Row/Col", command=self._sync_row_col_from_index).grid(row=1, column=2, padx=4)
-        ttk.Label(select_box, text="row").grid(row=2, column=0, sticky="w")
-        ttk.Entry(select_box, textvariable=self.row_var, width=10).grid(row=2, column=1, sticky="w")
-        ttk.Label(select_box, text="col").grid(row=3, column=0, sticky="w")
-        ttk.Entry(select_box, textvariable=self.col_var, width=10).grid(row=3, column=1, sticky="w")
-        ttk.Button(select_box, text="Row/Col -> Index", command=self._sync_index_from_row_col).grid(row=3, column=2, padx=4)
-
-        ttk.Label(select_box, text="ROI r0, c0, nrows, ncols").grid(row=4, column=0, sticky="w", pady=(6, 0))
-        roi_frame = ttk.Frame(select_box)
-        roi_frame.grid(row=5, column=0, columnspan=3, sticky="w")
-        ttk.Entry(roi_frame, textvariable=self.roi_r0_var, width=6).pack(side=tk.LEFT, padx=1)
-        ttk.Entry(roi_frame, textvariable=self.roi_c0_var, width=6).pack(side=tk.LEFT, padx=1)
-        ttk.Entry(roi_frame, textvariable=self.roi_nrows_var, width=6).pack(side=tk.LEFT, padx=1)
-        ttk.Entry(roi_frame, textvariable=self.roi_ncols_var, width=6).pack(side=tk.LEFT, padx=1)
-        ttk.Button(select_box, text="Center ROI on Selected Point", command=self._center_roi_on_selected).grid(
-            row=6, column=0, columnspan=3, sticky="we", pady=(4, 0)
-        )
-
-        point_box = ttk.LabelFrame(parent, text="Current Point Values", padding=8)
-        point_box.pack(fill=tk.X, pady=4)
-        ttk.Label(point_box, text="Euler phi1 (deg)").grid(row=0, column=0, sticky="w")
-        ttk.Spinbox(
-            point_box,
-            textvariable=self.euler1_deg_var,
-            from_=-720.0,
-            to=720.0,
-            increment=self._euler_step_deg,
-            format="%.2f",
-            width=12,
-        ).grid(row=0, column=1, sticky="w")
-        ttk.Label(point_box, text="Euler Phi (deg)").grid(row=1, column=0, sticky="w")
-        ttk.Spinbox(
-            point_box,
-            textvariable=self.euler2_deg_var,
-            from_=-720.0,
-            to=720.0,
-            increment=self._euler_step_deg,
-            format="%.2f",
-            width=12,
-        ).grid(row=1, column=1, sticky="w")
-        ttk.Label(point_box, text="Euler phi2 (deg)").grid(row=2, column=0, sticky="w")
-        ttk.Spinbox(
-            point_box,
-            textvariable=self.euler3_deg_var,
-            from_=-720.0,
-            to=720.0,
-            increment=self._euler_step_deg,
-            format="%.2f",
-            width=12,
-        ).grid(row=2, column=1, sticky="w")
-        ttk.Label(point_box, text="PC x").grid(row=3, column=0, sticky="w", pady=(6, 0))
-        ttk.Spinbox(
-            point_box,
-            textvariable=self.pcx_var,
-            from_=-2.0,
-            to=2.0,
-            increment=self._pc_step,
-            format="%.3f",
-            width=12,
-        ).grid(row=3, column=1, sticky="w", pady=(6, 0))
-        ttk.Label(point_box, text="PC y").grid(row=4, column=0, sticky="w")
-        ttk.Spinbox(
-            point_box,
-            textvariable=self.pcy_var,
-            from_=-2.0,
-            to=2.0,
-            increment=self._pc_step,
-            format="%.3f",
-            width=12,
-        ).grid(row=4, column=1, sticky="w")
-        ttk.Label(point_box, text="PC z").grid(row=5, column=0, sticky="w")
-        ttk.Spinbox(
-            point_box,
-            textvariable=self.pcz_var,
-            from_=-2.0,
-            to=2.0,
-            increment=self._pc_step,
-            format="%.3f",
-            width=12,
-        ).grid(row=5, column=1, sticky="w")
-        ttk.Label(point_box, text="steps: Euler 0.01 deg, PC 0.001").grid(row=6, column=0, columnspan=2, sticky="w")
-        ttk.Label(point_box, textvariable=self.pc_conv_label_var).grid(row=7, column=0, columnspan=2, sticky="w", pady=(4, 0))
-        ttk.Button(point_box, text="Read Selected Point Values", command=self._load_selected_point_values).grid(
-            row=8, column=0, columnspan=2, sticky="we", pady=(6, 0)
-        )
-        ttk.Button(point_box, text="Apply Edited Values", command=self._apply_selected_point_values).grid(
-            row=9, column=0, columnspan=2, sticky="we", pady=(4, 0)
-        )
-        ttk.Button(
-            point_box,
-            text="Apply This PC To Map (No Averaging)",
-            command=self._apply_selected_pc_to_full_map,
-        ).grid(row=10, column=0, columnspan=2, sticky="we", pady=(4, 0))
-
-        notebook = ttk.Notebook(parent)
-        notebook.pack(fill=tk.X, pady=4)
-        self.workflow_notebook = notebook
-
-        tab_refine = ttk.Frame(notebook, padding=6)
-        tab_index = ttk.Frame(notebook, padding=6)
-        tab_overlap = ttk.Frame(notebook, padding=6)
-        notebook.add(tab_refine, text="Step 1: PC Refine")
-        notebook.add(tab_index, text="Step 2: Re-index")
-        notebook.add(tab_overlap, text="Step 3: Overlap")
-
-        self._build_refine_tab(tab_refine)
-        self._build_index_tab(tab_index)
-        self._build_overlap_tab(tab_overlap)
-        notebook.bind("<<NotebookTabChanged>>", lambda _e: self._refresh_plot())
-
-        ttk.Label(parent, textvariable=self.status_var, wraplength=520).pack(fill=tk.X, pady=4)
-
-        info_box = ttk.LabelFrame(parent, text="Info", padding=4)
-        info_box.pack(fill=tk.X, pady=(2, 4))
-        self.info_text = tk.Text(info_box, height=8, wrap=tk.WORD)
-        self.info_text.pack(fill=tk.X, expand=False)
-        self._set_info_lines(["Load data and master pattern to start."])
-
-        log_box = ttk.LabelFrame(parent, text="Log", padding=4)
-        log_box.pack(fill=tk.BOTH, expand=True)
-        self.log_text = tk.Text(log_box, height=12, wrap=tk.WORD)
-        self.log_text.pack(fill=tk.BOTH, expand=True)
-
-    def _build_refine_tab(self, parent: ttk.Frame) -> None:
-        ttk.Label(parent, text="trust euler (deg)").grid(row=0, column=0, sticky="w")
-        ttk.Entry(parent, textvariable=self.trust_euler_var, width=8).grid(row=0, column=1, sticky="w")
-        ttk.Label(parent, text="trust PC").grid(row=1, column=0, sticky="w")
-        ttk.Entry(parent, textvariable=self.trust_pc_var, width=8).grid(row=1, column=1, sticky="w")
-        ttk.Label(parent, text="maxfev").grid(row=2, column=0, sticky="w")
-        ttk.Entry(parent, textvariable=self.maxfev_var, width=8).grid(row=2, column=1, sticky="w")
-        ttk.Button(parent, text="Add Selected Calibration Point", command=self._add_calibration_point).grid(
-            row=3, column=0, columnspan=2, sticky="we", pady=(6, 0)
-        )
-        ttk.Button(parent, text="Clear Calibration Points", command=self._clear_calibration_points).grid(
-            row=4, column=0, columnspan=2, sticky="we", pady=(4, 0)
-        )
-        ttk.Label(parent, textvariable=self.calibration_summary_var, wraplength=460).grid(
-            row=5, column=0, columnspan=2, sticky="w", pady=(4, 0)
-        )
-        ttk.Button(parent, text="Optimize Selected Point (orientation + PC)", command=self._refine_selected_point).grid(
-            row=6, column=0, columnspan=2, sticky="we", pady=(6, 0)
-        )
-        self.btn_refine_roi = ttk.Button(parent, text="Optimize All Calibration Points", command=self._refine_calibration_points)
-        self.btn_refine_roi.grid(row=7, column=0, columnspan=2, sticky="we", pady=(4, 0))
-        ttk.Checkbutton(
-            parent,
-            text="Correct PC for scan position with Kikuchipy",
-            variable=self.use_scan_pc_shift_var,
-        ).grid(row=8, column=0, columnspan=2, sticky="w", pady=(8, 0))
-        ttk.Label(parent, text="detector pixel size (unbinned, same units as scan step)").grid(row=9, column=0, sticky="w")
-        ttk.Entry(parent, textvariable=self.detector_px_size_var, width=8).grid(row=9, column=1, sticky="w")
-        ttk.Label(parent, text="detector binning (hardware/acquisition)").grid(row=10, column=0, sticky="w")
-        ttk.Entry(parent, textvariable=self.detector_binning_var, width=8).grid(row=10, column=1, sticky="w")
-        ttk.Button(parent, text="Average PCs and Apply to Map", command=self._apply_average_calibration_pc).grid(
-            row=11, column=0, columnspan=2, sticky="we", pady=(8, 0)
-        )
-        ttk.Label(
-            parent,
-            text="For maps below ~50 µm, compare the reported max |dPC|; the correction may be negligible.",
-            wraplength=460,
-        ).grid(row=12, column=0, columnspan=2, sticky="w", pady=(4, 0))
-
-    def _build_index_tab(self, parent: ttk.Frame) -> None:
-        ttk.Label(parent, text="orientation resolution (deg)").grid(row=0, column=0, sticky="w")
-        ttk.Entry(parent, textvariable=self.di_res_deg_var, width=8).grid(row=0, column=1, sticky="w")
-        ttk.Label(parent, text="dictionary software binning").grid(row=1, column=0, sticky="w")
-        ttk.Entry(parent, textvariable=self.di_binning_var, width=8).grid(row=1, column=1, sticky="w")
-        ttk.Button(parent, text="Generate Binned Dictionary", command=self._generate_dictionary).grid(
-            row=2, column=0, columnspan=2, sticky="we", pady=(6, 0)
-        )
-        self.dictionary_progress_bar = ttk.Progressbar(
-            parent,
-            variable=self.dictionary_progress_var,
-            maximum=100.0,
-            mode="determinate",
-        )
-        self.dictionary_progress_bar.grid(row=3, column=0, columnspan=2, sticky="we", pady=(4, 0))
-        ttk.Label(parent, textvariable=self.dictionary_status_var, wraplength=390).grid(
-            row=4, column=0, columnspan=2, sticky="w", pady=(4, 0)
-        )
-        ttk.Entry(parent, textvariable=self.dictionary_path_var, width=36).grid(
-            row=5, column=0, columnspan=2, sticky="we", pady=(6, 0)
-        )
-        ttk.Button(parent, text="Save Dictionary", command=self._save_dictionary).grid(row=6, column=0, sticky="we", pady=(4, 0))
-        ttk.Button(parent, text="Load Dictionary", command=self._load_dictionary).grid(row=6, column=1, sticky="we", pady=(4, 0))
-        ttk.Label(parent, text="keep_n (top matches)").grid(row=7, column=0, sticky="w", pady=(8, 0))
-        ttk.Entry(parent, textvariable=self.dictionary_keep_n_var, width=8).grid(row=7, column=1, sticky="w", pady=(8, 0))
-        automated_frame = ttk.LabelFrame(parent, text="Automated ROI Workflows", padding=8)
-        automated_frame.grid(row=8, column=0, columnspan=2, sticky="we", pady=(12, 4))
-        automated_frame.columnconfigure(0, weight=1)
-        self.btn_steps_2_3_analysis = ttk.Button(
-            automated_frame,
-            text="Run ROI Analysis — Steps 2–3 Only (Faster)",
-            command=lambda: self._run_complete_roi_analysis(include_step4=False),
-        )
-        self.btn_steps_2_3_analysis.grid(row=0, column=0, sticky="we")
-        ttk.Label(
-            automated_frame,
-            text="Indexes and refines the primary and residual orientations, then stops before Step 4.",
-            wraplength=370,
-        ).grid(row=1, column=0, sticky="w", pady=(2, 8))
-        self.btn_complete_analysis = ttk.Button(
-            automated_frame,
-            text="Run Complete ROI Analysis — Steps 2–4",
-            command=self._run_complete_roi_analysis,
-        )
-        self.btn_complete_analysis.grid(row=2, column=0, sticky="we")
-        ttk.Label(
-            automated_frame,
-            text="Runs Steps 2–3 and then performs the Step 4 ROI overlap-mixture optimization.",
-            wraplength=370,
-        ).grid(row=3, column=0, sticky="w", pady=(2, 8))
-        ttk.Progressbar(
-            automated_frame,
-            variable=self.complete_analysis_progress_var,
-            maximum=100.0,
-            mode="determinate",
-        ).grid(row=4, column=0, sticky="we")
-        ttk.Label(automated_frame, textvariable=self.complete_analysis_status_var, wraplength=370).grid(
-            row=5, column=0, sticky="w", pady=(2, 0)
-        )
-        ttk.Label(
-            automated_frame,
-            text=(
-                "Both use the current ROI and the settings in the relevant tabs. Neither workflow runs the "
-                "separate selected-point mixture-orientation refinement."
-            ),
-            wraplength=370,
-        ).grid(row=6, column=0, sticky="w", pady=(6, 0))
-        ttk.Separator(parent, orient=tk.HORIZONTAL).grid(row=9, column=0, columnspan=2, sticky="we", pady=8)
-        ttk.Button(parent, text="Index Selected Point (NCC)", command=self._index_selected_point).grid(row=10, column=0, columnspan=2, sticky="we", pady=(6, 0))
-        self.btn_index_roi = ttk.Button(parent, text="Re-index ROI (NCC)", command=self._index_roi)
-        self.btn_index_roi.grid(row=11, column=0, columnspan=2, sticky="we", pady=(4, 0))
-        ttk.Progressbar(
-            parent,
-            variable=self.reindex_progress_var,
-            maximum=100.0,
-            mode="determinate",
-        ).grid(row=12, column=0, columnspan=2, sticky="we", pady=(8, 0))
-        ttk.Label(
-            parent,
-            textvariable=self.reindex_progress_status_var,
-            wraplength=390,
-        ).grid(row=13, column=0, columnspan=2, sticky="w", pady=(2, 0))
-        parent.columnconfigure(0, weight=1)
-
-    def _build_overlap_tab(self, parent: ttk.Frame) -> None:
-        parent.columnconfigure(1, weight=1)
-        ttk.Checkbutton(
-            parent,
-            text="Fit Gaussian blur + elliptical power-law gain mask",
-            variable=self.fit_blur_gain_var,
-        ).grid(row=0, column=0, columnspan=2, sticky="w")
-        ttk.Label(parent, text="manual blur sigma (fit disabled)").grid(row=1, column=0, sticky="w")
-        ttk.Entry(parent, textvariable=self.blur_sigma_var, width=8).grid(row=1, column=1, sticky="w")
-        ttk.Label(parent, text="gain-fit max iterations").grid(row=2, column=0, sticky="w")
-        ttk.Entry(parent, textvariable=self.gain_fit_maxiter_var, width=8).grid(row=2, column=1, sticky="w")
-        ttk.Label(parent, text="gain-fit population size").grid(row=3, column=0, sticky="w")
-        ttk.Entry(parent, textvariable=self.gain_fit_popsize_var, width=8).grid(row=3, column=1, sticky="w")
-        ttk.Label(parent, text="residual refinement trust (deg)").grid(row=4, column=0, sticky="w")
-        ttk.Entry(parent, textvariable=self.residual_trust_euler_var, width=8).grid(row=4, column=1, sticky="w")
-        ttk.Label(parent, text="residual refinement max evaluations").grid(row=5, column=0, sticky="w")
-        ttk.Entry(parent, textvariable=self.residual_maxfev_var, width=8).grid(row=5, column=1, sticky="w")
-        ttk.Checkbutton(
-            parent,
-            text="Use full-resolution patterns for residual refinement",
-            variable=self.residual_refine_full_resolution_var,
-        ).grid(row=6, column=0, columnspan=2, sticky="w", pady=(6, 0))
-        ttk.Label(parent, text="keep_n (top matches)").grid(row=7, column=0, sticky="w")
-        ttk.Entry(parent, textvariable=self.residual_keep_n_var, width=8).grid(row=7, column=1, sticky="w")
-        ttk.Button(parent, text="Fit Selected Point and Build Residual", command=self._analyze_overlap).grid(row=8, column=0, columnspan=2, sticky="we", pady=(6, 0))
-        ttk.Button(parent, text="Index Residual for Selected Point", command=self._index_overlap_residual).grid(
-            row=9, column=0, columnspan=2, sticky="we", pady=(4, 0)
-        )
-        ttk.Button(parent, text="Refine Residual for Selected Point", command=self._refine_overlap_residual).grid(
-            row=10, column=0, columnspan=2, sticky="we", pady=(4, 0)
-        )
-        ttk.Separator(parent, orient=tk.HORIZONTAL).grid(row=11, column=0, columnspan=2, sticky="we", pady=8)
-        ttk.Label(parent, text="Full ROI residual workflow (reads the ROI from tab 2)").grid(
-            row=12, column=0, columnspan=2, sticky="w"
-        )
-        ttk.Label(parent, text="residual-fit worker cores (0=all)").grid(row=13, column=0, sticky="w")
-        ttk.Entry(parent, textvariable=self.step3_parallel_cores_var, width=8).grid(row=13, column=1, sticky="w")
-        ttk.Label(parent, text="minimum primary NCC for residual work").grid(row=14, column=0, sticky="w")
-        ttk.Entry(parent, textvariable=self.overlap_min_ncc_var, width=8).grid(row=14, column=1, sticky="w")
-        ttk.Checkbutton(
-            parent,
-            text="Write residual patterns to file",
-            variable=self.write_residual_patterns_var,
-        ).grid(row=15, column=0, columnspan=2, sticky="w", pady=(6, 0))
-        ttk.Label(parent, text="residual pattern file").grid(row=16, column=0, columnspan=2, sticky="w", pady=(2, 0))
-        ttk.Entry(parent, textvariable=self.residual_pattern_path_var, width=34).grid(row=17, column=0, sticky="we", pady=(2, 0))
-        ttk.Button(parent, text="Browse", command=self._browse_residual_pattern_output).grid(
-            row=17, column=1, sticky="we", padx=(4, 0), pady=(2, 0)
-        )
-        ttk.Button(parent, text="Compute Residuals for ROI", command=self._compute_overlap_residual_roi).grid(
-            row=18, column=0, columnspan=2, sticky="we", pady=(6, 0)
-        )
-        ttk.Button(parent, text="Index Residual ROI", command=self._index_overlap_residual_roi).grid(
-            row=19, column=0, columnspan=2, sticky="we", pady=(4, 0)
-        )
-        ttk.Button(parent, text="Refine Residual ROI", command=self._refine_overlap_residual_roi).grid(
-            row=20, column=0, columnspan=2, sticky="we", pady=(4, 0)
-        )
-        ttk.Label(parent, text="residual IPF white threshold (KP NCC)").grid(row=21, column=0, sticky="w")
-        ttk.Entry(parent, textvariable=self.residual_ipf_ncc_var, width=8).grid(row=21, column=1, sticky="w")
-        self.overlap_progress_bar = ttk.Progressbar(parent, variable=self.overlap_progress_var, maximum=100.0, mode="determinate")
-        self.overlap_progress_bar.grid(row=22, column=0, columnspan=2, sticky="we", pady=(8, 0))
-        ttk.Label(parent, textvariable=self.overlap_progress_status_var, wraplength=390).grid(
-            row=23, column=0, columnspan=2, sticky="w", pady=(2, 0)
-        )
-        export_box = ttk.LabelFrame(parent, text="Export ROI indexing results", padding=8)
-        export_box.grid(row=24, column=0, columnspan=2, sticky="we", pady=(10, 0))
-        export_box.columnconfigure(0, weight=1)
-        ttk.Label(export_box, text="Output format").grid(row=0, column=0, sticky="w")
-        roi_format_box = ttk.Combobox(
-            export_box,
-            textvariable=self.roi_export_format_var,
-            values=("H5OINA", "ANG"),
-            state="readonly",
-            width=12,
-        )
-        roi_format_box.grid(row=0, column=1, sticky="e")
-        roi_format_box.bind("<<ComboboxSelected>>", lambda _event: self._sync_roi_export_paths_to_source())
-        ttk.Label(
-            export_box,
-            text="UP + ANG input can be saved in either format; H5OINA input remains H5OINA.",
-            wraplength=340,
-        ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(0, 4))
-        ttk.Checkbutton(
-            export_box,
-            text="Include primary patterns with export",
-            variable=self.include_primary_patterns_export_var,
-        ).grid(row=2, column=0, columnspan=2, sticky="w")
-        ttk.Label(
-            export_box,
-            text="H5OINA: Processed Patterns; ANG: companion .up1",
-            wraplength=340,
-        ).grid(row=3, column=0, columnspan=2, sticky="w")
-        ttk.Button(export_box, text="Export Primary ROI Map", command=self._export_primary_roi_map).grid(
-            row=4, column=0, columnspan=2, sticky="we", pady=(4, 0)
-        )
-        ttk.Separator(export_box, orient=tk.HORIZONTAL).grid(row=5, column=0, columnspan=2, sticky="we", pady=8)
-        ttk.Checkbutton(
-            export_box,
-            text="Include residual patterns with export",
-            variable=self.include_residual_patterns_export_var,
-        ).grid(row=6, column=0, columnspan=2, sticky="w")
-        ttk.Label(
-            export_box,
-            text="H5OINA: Processed Patterns; ANG: companion .up1",
-            wraplength=340,
-        ).grid(row=7, column=0, columnspan=2, sticky="w")
-        ttk.Button(export_box, text="Export Residual ROI Map", command=self._export_residual_roi_map).grid(
-            row=8, column=0, columnspan=2, sticky="we", pady=(4, 0)
-        )
-        bounds_box = ttk.LabelFrame(parent, text="Primary fit bounds", padding=8)
-        bounds_box.grid(row=25, column=0, columnspan=2, sticky="we", pady=(8, 0))
-        bounds_box.columnconfigure(0, weight=1)
-        ttk.Label(
-            bounds_box,
-            text="Used when Gaussian blur + gain are fitted. These defaults mirror the reference script and can be edited here.",
-            wraplength=360,
-        ).grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 6))
-        for row, (label, low_var, high_var) in enumerate(self.primary_fit_bound_specs, start=1):
-            ttk.Label(bounds_box, text=label).grid(row=row, column=0, sticky="w", padx=(0, 6))
-            ttk.Entry(bounds_box, textvariable=low_var, width=8).grid(row=row, column=1, sticky="w")
-            ttk.Entry(bounds_box, textvariable=high_var, width=8).grid(row=row, column=2, sticky="w", padx=(6, 0))
-
-    def _build_overlap_optimization_tab(self, parent: ttk.Frame) -> None:
-        parent.columnconfigure(0, weight=1)
-        parent.columnconfigure(1, weight=1)
-        ttk.Label(parent, text="shared fit max iterations").grid(row=0, column=0, sticky="w")
-        ttk.Entry(parent, textvariable=self.gain_fit_maxiter_var, width=8).grid(row=0, column=1, sticky="w")
-        ttk.Label(parent, text="shared fit population size").grid(row=1, column=0, sticky="w")
-        ttk.Entry(parent, textvariable=self.gain_fit_popsize_var, width=8).grid(row=1, column=1, sticky="w")
-        ttk.Label(parent, text="minimum residual NCC").grid(row=2, column=0, sticky="w")
-        ttk.Entry(parent, textvariable=self.overlap_mixture_residual_ncc_var, width=8).grid(row=2, column=1, sticky="w")
-        ttk.Label(parent, text="orientation trust (deg)").grid(row=3, column=0, sticky="w")
-        ttk.Entry(parent, textvariable=self.overlap_mixture_trust_euler_var, width=8).grid(row=3, column=1, sticky="w")
-        ttk.Label(parent, text="orientation max evaluations").grid(row=4, column=0, sticky="w")
-        ttk.Entry(parent, textvariable=self.overlap_mixture_maxfev_var, width=8).grid(row=4, column=1, sticky="w")
-        ttk.Label(parent, text="mixture-fit worker cores (0=all)").grid(row=5, column=0, sticky="w")
-        ttk.Entry(parent, textvariable=self.step4_parallel_cores_var, width=8).grid(row=5, column=1, sticky="w")
-        ttk.Button(parent, text="Fit Selected Point Mixture", command=self._fit_overlap_mixture).grid(
-            row=6,
-            column=0,
-            columnspan=2,
-            sticky="we",
-            pady=(8, 0),
-        )
-        ttk.Button(parent, text="Fit Mixture for ROI", command=self._fit_overlap_mixture_roi).grid(
-            row=7,
-            column=0,
-            columnspan=2,
-            sticky="we",
-            pady=(4, 0),
-        )
-        ttk.Button(parent, text="Refine Selected Mixture Orientations", command=self._refine_overlap_mixture_orientations).grid(
-            row=8,
-            column=0,
-            columnspan=2,
-            sticky="we",
-            pady=(4, 0),
-        )
-        ttk.Progressbar(
-            parent,
-            variable=self.overlap_optimization_progress_var,
-            maximum=100.0,
-            mode="determinate",
-        ).grid(row=9, column=0, columnspan=2, sticky="we", pady=(8, 0))
-        ttk.Label(parent, textvariable=self.overlap_optimization_status_var, wraplength=390).grid(
-            row=10,
-            column=0,
-            columnspan=2,
-            sticky="w",
-            pady=(2, 0),
-        )
-
-        export_box = ttk.LabelFrame(parent, text="Export Step 4 results", padding=8)
-        export_box.grid(row=11, column=0, columnspan=2, sticky="we", pady=(10, 0))
-        export_box.columnconfigure(0, weight=1)
-        ttk.Button(export_box, text="Export Full-Map HDF5 Results", command=self._export_overlap_optimization_results).grid(
-            row=0, column=0, columnspan=2, sticky="we"
-        )
-        ttk.Label(
-            export_box,
-            text="All datasets retain the original scan dimensions; points without Step 4 results are marked by a mask and NaN values.",
-            wraplength=360,
-        ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(4, 0))
-
-        bounds_box = ttk.LabelFrame(parent, text="Primary fit bounds", padding=8)
-        bounds_box.grid(row=12, column=0, columnspan=2, sticky="we", pady=(10, 0))
-        for row, (label, low_var, high_var) in enumerate(self.primary_fit_bound_specs):
-            ttk.Label(bounds_box, text=label).grid(row=row, column=0, sticky="w", padx=(0, 6))
-            ttk.Entry(bounds_box, textvariable=low_var, width=8).grid(row=row, column=1, sticky="w")
-            ttk.Entry(bounds_box, textvariable=high_var, width=8).grid(row=row, column=2, sticky="w", padx=(6, 0))
-
-    def _build_right(self, parent: ttk.Frame) -> None:
-        top_bar = ttk.Frame(parent)
-        top_bar.pack(fill=tk.X)
-        ttk.Label(top_bar, text="Map layer").pack(side=tk.LEFT)
-        self.map_layer_combo = ttk.Combobox(
-            top_bar,
-            textvariable=self.map_layer_var,
-            values=[*ORIENTATION_LAYER_LABELS, "Phase"],
-            state="readonly",
-            width=18,
-        )
-        self.map_layer_combo.pack(side=tk.LEFT, padx=4)
-        self.map_layer_combo.bind("<<ComboboxSelected>>", lambda _e: self._refresh_plot())
-        ttk.Button(top_bar, text="Refresh", command=self._refresh_plot).pack(side=tk.LEFT, padx=4)
-
-        self.figure = Figure(figsize=(10.5, 8.5), dpi=100)
-        self.axes = self.figure.subplots(2, 3)
-        for ax in self.axes.flat:
-            ax.set_axis_off()
-        self._safe_tight_layout(self.figure)
-        self.canvas = FigureCanvasTkAgg(self.figure, master=parent)
-        self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
-        toolbar = NavigationToolbar2Tk(self.canvas, parent, pack_toolbar=False)
-        toolbar.update()
-        toolbar.pack(fill=tk.X)
-        self.canvas.mpl_connect("button_press_event", self._on_plot_click)
-        self._draw_instruction("Load data and master pattern to start.")
 
     # ------------------------ UI handlers ------------------------ #
 
@@ -1190,9 +350,112 @@ class MultiStepOverlapGUI(tk.Tk):
 
     def _set_busy(self, flag: bool) -> None:
         self.busy = bool(flag)
-        if not self.busy:
+        if self.busy:
+            self._busy_widget_states = []
+            def disable_controls(parent):
+                for widget in parent.winfo_children():
+                    if widget.winfo_class() in {
+                        "TButton", "TCheckbutton", "TRadiobutton", "TEntry", "TCombobox",
+                        "TSpinbox", "TScale", "Button", "Checkbutton", "Entry", "Spinbox", "Scale",
+                    }:
+                        try:
+                            state = str(widget.cget("state"))
+                            self._busy_widget_states.append((widget, state))
+                            widget.configure(state="disabled")
+                        except tk.TclError:
+                            pass
+                    disable_controls(widget)
+            disable_controls(self)
+            cancel = getattr(self, "btn_cancel", None)
+            if cancel is not None:
+                cancel.configure(state=tk.NORMAL)
+        else:
+            for widget, state in getattr(self, "_busy_widget_states", []):
+                try:
+                    widget.configure(state=state)
+                except tk.TclError:
+                    pass
+            self._busy_widget_states = []
             for kind in ("refinement", "overlap"):
                 self._stop_progress_pulse(kind)
+            self._update_mode_controls()
+
+    def _cancel_current_action(self) -> None:
+        if self.busy:
+            self._cancel_requested.set()
+            self.status_var.set("Stopping at the next safe boundary...")
+            cancel = getattr(self, "btn_cancel", None)
+            if cancel is not None:
+                cancel.configure(state=tk.DISABLED)
+
+    def _check_job_cancelled(self) -> None:
+        requested = getattr(self, "_cancel_requested", None)
+        if requested is not None and requested.is_set():
+            raise InterruptedError("Operation cancelled at a safe boundary; completed results remain available.")
+
+    def _guarded_action(fn):
+        """Reject concurrent actions and report invalid entries before launching a job."""
+        needs_current_results = fn.__name__ in {
+            "_refine_last_indexed", "_run_complete_roi_analysis", "_run_residual_roi_analysis",
+            "_index_overlap_residual", "_refine_overlap_residual", "_compute_overlap_residual_roi",
+            "_index_overlap_residual_roi", "_refine_overlap_residual_roi",
+            "_fit_overlap_mixture", "_refine_overlap_mixture_orientations", "_fit_overlap_mixture_roi",
+        }
+        def guarded(self, *args, **kwargs):
+            if getattr(self, "busy", False):
+                return None
+            try:
+                if needs_current_results:
+                    self._sync_pattern_conditioning_settings()
+                return fn(self, *args, **kwargs)
+            except (ValueError, TypeError, RuntimeError, tk.TclError) as exc:
+                messagebox.showerror("Invalid settings", str(exc))
+                return None
+        guarded.__name__ = fn.__name__
+        guarded.__doc__ = fn.__doc__
+        return guarded
+
+    def _post_ui(self, callback) -> None:
+        """Enqueue callbacks without calling Tk from numerical worker threads."""
+        self._ui_callback_queue.put(callback)
+        gate = getattr(self, "_job_update_gate", None)
+        if gate is not None and threading.current_thread() is self._worker_thread:
+            gate.at_boundary(self._ui_callback_queue.put, lambda: self._refresh_job_maps())
+
+    def _refresh_job_maps(self) -> None:
+        # The coordinator waits at a progress boundary for this callback.
+        # No numerical worker writes session maps while they are being drawn.
+        if not self.busy or self.session.data is None or not self._job_result_views:
+            return
+        active = int(self.workflow_notebook.index(self.workflow_notebook.select()))
+        views = tuple(sorted(self._job_result_views))
+        self._job_result_views.clear()
+        try:
+            self._populate_point_vars()
+            if 0 in views:
+                self.calibration_summary_var.set(self.session.calibration_point_summary(include_statistics=False))
+            for view_index in views:
+                self._refresh_complete_analysis_maps(view_index)
+            from time import strftime
+            self.live_update_status_var.set(
+                f"Live maps updated {strftime('%H:%M:%S')} — completed results; 5 s refresh target."
+            )
+        except Exception:
+            self.live_update_status_var.set("Live map refresh failed; processing continues.")
+            self._log(f"Live map refresh failed:\n{traceback.format_exc()}")
+        finally:
+            self._activate_plot_view(active)
+
+    def _drain_ui_callbacks(self) -> None:
+        import queue
+        try:
+            for _ in range(100):
+                callback = self._ui_callback_queue.get_nowait()
+                callback()
+        except queue.Empty:
+            pass
+        if self.busy:
+            self.after(25, self._drain_ui_callbacks)
 
     def _progress_bar_for_kind(self, kind: str) -> ttk.Progressbar | None:
         if kind == "refinement":
@@ -1356,6 +619,7 @@ class MultiStepOverlapGUI(tk.Tk):
         self._roi_drag_last = None
         self._roi_drag_view_index = None
 
+    @_guarded_action
     def _set_roi_bounds(self, r0: int, c0: int, nrows: int, ncols: int, *, source: str) -> str:
         if self.session.data is None:
             raise RuntimeError("Load input data first.")
@@ -1377,6 +641,7 @@ class MultiStepOverlapGUI(tk.Tk):
         self.status_var.set(msg)
         self._log(msg)
         self._refresh_plot()
+        self._refresh_context_summary()
         return msg
 
     def _maybe_begin_roi_drag(self, event, view_index: int | None) -> bool:
@@ -1461,6 +726,10 @@ class MultiStepOverlapGUI(tk.Tk):
         fn = filedialog.askopenfilename(filetypes=[("Pattern files", "*.h5oina *.up1 *.up2"), ("All files", "*.*")])
         if fn:
             self.pattern_path_var.set(str(Path(fn).resolve()))
+            suffix = Path(fn).suffix.lower()
+            if suffix in {".up1", ".up2", ".h5oina"}:
+                self.source_type_var.set("H5OINA" if suffix == ".h5oina" else "UP + ANG")
+                self._sync_input_type_controls(reset_up_tilt=True)
             self._refresh_default_workflow_path()
 
     def _browse_orientation(self) -> None:
@@ -1733,11 +1002,20 @@ class MultiStepOverlapGUI(tk.Tk):
         ncols = max(1, min(int(self.roi_ncols_var.get()), cols - c0))
         return r0, c0, nrows, ncols
 
+    def _calibration_progress(self, value: float, message: str) -> None:
+        self._check_job_cancelled()
+        def update():
+            self._job_result_views.add(0)
+            self.status_var.set(message)
+        self._post_ui(update)
+
     def _set_dictionary_progress(self, value: float, message: str) -> None:
         self.dictionary_progress_var.set(float(np.clip(value, 0.0, 100.0)))
         self.dictionary_status_var.set(message)
 
     def _set_reindex_progress(self, value: float, message: str) -> None:
+        if hasattr(self, "_job_result_views"):
+            self._job_result_views.add(1)
         self.reindex_progress_var.set(float(np.clip(value, 0.0, 100.0)))
         self.reindex_progress_status_var.set(message)
 
@@ -1746,6 +1024,8 @@ class MultiStepOverlapGUI(tk.Tk):
         self.complete_analysis_status_var.set(message)
 
     def _set_refinement_progress(self, value: float, message: str) -> None:
+        if hasattr(self, "_job_result_views"):
+            self._job_result_views.add(1)
         self._set_progress_state(
             "refinement",
             self.refinement_progress_var,
@@ -1755,6 +1035,8 @@ class MultiStepOverlapGUI(tk.Tk):
         )
 
     def _set_overlap_progress(self, value: float, message: str) -> None:
+        if hasattr(self, "_job_result_views"):
+            self._job_result_views.add(2)
         self._set_progress_state(
             "overlap",
             self.overlap_progress_var,
@@ -1764,6 +1046,8 @@ class MultiStepOverlapGUI(tk.Tk):
         )
 
     def _set_overlap_optimization_progress(self, value: float, message: str) -> None:
+        if hasattr(self, "_job_result_views"):
+            self._job_result_views.add(3)
         self.overlap_optimization_progress_var.set(float(np.clip(value, 0.0, 100.0)))
         self.overlap_optimization_status_var.set(message)
 
@@ -2022,6 +1306,7 @@ class MultiStepOverlapGUI(tk.Tk):
         return np.asarray(filtered, dtype=np.int64), skipped
 
     def _update_dictionary_status(self) -> None:
+        self._sync_refinement_settings()
         cache = self.session.dictionary_cache
         if cache is None:
             self.dictionary_status_var.set("No dictionary generated or loaded.")
@@ -2043,47 +1328,72 @@ class MultiStepOverlapGUI(tk.Tk):
     def _sync_residual_keep_n_to_dictionary(self, keep_n: int) -> None:
         self.residual_keep_n_var.set(max(1, int(keep_n)))
 
-    def _run_threaded(self, fn) -> None:
+    def _run_threaded(self, fn, *, on_success=None, sync_conditioning: bool = True) -> bool:
         if self.busy:
-            return
+            return False
         try:
-            self._sync_pattern_conditioning_settings()
+            if sync_conditioning:
+                self._sync_pattern_conditioning_settings()
             self.session.last_action_note = ""
         except Exception as exc:
+            self._pending_restore_path = None
             messagebox.showerror("Invalid pattern conditioning", str(exc))
-            return
+            return False
+        import queue
+        self._ui_callback_queue = queue.SimpleQueue()
+        self._cancel_requested = threading.Event()
+        self._job_update_gate = LiveUpdateGate()
+        self._job_result_views = set()
         self._set_busy(True)
         self.status_var.set("Running...")
         self._set_info_lines(["Running...", "Check the log for detailed step updates."])
 
+        def finish(msg):
+            try:
+                if on_success is not None:
+                    updated = on_success(msg)
+                    if updated is not None:
+                        msg = updated
+                self._on_action_done(msg)
+            except Exception as exc:
+                self._on_action_error(exc, traceback.format_exc())
+
         def worker() -> None:
             try:
+                self._check_job_cancelled()
                 msg = fn()
-                self.after(0, lambda msg=msg: self._on_action_done(msg))
+                self._post_ui(lambda msg=msg: finish(msg))
             except Exception as exc:
                 detail = traceback.format_exc()
-                self.after(0, lambda exc=exc, detail=detail: self._on_action_error(exc, detail))
+                self._post_ui(lambda exc=exc, detail=detail: self._on_action_error(exc, detail))
 
         self._worker_thread = threading.Thread(target=worker, daemon=False, name="overlap-ebsd-worker")
+        self.after(25, self._drain_ui_callbacks)
         self._worker_thread.start()
+        return True
 
     def _update_mode_controls(self) -> None:
-        state = tk.NORMAL
-        for btn in (
-            self.btn_refine_roi,
-            self.btn_index_roi,
-            self.btn_refine_indexed,
-            self.btn_steps_2_3_analysis,
-            self.btn_complete_analysis,
-        ):
-            if btn is not None:
-                try:
-                    btn.configure(state=state)
-                except Exception:
-                    pass
+        loaded = self.session.data is not None
+        master = self.session.master is not None
+        dictionary = self.session.dictionary_cache is not None
+        ready = not self.busy
+        conditions = {
+            "btn_refine_roi": loaded and master and bool(self.session.calibration_indices),
+            "btn_index_roi": loaded and master and dictionary,
+            "btn_refine_indexed": loaded and master and self.session.last_indexed_indices is not None,
+            "btn_steps_2_3_analysis": loaded and master and dictionary,
+            "btn_complete_analysis": loaded and master and dictionary,
+        }
+        for name, allowed in conditions.items():
+            button = getattr(self, name, None)
+            if button is not None:
+                button.configure(state=tk.NORMAL if ready and allowed else tk.DISABLED)
+        self._update_calibration_application_controls()
 
     def _on_action_done(self, msg: str) -> None:
         self._worker_thread = None
+        self._job_result_views = set()
+        self.live_update_status_var.set("Live maps: refresh about every 5 s as results become available.")
         self._set_busy(False)
         if self._pending_restore_path is not None:
             restore_path = self._pending_restore_path
@@ -2100,84 +1410,139 @@ class MultiStepOverlapGUI(tk.Tk):
         self._update_dynamic_bg_status()
         self._populate_point_vars()
         self._refresh_plot()
+        self._refresh_context_summary()
 
     def _on_action_error(self, exc: Exception, detail: str) -> None:
         self._worker_thread = None
         self._pending_restore_path = None
+        self._job_result_views = set()
+        self.live_update_status_var.set("Live maps: completed results retained.")
         self._set_busy(False)
+        if isinstance(exc, InterruptedError):
+            self.status_var.set(str(exc))
+            self._log(str(exc))
+            self._update_dictionary_status()
+            self._populate_point_vars()
+            self._refresh_plot()
+            self._refresh_context_summary()
+            return
         self.status_var.set(f"Error: {exc}")
         self._log(detail)
         self._set_info_lines([f"Error: {exc}", "See Log for traceback details."])
         messagebox.showerror("Error", str(exc))
 
+    @_guarded_action
     def _load_input(self) -> None:
+        geom = GeometryConfig(
+            pc_convention="edax",
+            sample_tilt_deg=float(self.sample_tilt_var.get()),
+            detector_tilt_deg=float(self.detector_tilt_var.get()),
+            azimuthal_deg=0.0,
+            twist_deg=0.0,
+            phi1_offset_deg=0.0,
+        )
+        if not np.isfinite([geom.sample_tilt_deg, geom.detector_tilt_deg]).all():
+            raise ValueError("Sample and detector tilts must be finite angles.")
+        pattern_path = self.pattern_path_var.get().strip()
+        orientation_path = self.orientation_path_var.get().strip() or None
+        loaded = WorkflowSession()
+        loaded.set_pattern_mask_option(int(self.pattern_mask_option_var.get()))
+        background_enabled = bool(self.dynamic_bg_enabled_var.get())
+        background_std = float(str(self.dynamic_bg_std_var.get()).strip() or "0") if background_enabled else 0.0
+        loaded.set_dynamic_background(background_enabled, std_px=background_std)
         def action() -> str:
-            geom = GeometryConfig(
-                pc_convention="edax",
-                sample_tilt_deg=float(self.sample_tilt_var.get()),
-                detector_tilt_deg=float(self.detector_tilt_var.get()),
-                azimuthal_deg=0.0,
-                twist_deg=0.0,
-                phi1_offset_deg=0.0,
-            )
-            msg = self.session.load_input(
-                pattern_path=self.pattern_path_var.get().strip(),
-                orientation_path=self.orientation_path_var.get().strip() or None,
-                geom=geom,
-            )
-            self.last_overlap = None
-            self.last_overlap_mixture = None
-            self.index_var.set(0)
-            self.row_var.set(0)
-            self.col_var.set(0)
-            if self.session.data is not None:
-                layers = self.session.available_layers() or ["Phase"]
-                self._sync_index_quality_layer_choices()
-                for view_index, plot_view in self._plot_views.items():
-                    if view_index == 0 and plot_view.get("combo") is not None:
-                        plot_view["combo"]["values"] = layers
-                if self.map_layer_var.get() not in layers:
-                    self.map_layer_var.set(layers[0])
-                if self.index_quality_layer_var.get() not in self._index_quality_layer_choices():
-                    self.index_quality_layer_var.set(self._default_index_quality_layer())
-                self.roi_nrows_var.set(min(31, self.session.data.rows))
-                self.roi_ncols_var.set(min(31, self.session.data.cols))
-                unique_phases = np.unique(self.session.data.phases)
-                if unique_phases.size > 0:
-                    nonneg = unique_phases[unique_phases >= 0]
-                    if nonneg.size > 0:
-                        counts = [(int(ph), int(np.sum(self.session.data.phases == ph))) for ph in nonneg.tolist()]
-                        counts.sort(key=lambda t: t[1], reverse=True)
-                        chosen = counts[0][0]
-                    else:
-                        chosen = int(unique_phases[0])
-                    self.phase_id_var.set(int(chosen))
-                    msg = (
-                        f"{msg} Auto-set phase ID to {int(chosen)}. "
-                        f"Available phases: {unique_phases.tolist()}"
-                    )
-                if self.session.data.source_type == "up_ang":
-                    msg = (
-                        f"{msg} UP mode keeps patterns on disk and batches ROI indexing."
-                    )
-                    self.roi_export_format_var.set("ANG")
-                else:
-                    self.roi_export_format_var.set("H5OINA")
-                self.residual_pattern_path_var.set(self._default_residual_pattern_path())
-                self.primary_roi_export_path_var.set(self._default_roi_export_path(residual=False))
-                self.residual_roi_export_path_var.set(self._default_roi_export_path(residual=True))
-                self.overlap_optimization_export_path_var.set(self._default_overlap_optimization_export_path())
-                self._refresh_default_workflow_path()
-                if self.session.data.detector_px_size is not None:
-                    self.detector_px_size_var.set(float(self.session.data.detector_px_size))
-                if self.session.data.detector_binning is not None:
-                    self.detector_binning_var.set(float(self.session.data.detector_binning))
-                self._update_mode_controls()
-                self._update_calibration_summary()
-                self._populate_point_vars()
-            return msg
+            try:
+                return loaded.load_input(pattern_path=pattern_path, orientation_path=orientation_path, geom=geom)
+            except Exception:
+                loaded._clear_dictionary_cache()
+                raise
+        def commit(message):
+            previous = self.session
+            self.session = loaded
+            previous._clear_dictionary_cache()
+            return self._finish_input_load(message)
+        self._run_threaded(action, on_success=commit, sync_conditioning=False)
 
-        self._run_threaded(action)
+    @staticmethod
+    def _default_input_phase_id(data) -> int:
+        phases = np.asarray(data.phases).ravel()
+        choices, counts = np.unique(phases, return_counts=True)
+        eligible = choices > 0 if data.source_type == "h5oina" else choices >= 0
+        if np.any(eligible):
+            return int(choices[eligible][np.argmax(counts[eligible])])
+        if data.source_type == "h5oina":
+            metadata_ids = sorted(int(pid) for pid in getattr(data, "phase_symmetries", {}) if int(pid) > 0)
+            return metadata_ids[0] if metadata_ids else 1
+        return int(choices[0]) if choices.size else 1
+
+    def _finish_input_load(self, msg: str) -> str:
+        self.last_overlap = None
+        self.last_overlap_mixture = None
+        self.index_var.set(0)
+        self.row_var.set(0)
+        self.col_var.set(0)
+        if self.session.data is not None:
+            layers = self.session.available_layers() or ["Phase"]
+            self._sync_index_quality_layer_choices()
+            for view_index, plot_view in self._plot_views.items():
+                if view_index == 0 and plot_view.get("combo") is not None:
+                    plot_view["combo"]["values"] = layers
+            if self.map_layer_var.get() not in layers:
+                self.map_layer_var.set(layers[0])
+            if self.index_quality_layer_var.get() not in self._index_quality_layer_choices():
+                self.index_quality_layer_var.set(self._default_index_quality_layer())
+            self.roi_r0_var.set(0)
+            self.roi_c0_var.set(0)
+            self.roi_nrows_var.set(int(self.session.data.rows))
+            self.roi_ncols_var.set(int(self.session.data.cols))
+            unique_phases = np.unique(self.session.data.phases)
+            chosen = self._default_input_phase_id(self.session.data)
+            self.phase_id_var.set(chosen)
+            msg = (
+                f"{msg} Auto-set phase ID to {chosen}. "
+                f"Available phases: {unique_phases.tolist()}"
+            )
+            if self.session.data.source_type == "up_ang":
+                msg = (
+                    f"{msg} UP mode keeps patterns on disk and batches ROI indexing."
+                )
+                self.roi_export_format_var.set("ANG")
+            else:
+                self.roi_export_format_var.set("H5OINA")
+            self.residual_pattern_path_var.set(self._default_residual_pattern_path())
+            self.primary_roi_export_path_var.set(self._default_roi_export_path(residual=False))
+            self.residual_roi_export_path_var.set(self._default_roi_export_path(residual=True))
+            self.overlap_optimization_export_path_var.set(self._default_overlap_optimization_export_path())
+            self._refresh_default_workflow_path()
+            self._update_mode_controls()
+            self._update_calibration_summary()
+            self._populate_point_vars()
+        self._sync_loaded_geometry_controls()
+        self._refresh_context_summary()
+        return f"{msg} Load the master pattern for this input."
+
+    def _sync_loaded_geometry_controls(self) -> None:
+        data = self.session.data
+        if data is None:
+            return
+        self.source_type_var.set("UP + ANG" if data.source_type == "up_ang" else "H5OINA")
+        for variable, angle in (
+            (self.sample_tilt_var, data.sample_tilt_deg),
+            (self.detector_tilt_var, data.detector_tilt_deg),
+        ):
+            if data.source_type == "h5oina":
+                # Float32 radians acquire insignificant digits on conversion to
+                # degrees. These read-only fields show millidegrees; retain the
+                # original full-precision geometry in the loaded data.
+                value = round(float(angle), 3)
+                variable.set(f"{value if value else 0:g}")
+            else:
+                variable.set(float(angle))
+        pitch = getattr(data, "effective_detector_px_size_um", None)
+        self.detector_px_size_var.set("" if pitch is None else f"{float(pitch):g}")
+        self.detector_pixel_source_var.set(getattr(data, "detector_pixel_size_source", "Unknown"))
+        self._sync_input_type_controls()
+        self._update_dictionary_binned_size()
 
     def _finish_workflow_restore(self, restore_path: str) -> None:
         self.last_overlap = None
@@ -2202,6 +1567,7 @@ class MultiStepOverlapGUI(tk.Tk):
         self.roi_export_format_var.set(
             "ANG" if self.session.data.source_type == "up_ang" else "H5OINA"
         )
+        self._sync_loaded_geometry_controls()
         self._apply_workflow_ui_state(self.session.restored_ui_state)
         # The loaded input determines the valid solution-map format, even if
         # a saved UI path came from another source type or an older workflow.
@@ -2226,9 +1592,8 @@ class MultiStepOverlapGUI(tk.Tk):
             int(residual_candidates.shape[1]) if residual_candidates is not None else 1,
         )
         if "dictionary_keep_n" not in self.session.restored_ui_state:
-            self.dictionary_keep_n_var.set(candidate_count)
-        if "residual_keep_n" not in self.session.restored_ui_state:
-            self.residual_keep_n_var.set(candidate_count)
+            if "residual_keep_n" not in self.session.restored_ui_state:
+                self.dictionary_keep_n_var.set(max(5, candidate_count))
         if not self.residual_pattern_path_var.get().strip():
             self.residual_pattern_path_var.set(
                 self.session.residual_pattern_output_path or self._default_residual_pattern_path()
@@ -2238,25 +1603,21 @@ class MultiStepOverlapGUI(tk.Tk):
             or not self.overlap_optimization_export_path_var.get().strip()
         ):
             self.overlap_optimization_export_path_var.set(self._default_overlap_optimization_export_path())
+        self._sync_refinement_settings()
         self._update_mode_controls()
+        self._refresh_context_summary()
 
+    @_guarded_action
     def _load_master(self) -> None:
+        path = self.master_path_var.get().strip()
         def action() -> str:
-            message = self.session.load_master(
-                master_path=self.master_path_var.get().strip(),
-                energy_kv=None,
-                energy_mode=self._selected_master_energy_mode(),
-            )
-            self.after(0, self._sync_master_energy_mode_from_session)
-            return message
+            return self.session.load_master(master_path=path, energy_kv=None, energy_mode=MASTER_ENERGY_MODE_HIGHEST)
+        self._run_threaded(action, on_success=lambda _msg: self._sync_master_energy_mode_from_session())
 
-        self._run_threaded(action)
-
+    @_guarded_action
     def _export_results(self) -> None:
-        def action() -> str:
-            return self.session.export_reindexed_results(self.export_path_var.get().strip())
-
-        self._run_threaded(action)
+        path = self.export_path_var.get().strip()
+        self._run_threaded(lambda: self.session.export_reindexed_results(path), sync_conditioning=False)
 
     def _workflow_ui_state(self) -> dict[str, object]:
         variables = {
@@ -2276,15 +1637,15 @@ class MultiStepOverlapGUI(tk.Tk):
             "dictionary_resolution": self.di_res_deg_var,
             "dictionary_binning": self.di_binning_var,
             "dictionary_keep_n": self.dictionary_keep_n_var,
-            "residual_keep_n": self.residual_keep_n_var,
-            "step3_parallel_cores": self.step3_parallel_cores_var,
+            "parallel_cores": self.parallel_cores_var,
+            "auto_refine": self.auto_refine_var,
+            "follow_dictionary_trust": self.follow_dictionary_trust_var,
+            "calibration_trust_euler": self.calibration_trust_euler_var,
+            "calibration_maxfev": self.calibration_maxfev_var,
             "blur_sigma": self.blur_sigma_var,
             "fit_blur_gain": self.fit_blur_gain_var,
             "gain_fit_maxiter": self.gain_fit_maxiter_var,
             "gain_fit_popsize": self.gain_fit_popsize_var,
-            "residual_trust_euler": self.residual_trust_euler_var,
-            "residual_maxfev": self.residual_maxfev_var,
-            "residual_refine_full_resolution": self.residual_refine_full_resolution_var,
             "overlap_min_ncc": self.overlap_min_ncc_var,
             "residual_ipf_ncc": self.residual_ipf_ncc_var,
             "write_residual_patterns": self.write_residual_patterns_var,
@@ -2298,10 +1659,8 @@ class MultiStepOverlapGUI(tk.Tk):
             "mixture_trust_euler": self.overlap_mixture_trust_euler_var,
             "mixture_maxfev": self.overlap_mixture_maxfev_var,
             "mixture_residual_ncc": self.overlap_mixture_residual_ncc_var,
-            "step4_parallel_cores": self.step4_parallel_cores_var,
             "use_scan_pc_shift": self.use_scan_pc_shift_var,
-            "detector_px_size": self.detector_px_size_var,
-            "detector_binning": self.detector_binning_var,
+            "effective_detector_px_size_um": self.detector_px_size_var,
             "ipf_direction": self.ipf_direction_var,
         }
         state = {key: variable.get() for key, variable in variables.items()}
@@ -2310,9 +1669,45 @@ class MultiStepOverlapGUI(tk.Tk):
         ]
         if self.workflow_notebook is not None:
             state["selected_workflow_tab"] = int(self.workflow_notebook.index(self.workflow_notebook.select()))
+        refresh_calibration = getattr(self, "_update_calibration_application_controls", None)
+        if refresh_calibration is not None:
+            refresh_calibration()
+        calibration_state = getattr(self, "_calibration_apply_state", "none")
+        applied_settings = getattr(self, "_applied_calibration_settings", None)
+        if (
+            not isinstance(calibration_state, str)
+            or calibration_state not in {"none", "pending", "applied"}
+            or getattr(self, "_calibration_apply_session", None) is not self.session
+        ):
+            calibration_state = "none"
+        state["calibration_apply_state"] = calibration_state
+        state["applied_calibration_settings"] = (
+            list(applied_settings)
+            if calibration_state != "none" and isinstance(applied_settings, (tuple, list))
+            else None
+        )
         return state
 
     def _apply_workflow_ui_state(self, state: dict[str, object]) -> None:
+        state = dict(state)
+        if self.session.data is not None:
+            state.setdefault("roi_r0", 0)
+            state.setdefault("roi_c0", 0)
+            state.setdefault("roi_nrows", int(self.session.data.rows))
+            state.setdefault("roi_ncols", int(self.session.data.cols))
+        for primary, legacy in (
+            ("dictionary_keep_n", "residual_keep_n"),
+            ("trust_euler", "residual_trust_euler"),
+            ("maxfev", "residual_maxfev"),
+            ("refine_full_resolution", "residual_refine_full_resolution"),
+            ("parallel_cores", "step3_parallel_cores"),
+        ):
+            if primary not in state and legacy in state:
+                state[primary] = state[legacy]
+            state.pop(legacy, None)
+        if "parallel_cores" not in state and "step4_parallel_cores" in state:
+            state["parallel_cores"] = state["step4_parallel_cores"]
+        state.pop("step4_parallel_cores", None)
         variables = {
             "phase_id": self.phase_id_var,
             "master_energy_mode": self.master_energy_mode_var,
@@ -2330,15 +1725,15 @@ class MultiStepOverlapGUI(tk.Tk):
             "dictionary_resolution": self.di_res_deg_var,
             "dictionary_binning": self.di_binning_var,
             "dictionary_keep_n": self.dictionary_keep_n_var,
-            "residual_keep_n": self.residual_keep_n_var,
-            "step3_parallel_cores": self.step3_parallel_cores_var,
+            "parallel_cores": self.parallel_cores_var,
+            "auto_refine": self.auto_refine_var,
+            "follow_dictionary_trust": self.follow_dictionary_trust_var,
+            "calibration_trust_euler": self.calibration_trust_euler_var,
+            "calibration_maxfev": self.calibration_maxfev_var,
             "blur_sigma": self.blur_sigma_var,
             "fit_blur_gain": self.fit_blur_gain_var,
             "gain_fit_maxiter": self.gain_fit_maxiter_var,
             "gain_fit_popsize": self.gain_fit_popsize_var,
-            "residual_trust_euler": self.residual_trust_euler_var,
-            "residual_maxfev": self.residual_maxfev_var,
-            "residual_refine_full_resolution": self.residual_refine_full_resolution_var,
             "overlap_min_ncc": self.overlap_min_ncc_var,
             "residual_ipf_ncc": self.residual_ipf_ncc_var,
             "write_residual_patterns": self.write_residual_patterns_var,
@@ -2352,23 +1747,48 @@ class MultiStepOverlapGUI(tk.Tk):
             "mixture_trust_euler": self.overlap_mixture_trust_euler_var,
             "mixture_maxfev": self.overlap_mixture_maxfev_var,
             "mixture_residual_ncc": self.overlap_mixture_residual_ncc_var,
-            "step4_parallel_cores": self.step4_parallel_cores_var,
             "use_scan_pc_shift": self.use_scan_pc_shift_var,
-            "detector_px_size": self.detector_px_size_var,
-            "detector_binning": self.detector_binning_var,
+            "effective_detector_px_size_um": self.detector_px_size_var,
             "ipf_direction": self.ipf_direction_var,
         }
         self._suspend_point_trace = True
         try:
+            if "follow_dictionary_trust" not in state and "trust_euler" in state:
+                state["follow_dictionary_trust"] = False
+            if "follow_dictionary_trust" in state:
+                previous_follow = self.follow_dictionary_trust_var.get()
+                try:
+                    self.follow_dictionary_trust_var.set(state["follow_dictionary_trust"])
+                    self.follow_dictionary_trust_var.get()
+                except (ValueError, TypeError, tk.TclError):
+                    self.follow_dictionary_trust_var.set(previous_follow)
             for key, variable in variables.items():
                 if key in state:
-                    variable.set(state[key])
+                    previous = variable.get()
+                    try:
+                        variable.set(state[key])
+                        value = variable.get()
+                        if isinstance(variable, (tk.IntVar, tk.DoubleVar)) and not np.isfinite(float(value)):
+                            raise ValueError(f"Non-finite saved setting: {key}")
+                        if key in {
+                            "dictionary_keep_n", "dictionary_binning", "dictionary_resolution",
+                            "maxfev", "calibration_maxfev", "calibration_trust_euler", "trust_euler",
+                            "parallel_cores", "gain_fit_maxiter", "gain_fit_popsize",
+                        } and float(value) <= 0:
+                            raise ValueError(f"Non-positive saved setting: {key}")
+                    except (ValueError, TypeError, tk.TclError):
+                        variable.set(previous)
             bounds = state.get("primary_fit_bounds")
             if isinstance(bounds, list):
                 for (_label, low, high), pair in zip(self.primary_fit_bound_specs, bounds):
                     if isinstance(pair, list) and len(pair) == 2:
-                        low.set(float(pair[0]))
-                        high.set(float(pair[1]))
+                        try:
+                            lo, hi = float(pair[0]), float(pair[1])
+                            if np.isfinite(lo) and np.isfinite(hi) and lo < hi:
+                                low.set(lo)
+                                high.set(hi)
+                        except (ValueError, TypeError):
+                            pass
         finally:
             self._suspend_point_trace = False
         if self.session.data is not None:
@@ -2392,7 +1812,39 @@ class MultiStepOverlapGUI(tk.Tk):
                 self.workflow_notebook.select(max(0, min(int(tab), 3)))
             except Exception:
                 pass
+        # Old workflows do not establish whether their calibration was applied.
+        # Restore this after setting the variables so their traces cannot treat
+        # restoration as an edit to the previous session's application state.
+        calibration_state = state.get("calibration_apply_state", "none")
+        applied_settings = state.get("applied_calibration_settings")
+        valid_settings = False
+        if isinstance(applied_settings, (tuple, list)) and len(applied_settings) == 2:
+            correction, pitch = applied_settings
+            if isinstance(correction, bool):
+                if correction:
+                    valid_settings = (
+                        isinstance(pitch, (int, float)) and not isinstance(pitch, bool)
+                        and np.isfinite(pitch) and pitch > 0
+                    )
+                else:
+                    valid_settings = pitch is None
+        if (
+            not isinstance(calibration_state, str)
+            or calibration_state not in {"none", "pending", "applied"}
+            or (calibration_state == "applied" and not valid_settings)
+            or (applied_settings is not None and not valid_settings)
+        ):
+            calibration_state = "none"
+        self._calibration_apply_state = calibration_state
+        self._calibration_apply_session = self.session
+        self._applied_calibration_settings = (
+            tuple(applied_settings) if calibration_state != "none" and valid_settings else None
+        )
+        refresh_calibration = getattr(self, "_update_calibration_application_controls", None)
+        if refresh_calibration is not None:
+            refresh_calibration()
 
+    @_guarded_action
     def _save_workflow(self, output_path: str | None = None) -> None:
         raw = output_path or self.workflow_path_var.get().strip() or self._default_workflow_path()
         path = Path(raw).expanduser().resolve()
@@ -2401,8 +1853,9 @@ class MultiStepOverlapGUI(tk.Tk):
         self.workflow_path_var.set(str(path))
         self._auto_workflow_path = None
         ui_state = self._workflow_ui_state()
-        self._run_threaded(lambda: self.session.save_workflow_state(str(path), ui_state=ui_state))
+        self._run_threaded(lambda: self.session.save_workflow_state(str(path), ui_state=ui_state), sync_conditioning=False)
 
+    @_guarded_action
     def _save_workflow_as(self) -> None:
         current = Path(self.workflow_path_var.get().strip() or self._default_workflow_path())
         fn = filedialog.asksaveasfilename(
@@ -2414,15 +1867,27 @@ class MultiStepOverlapGUI(tk.Tk):
         if fn:
             self._save_workflow(fn)
 
+    @_guarded_action
     def _restore_workflow(self) -> None:
-        fn = filedialog.askopenfilename(
-            filetypes=[("Overlap workflow", "*.npz"), ("All files", "*.*")],
-        )
+        fn = filedialog.askopenfilename(filetypes=[("Overlap workflow", "*.npz"), ("All files", "*.*")])
         if not fn:
             return
-        self._pending_restore_path = str(Path(fn).resolve())
-        self._run_threaded(lambda: self.session.restore_workflow_state(fn))
+        restore_path = str(Path(fn).resolve())
+        restored = WorkflowSession()
+        def action():
+            try:
+                return restored.restore_workflow_state(restore_path)
+            except Exception:
+                restored._clear_dictionary_cache()
+                raise
+        def commit(_message):
+            previous = self.session
+            self.session = restored
+            self._pending_restore_path = restore_path
+            previous._clear_dictionary_cache()
+        self._run_threaded(action, on_success=commit, sync_conditioning=False)
 
+    @_guarded_action
     def _center_roi_on_selected(self) -> None:
         if self.session.data is None:
             return
@@ -2436,6 +1901,7 @@ class MultiStepOverlapGUI(tk.Tk):
         c0 = max(0, min(col - width // 2, cols - width))
         self._set_roi_bounds(r0, c0, height, width, source="centered on selected point")
 
+    @_guarded_action
     def _use_full_map_roi(self) -> None:
         if self.session.data is None:
             return
@@ -2447,6 +1913,7 @@ class MultiStepOverlapGUI(tk.Tk):
             source="full map",
         )
 
+    @_guarded_action
     def _sync_row_col_from_index(self) -> None:
         if self.session.data is None:
             return
@@ -2458,6 +1925,7 @@ class MultiStepOverlapGUI(tk.Tk):
         self._populate_point_vars()
         self._refresh_plot()
 
+    @_guarded_action
     def _sync_index_from_row_col(self) -> None:
         if self.session.data is None:
             return
@@ -2481,44 +1949,146 @@ class MultiStepOverlapGUI(tk.Tk):
             return float(value)
         return float(np.round(float(value) / step_f) * step_f)
 
+    @_guarded_action
     def _apply_selected_point_values(self) -> None:
-        def action() -> str:
-            idx = int(self.index_var.get())
-            e1 = self._quantize(float(self.euler1_deg_var.get()), self._euler_step_deg)
-            e2 = self._quantize(float(self.euler2_deg_var.get()), self._euler_step_deg)
-            e3 = self._quantize(float(self.euler3_deg_var.get()), self._euler_step_deg)
-            pcx = self._quantize(float(self.pcx_var.get()), self._pc_step)
-            pcy = self._quantize(float(self.pcy_var.get()), self._pc_step)
-            pcz = self._quantize(float(self.pcz_var.get()), self._pc_step)
-            self._suspend_point_trace = True
-            try:
-                self.euler1_deg_var.set(e1)
-                self.euler2_deg_var.set(e2)
-                self.euler3_deg_var.set(e3)
-                self.pcx_var.set(pcx)
-                self.pcy_var.set(pcy)
-                self.pcz_var.set(pcz)
-            finally:
-                self._suspend_point_trace = False
-            return self.session.set_point_state(
-                idx,
-                euler_deg=(e1, e2, e3),
-                pc_custom=(pcx, pcy, pcz),
-            )
-
-        self._run_threaded(action)
+        idx = int(self.index_var.get())
+        state = self.session.get_point_state(idx)
+        eulers = np.asarray([float(var.get()) for var in
+                             (self.euler1_deg_var, self.euler2_deg_var, self.euler3_deg_var)], dtype=np.float64)
+        pc = np.asarray([float(var.get()) for var in
+                         (self.pcx_var, self.pcy_var, self.pcz_var)], dtype=np.float64)
+        changes = {}
+        if not np.array_equal(eulers, np.asarray(state["euler_deg"]), equal_nan=True):
+            if not np.all(np.isfinite(eulers)):
+                raise ValueError("Edited Euler angles must be finite.")
+            changes["euler_deg"] = tuple(float(value) for value in eulers)
+        if not np.array_equal(pc, np.asarray(state["pc_custom"]), equal_nan=True):
+            if not np.all(np.isfinite(pc)) or pc[2] <= 0.0:
+                raise ValueError("Edited PC values must be finite, with positive detector distance.")
+            changes["pc_custom"] = tuple(float(value) for value in pc)
+        if not changes:
+            self.status_var.set("No changes applied.")
+            return
+        if "pc_custom" in changes:
+            self._mark_calibration_unapplied()
+        self._run_threaded(lambda: self.session.set_point_state(idx, **changes), sync_conditioning=False)
 
     # -------------------------- Step 1 -------------------------- #
 
-    def _update_calibration_summary(self) -> None:
-        if self.session.data is None:
-            self.calibration_summary_var.set("No calibration points selected.")
-            return
-        self.calibration_summary_var.set(self.session.calibration_point_summary())
+    def _calibration_application_settings(self) -> tuple[bool, float | None]:
+        enabled = bool(self.use_scan_pc_shift_var.get())
+        if not enabled:
+            return False, None
+        raw_pitch = self.detector_px_size_var.get().strip()
+        pitch = float(raw_pitch) if raw_pitch else None
+        if pitch is None or not np.isfinite(pitch) or pitch <= 0:
+            raise ValueError("Enter a positive effective detector pixel size in µm before enabling scan-position correction.")
+        return True, pitch
 
+    def _mark_calibration_unapplied(self) -> None:
+        self._calibration_apply_session = self.session
+        self._calibration_apply_state = "pending"
+        self._applied_calibration_settings = None
+        self._update_calibration_application_controls()
+
+    def _update_calibration_application_controls(self, *_args) -> None:
+        if self._calibration_apply_session is not self.session:
+            self._calibration_apply_session = self.session
+            self._calibration_apply_state = "none"
+            self._applied_calibration_settings = None
+        if self.session.data is None or not self.session.calibration_indices:
+            self._calibration_apply_state = "none"
+            self._applied_calibration_settings = None
+        if self._calibration_apply_state == "applied":
+            try:
+                settings = self._calibration_application_settings()
+                matches = settings == self._applied_calibration_settings
+                if settings[0]:
+                    actual_pitch = getattr(self.session.data, "effective_detector_px_size_um", None)
+                    matches = matches and actual_pitch is not None and np.isclose(
+                        actual_pitch, settings[1], rtol=1e-10, atol=1e-12,
+                    )
+            except (ValueError, TypeError, tk.TclError):
+                matches = False
+            if not matches:
+                self._calibration_apply_state = "pending"
+        state = self._calibration_apply_state
+        if state == "pending":
+            message = "Apply required — calibration changes are not yet applied to the entire map."
+            text, style = "2. Apply average PC to map — required", "PendingCalibration.TButton"
+            foreground, background = "#9f1239", "#fff1f2"
+        elif state == "applied":
+            message = "✓ Average PC applied to the entire map. Ready to continue."
+            text, style = "✓ PC applied · Reapply average", "AppliedCalibration.TButton"
+            foreground, background = "#166534", "#f0fdf4"
+        else:
+            message = "To recalibrate: 1. Optimize points → 2. Apply average PC."
+            text, style = "2. Apply average PC to map", "TButton"
+            foreground, background = "#374151", "#f3f4f6"
+        self.calibration_apply_status_var.set(message)
+        if not hasattr(self, "btn_apply_calibration"):
+            return
+        self._calibration_apply_status_label.configure(foreground=foreground, background=background)
+        self.btn_apply_calibration.configure(
+            text=text, style=style,
+            state=tk.NORMAL if not self.busy and self.session.data is not None and self.session.calibration_indices else tk.DISABLED,
+        )
+        self._calibration_warning_button.configure(state=tk.DISABLED if self.busy else tk.NORMAL)
+        selected_tab = int(self.workflow_notebook.index(self.workflow_notebook.select()))
+        if state == "pending" and selected_tab != 0:
+            self._calibration_warning_banner.pack(fill=tk.X, before=self.workflow_notebook)
+        else:
+            self._calibration_warning_banner.pack_forget()
+
+    def _finish_calibration_application(self, message: str, settings: tuple[bool, float | None]) -> str:
+        self._calibration_apply_session = self.session
+        self._calibration_apply_state = "applied"
+        self._applied_calibration_settings = settings
+        self._update_calibration_application_controls()
+        return f"{message} Calibration applied to the entire map; ready to continue."
+
+    def _update_calibration_summary(self) -> None:
+        completed = self._completed_calibration_report
+        if completed is not None and (
+            completed[0] is not self.session
+            or completed[1] != tuple(self.session.calibration_indices)
+        ):
+            self._completed_calibration_report = completed = None
+        if completed is None:
+            self.calibration_statistics_var.set("")
+            self._calibration_statistics_label.pack_forget()
+            self.calibration_summary_var.set(self.session.calibration_point_summary(include_statistics=False))
+        else:
+            self.calibration_statistics_var.set(completed[2])
+            self._calibration_statistics_label.pack(fill=tk.X, pady=(3, 5), before=self._calibration_report_section)
+            self.calibration_summary_var.set(completed[3])
+        self._update_mode_controls()
+
+    def _finish_calibration_optimization(self, message: str, indices: np.ndarray) -> str:
+        self._mark_calibration_unapplied()
+        if tuple(indices.tolist()) != tuple(self.session.calibration_indices):
+            return message
+        pcs = self.session.current_pc_custom[indices].copy()
+        mean = np.mean(pcs, axis=0)
+        std = np.std(pcs, axis=0, ddof=1 if len(pcs) > 1 else 0)
+        convention = self.session.data.pc_output_convention
+        statistics = (
+            f"Last completed optimization ({convention}; x, y, z)\n"
+            f"Mean PC: ({mean[0]:.6f}, {mean[1]:.6f}, {mean[2]:.6f})\n"
+            f"PC std: ({std[0]:.6f}, {std[1]:.6f}, {std[2]:.6f})"
+        )
+        self._completed_calibration_report = (
+            self.session, tuple(indices.tolist()), statistics, self.session.calibration_point_summary(),
+        )
+        return f"{message} Next: use ‘2. Apply average PC to map’ before continuing to other tabs."
+
+    @_guarded_action
     def _add_calibration_point(self) -> None:
         try:
+            previous = tuple(self.session.calibration_indices)
             msg = self.session.add_calibration_point(int(self.index_var.get()))
+            if self._calibration_apply_state != "none" and previous != tuple(self.session.calibration_indices):
+                self._mark_calibration_unapplied()
             self.status_var.set(msg)
             self._log(msg)
             self._update_calibration_summary()
@@ -2526,9 +2096,13 @@ class MultiStepOverlapGUI(tk.Tk):
         except Exception as exc:
             messagebox.showerror("Error", str(exc))
 
+    @_guarded_action
     def _remove_calibration_point(self) -> None:
         try:
+            previous = tuple(self.session.calibration_indices)
             msg = self.session.remove_calibration_point(int(self.index_var.get()))
+            if self._calibration_apply_state != "none" and previous != tuple(self.session.calibration_indices):
+                self._mark_calibration_unapplied()
             self.status_var.set(msg)
             self._log(msg)
             self._update_calibration_summary()
@@ -2536,6 +2110,7 @@ class MultiStepOverlapGUI(tk.Tk):
         except Exception as exc:
             messagebox.showerror("Error", str(exc))
 
+    @_guarded_action
     def _clear_calibration_points(self) -> None:
         msg = self.session.clear_calibration_points()
         self.status_var.set(msg)
@@ -2543,71 +2118,123 @@ class MultiStepOverlapGUI(tk.Tk):
         self._update_calibration_summary()
         self._refresh_plot()
 
+    @_guarded_action
     def _refine_selected_point(self) -> None:
-        def action() -> str:
-            idx = int(self.index_var.get())
-            return self.session.refine_indices(
-                indices=np.array([idx], dtype=np.int64),
-                phase_id=int(self.phase_id_var.get()),
-                trust_euler_deg=float(self.trust_euler_var.get()),
-                trust_pc=float(self.trust_pc_var.get()),
-                maxfev=int(self.maxfev_var.get()),
-            )
+        indices = np.array([int(self.index_var.get())], dtype=np.int64)
+        if indices.size == 0:
+            raise ValueError("Add calibration points from the map first.")
+        phase_id = int(self.phase_id_var.get())
+        trust_euler = float(self.calibration_trust_euler_var.get())
+        trust_pc = float(self.trust_pc_var.get())
+        maxfev = int(self.calibration_maxfev_var.get())
+        if not np.isfinite(trust_euler) or trust_euler <= 0 or not np.isfinite(trust_pc) or trust_pc <= 0 or maxfev < 1:
+            raise ValueError("Calibration trust regions and maximum evaluations must be positive.")
+        self._completed_calibration_report = None
+        self._update_calibration_summary()
+        self._mark_calibration_unapplied()
+        self._run_threaded(lambda: self.session.refine_indices(
+            indices=indices, phase_id=phase_id, trust_euler_deg=trust_euler,
+            trust_pc=trust_pc, maxfev=maxfev, progress_callback=self._calibration_progress,
+        ), on_success=lambda msg: self._finish_calibration_optimization(msg, indices))
 
-        self._run_threaded(action)
-
+    @_guarded_action
     def _refine_calibration_points(self) -> None:
-        def action() -> str:
-            if not self.session.calibration_indices:
-                raise ValueError("Add calibration points from the map first.")
-            msg = self.session.refine_indices(
-                indices=np.asarray(self.session.calibration_indices, dtype=np.int64),
-                phase_id=int(self.phase_id_var.get()),
-                trust_euler_deg=float(self.trust_euler_var.get()),
-                trust_pc=float(self.trust_pc_var.get()),
-                maxfev=int(self.maxfev_var.get()),
-            )
-            return f"{msg}\n{self.session.calibration_point_summary()}"
+        indices = np.asarray(self.session.calibration_indices, dtype=np.int64).copy()
+        if indices.size == 0:
+            raise ValueError("Add calibration points from the map first.")
+        phase_id = int(self.phase_id_var.get())
+        if indices.size > 1 and np.any(self.session.current_phases[indices] != phase_id):
+            raise ValueError(f"Select calibration points from phase {phase_id} only before optimizing.")
+        trust_euler = float(self.calibration_trust_euler_var.get())
+        trust_pc = float(self.trust_pc_var.get())
+        maxfev = int(self.calibration_maxfev_var.get())
+        if not np.isfinite(trust_euler) or trust_euler <= 0 or not np.isfinite(trust_pc) or trust_pc <= 0 or maxfev < 1:
+            raise ValueError("Calibration trust regions and maximum evaluations must be positive.")
+        self._completed_calibration_report = None
+        self._update_calibration_summary()
+        self._mark_calibration_unapplied()
+        self._run_threaded(lambda: self.session.refine_indices(
+            indices=indices, phase_id=phase_id, trust_euler_deg=trust_euler,
+            trust_pc=trust_pc, maxfev=maxfev, progress_callback=self._calibration_progress,
+        ), on_success=lambda msg: self._finish_calibration_optimization(msg, indices))
 
-        self._run_threaded(action)
-
+    @_guarded_action
     def _apply_average_calibration_pc(self) -> None:
-        def action() -> str:
-            return self.session.apply_average_calibration_pc(
-                use_scan_geometry=bool(self.use_scan_pc_shift_var.get()),
-                detector_px_size=float(self.detector_px_size_var.get()),
-                detector_binning=float(self.detector_binning_var.get()),
-            )
+        settings = self._calibration_application_settings()
+        enabled, pitch = settings
+        self._mark_calibration_unapplied()
+        self._run_threaded(lambda: self.session.apply_average_calibration_pc(
+            use_scan_geometry=enabled, effective_detector_px_size_um=pitch,
+        ), on_success=lambda msg: self._finish_calibration_application(msg, settings))
 
-        self._run_threaded(action)
-
+    @_guarded_action
     def _refine_roi(self) -> None:
-        if self.session.data is None:
-            messagebox.showerror("Error", "Load input data first.")
-            return
-        bounds = self._roi_bounds()
+        indices = self.session.roi_indices(*self._roi_bounds())
+        if indices.size == 0:
+            raise ValueError("Add calibration points from the map first.")
+        phase_id = int(self.phase_id_var.get())
+        trust_euler = float(self.calibration_trust_euler_var.get())
+        trust_pc = float(self.trust_pc_var.get())
+        maxfev = int(self.calibration_maxfev_var.get())
+        if not np.isfinite(trust_euler) or trust_euler <= 0 or not np.isfinite(trust_pc) or trust_pc <= 0 or maxfev < 1:
+            raise ValueError("Calibration trust regions and maximum evaluations must be positive.")
+        self._mark_calibration_unapplied()
+        self._run_threaded(lambda: self.session.refine_indices(
+            indices=indices, phase_id=phase_id, trust_euler_deg=trust_euler,
+            trust_pc=trust_pc, maxfev=maxfev, progress_callback=self._calibration_progress,
+        ))
 
-        def action() -> str:
-            idx = self.session.roi_indices(*bounds)
-            return self.session.refine_indices(
-                indices=idx,
-                phase_id=int(self.phase_id_var.get()),
-                trust_euler_deg=float(self.trust_euler_var.get()),
-                trust_pc=float(self.trust_pc_var.get()),
-                maxfev=int(self.maxfev_var.get()),
-            )
-
-        self._run_threaded(action)
-
+    @_guarded_action
     def _apply_selected_pc_to_full_map(self) -> None:
-        def action() -> str:
-            idx = int(self.index_var.get())
-            return self.session.apply_point_pc_to_full_map(idx)
-
-        self._run_threaded(action)
+        idx = int(self.index_var.get())
+        self._mark_calibration_unapplied()
+        self._run_threaded(lambda: self.session.apply_point_pc_to_full_map(idx))
 
     # -------------------------- Step 2 -------------------------- #
 
+    def _index_refinement_settings(self) -> tuple[float, int, bool]:
+        cache = self.session.dictionary_cache
+        if bool(self.follow_dictionary_trust_var.get()):
+            trust = float(cache.resolution_deg if cache is not None else self.di_res_deg_var.get())
+        else:
+            trust = float(self.trust_euler_var.get())
+        maxfev = int(self.maxfev_var.get())
+        if not np.isfinite(trust) or trust <= 0 or maxfev < 1:
+            raise ValueError("Orientation trust region and maximum evaluations must be positive.")
+        return trust, maxfev, bool(self.refine_full_resolution_var.get())
+
+    def _index_primary_indices(self, indices: np.ndarray, *, label: str) -> None:
+        phase_id = int(self.phase_id_var.get())
+        resolution_deg = float(self.di_res_deg_var.get())
+        keep_n = int(self.dictionary_keep_n_var.get())
+        auto_refine = bool(self.auto_refine_var.get())
+        refinement = self._index_refinement_settings() if auto_refine else None
+        if keep_n < 1 or not np.isfinite(resolution_deg) or resolution_deg <= 0:
+            raise ValueError("Keep N and dictionary spacing must be positive.")
+        self._set_reindex_progress(0.0, f"Starting {label} indexing...")
+        def progress(value, message):
+            self._check_job_cancelled()
+            self._post_ui(lambda v=value, m=message: self._set_reindex_progress(v, m))
+        def refinement_progress(value, message):
+            self._check_job_cancelled()
+            self._post_ui(lambda v=value, m=message: self._set_refinement_progress(v, m))
+        def action():
+            message = self.session.dictionary_index_indices(
+                indices=indices, phase_id=phase_id, keep_n=keep_n,
+                resolution_deg=resolution_deg, progress_callback=progress,
+            )
+            if refinement is not None:
+                self._check_job_cancelled()
+                trust, maxfev, full_resolution = refinement
+                refined = self.session.refine_orientations_indices(
+                    indices, phase_id=phase_id, trust_euler_deg=trust, maxfev=maxfev,
+                    use_full_resolution=full_resolution, progress_callback=refinement_progress,
+                )
+                message = f"{message} {refined}"
+            return message
+        self._run_threaded(action)
+
+    @_guarded_action
     def _generate_dictionary(self) -> None:
         self._set_dictionary_progress(0.0, "Starting dictionary generation...")
         phase_id = int(self.phase_id_var.get())
@@ -2616,7 +2243,8 @@ class MultiStepOverlapGUI(tk.Tk):
         self._refresh_default_dictionary_path()
 
         def progress(value: float, message: str) -> None:
-            self.after(0, lambda v=value, m=message: self._set_dictionary_progress(v, m))
+            self._check_job_cancelled()
+            self._post_ui(lambda v=value, m=message: self._set_dictionary_progress(v, m))
 
         def action() -> str:
             return self.session.generate_dictionary(
@@ -2628,12 +2256,14 @@ class MultiStepOverlapGUI(tk.Tk):
 
         self._run_threaded(action)
 
+    @_guarded_action
     def _save_dictionary(self) -> None:
         path = self._choose_dictionary_save_path()
         if not path:
             return
         self._run_threaded(lambda path=path: self.session.save_dictionary(path))
 
+    @_guarded_action
     def _load_dictionary(self) -> None:
         selected = filedialog.askopenfilename(**self._dictionary_dialog_options())
         if not selected:
@@ -2646,9 +2276,7 @@ class MultiStepOverlapGUI(tk.Tk):
             msg = self.session.load_dictionary(path)
             cache = self.session.dictionary_cache
             if cache is not None:
-                self.after(
-                    0,
-                    lambda: (
+                self._post_ui(lambda: (
                         self.phase_id_var.set(cache.phase_id),
                         self.di_res_deg_var.set(cache.resolution_deg),
                         self.di_binning_var.set(cache.software_binning),
@@ -2659,79 +2287,34 @@ class MultiStepOverlapGUI(tk.Tk):
 
         self._run_threaded(action)
 
+    @_guarded_action
     def _index_selected_point(self) -> None:
-        idx = int(self.index_var.get())
-        phase_id = int(self.phase_id_var.get())
-        resolution_deg = float(self.di_res_deg_var.get())
-        keep_n = max(1, int(self.dictionary_keep_n_var.get()))
-        self._sync_residual_keep_n_to_dictionary(keep_n)
-        self._set_reindex_progress(0.0, "Starting selected-point re-indexing...")
+        self._index_primary_indices(np.asarray([int(self.index_var.get())], dtype=np.int64), label="Selected-point")
 
-        def progress(value: float, message: str) -> None:
-            self.after(0, lambda v=value, m=message: self._set_reindex_progress(v, m))
-
-        def action() -> str:
-            return self.session.dictionary_index_indices(
-                indices=np.array([idx], dtype=np.int64),
-                phase_id=phase_id,
-                keep_n=keep_n,
-                resolution_deg=resolution_deg,
-                progress_callback=progress,
-            )
-
-        self._run_threaded(action)
-
+    @_guarded_action
     def _index_roi(self) -> None:
         if self.session.data is None:
-            messagebox.showerror("Error", "Load input data first.")
-            return
-        bounds = self._roi_bounds()
-        phase_id = int(self.phase_id_var.get())
-        resolution_deg = float(self.di_res_deg_var.get())
-        keep_n = max(1, int(self.dictionary_keep_n_var.get()))
-        self._sync_residual_keep_n_to_dictionary(keep_n)
-        self._set_reindex_progress(0.0, "Starting ROI re-indexing...")
+            raise ValueError("Load input data first.")
+        self._index_primary_indices(self.session.roi_indices(*self._roi_bounds()), label="ROI")
 
-        def progress(value: float, message: str) -> None:
-            self.after(0, lambda v=value, m=message: self._set_reindex_progress(v, m))
-
-        def action() -> str:
-            idx = self.session.roi_indices(*bounds)
-            return self.session.dictionary_index_indices(
-                indices=idx,
-                phase_id=phase_id,
-                keep_n=keep_n,
-                resolution_deg=resolution_deg,
-                progress_callback=progress,
-            )
-
-        self._run_threaded(action)
-
+    @_guarded_action
     def _refine_last_indexed(self) -> None:
         phase_id = int(self.phase_id_var.get())
-        trust_euler = float(self.trust_euler_var.get())
-        maxfev = int(self.maxfev_var.get())
-        use_full_resolution = bool(self.refine_full_resolution_var.get())
+        trust_euler, maxfev, use_full_resolution = self._index_refinement_settings()
+        indices = self.session.last_indexed_indices
+        if indices is None or indices.size == 0:
+            raise ValueError("Run dictionary indexing on a point or ROI first.")
+        indices = indices.copy()
         self._set_refinement_progress(0.0, "Starting orientation refinement...")
+        def progress(value, message):
+            self._check_job_cancelled()
+            self._post_ui(lambda v=value, m=message: self._set_refinement_progress(v, m))
+        self._run_threaded(lambda: self.session.refine_orientations_indices(
+            indices, phase_id=phase_id, trust_euler_deg=trust_euler, maxfev=maxfev,
+            use_full_resolution=use_full_resolution, progress_callback=progress,
+        ))
 
-        def progress(value: float, message: str) -> None:
-            self.after(0, lambda v=value, m=message: self._set_refinement_progress(v, m))
-
-        def action() -> str:
-            indices = self.session.last_indexed_indices
-            if indices is None or indices.size == 0:
-                raise ValueError("Run dictionary indexing on a point or ROI first.")
-            return self.session.refine_orientations_indices(
-                indices,
-                phase_id=phase_id,
-                trust_euler_deg=trust_euler,
-                maxfev=maxfev,
-                use_full_resolution=use_full_resolution,
-                progress_callback=progress,
-            )
-
-        self._run_threaded(action)
-
+    @_guarded_action
     def _run_complete_roi_analysis(self, *, include_step4: bool = True) -> None:
         workflow_label = "Steps 2–4" if include_step4 else "Steps 2–3"
         if self.session.data is None:
@@ -2748,16 +2331,20 @@ class MultiStepOverlapGUI(tk.Tk):
             phase_id = int(self.phase_id_var.get())
             resolution_deg = float(self.di_res_deg_var.get())
             keep_n = max(1, int(self.dictionary_keep_n_var.get()))
-            primary_trust_euler = float(self.trust_euler_var.get())
-            primary_maxfev = int(self.maxfev_var.get())
-            primary_full_resolution = bool(self.refine_full_resolution_var.get())
+            auto_refine = bool(self.auto_refine_var.get())
+            if auto_refine:
+                primary_trust_euler, primary_maxfev, primary_full_resolution = self._index_refinement_settings()
             fit_blur_gain = bool(self.fit_blur_gain_var.get())
+            blur_sigma = float(self.blur_sigma_var.get())
+            if not np.isfinite(blur_sigma) or blur_sigma < 0:
+                raise ValueError("Manual blur sigma must be finite and non-negative.")
             fit_maxiter = int(self.gain_fit_maxiter_var.get())
             fit_popsize = int(self.gain_fit_popsize_var.get())
             fit_bounds = self._primary_fit_bounds() if fit_blur_gain or include_step4 else None
-            residual_trust_euler = float(self.residual_trust_euler_var.get())
-            residual_maxfev = int(self.residual_maxfev_var.get())
-            residual_full_resolution = bool(self.residual_refine_full_resolution_var.get())
+            if auto_refine:
+                residual_trust_euler, residual_maxfev, residual_full_resolution = (
+                    primary_trust_euler, primary_maxfev, primary_full_resolution
+                )
             step3_parallel_cores = int(self.step3_parallel_cores_var.get())
             step4_parallel_cores = int(self.step4_parallel_cores_var.get()) if include_step4 else 0
             primary_ncc_threshold = float(self._residual_ncc_threshold())
@@ -2780,6 +2367,7 @@ class MultiStepOverlapGUI(tk.Tk):
 
         def stage_progress(stage_index: int, stage_name: str, setter):
             def callback(value: float, message: str) -> None:
+                self._check_job_cancelled()
                 stage_value = float(np.clip(value, 0.0, 100.0))
                 overall = 100.0 * (stage_index + stage_value / 100.0) / stage_count
 
@@ -2790,7 +2378,7 @@ class MultiStepOverlapGUI(tk.Tk):
                     )
                     setter(stage_value, message)
 
-                self.after(0, update)
+                self._post_ui(update)
 
             return callback
 
@@ -2800,7 +2388,9 @@ class MultiStepOverlapGUI(tk.Tk):
             message: str,
             *,
             map_view_index: int,
+            skipped: bool = False,
         ) -> None:
+            self._check_job_cancelled()
             overall = 100.0 * (stage_index + 1) / stage_count
             refresh_complete = threading.Event()
 
@@ -2808,7 +2398,8 @@ class MultiStepOverlapGUI(tk.Tk):
                 try:
                     self._set_complete_analysis_progress(
                         overall,
-                        f"{stage_index + 1}/{stage_count} {stage_name} complete.",
+                        f"{stage_index + 1}/{stage_count} {stage_name} "
+                        + ("skipped (auto-refine off)." if skipped else "complete."),
                     )
                     self._log(f"ROI analysis {workflow_label} — {stage_name}: {message}")
                     self._refresh_complete_analysis_maps(map_view_index)
@@ -2819,7 +2410,7 @@ class MultiStepOverlapGUI(tk.Tk):
                 finally:
                     refresh_complete.set()
 
-            self.after(0, update_and_refresh)
+            self._post_ui(update_and_refresh)
             # Do not let the next numerical stage mutate session maps until
             # the GUI has drawn this completed stage's intermediate result.
             refresh_complete.wait()
@@ -2836,15 +2427,18 @@ class MultiStepOverlapGUI(tk.Tk):
             self.last_overlap_mixture = None
             finish_stage(0, "Primary indexing", primary_index_msg, map_view_index=1)
 
-            primary_refine_msg = self.session.refine_orientations_indices(
-                roi_indices,
-                phase_id=phase_id,
-                trust_euler_deg=primary_trust_euler,
-                maxfev=primary_maxfev,
-                use_full_resolution=primary_full_resolution,
-                progress_callback=stage_progress(1, "Primary refinement", self._set_refinement_progress),
-            )
-            finish_stage(1, "Primary refinement", primary_refine_msg, map_view_index=1)
+            if auto_refine:
+                primary_refine_msg = self.session.refine_orientations_indices(
+                    roi_indices,
+                    phase_id=phase_id,
+                    trust_euler_deg=primary_trust_euler,
+                    maxfev=primary_maxfev,
+                    use_full_resolution=primary_full_resolution,
+                    progress_callback=stage_progress(1, "Primary refinement", self._set_refinement_progress),
+                )
+            else:
+                primary_refine_msg = "Skipped because automatic orientation refinement is off."
+            finish_stage(1, "Primary refinement", primary_refine_msg, map_view_index=1, skipped=not auto_refine)
 
             eligible_primary: list[int] = []
             for idx in roi_indices.tolist():
@@ -2855,13 +2449,14 @@ class MultiStepOverlapGUI(tk.Tk):
             skipped_primary = int(roi_indices.size - residual_indices.size)
             if residual_indices.size == 0:
                 raise RuntimeError(
-                    "Primary indexing/refinement finished, but no ROI points meet the minimum primary NCC "
+                    "Primary indexing finished, but no ROI points meet the minimum primary NCC "
                     f"of {primary_ncc_threshold:.3f}."
                 )
 
             residual_generation_msg = self.session.compute_overlap_residual_indices(
                 residual_indices,
                 fit_blur_gain=fit_blur_gain,
+                blur_sigma=blur_sigma,
                 fit_maxiter=fit_maxiter,
                 fit_popsize=fit_popsize,
                 fit_bounds=fit_bounds if fit_blur_gain else None,
@@ -2890,34 +2485,36 @@ class MultiStepOverlapGUI(tk.Tk):
                 self.last_overlap = self.session.get_residual_point_result(selected_index)
             finish_stage(3, "Residual indexing", residual_index_msg, map_view_index=2)
 
-            residual_refine_msg = self.session.refine_overlap_residual_indices(
-                residual_indices,
-                trust_euler_deg=residual_trust_euler,
-                maxfev=residual_maxfev,
-                use_full_resolution=residual_full_resolution,
-                write_patterns=write_patterns,
-                selected_index=(
-                    selected_index if np.any(residual_indices == selected_index) else None
-                ),
-                progress_callback=stage_progress(4, "Residual refinement", self._set_overlap_progress),
-            )
-            if np.any(residual_indices == selected_index):
-                self.last_overlap = self.session.get_residual_point_result(selected_index)
-            finish_stage(4, "Residual refinement", residual_refine_msg, map_view_index=2)
+            if auto_refine:
+                residual_refine_msg = self.session.refine_overlap_residual_indices(
+                    residual_indices,
+                    trust_euler_deg=residual_trust_euler,
+                    maxfev=residual_maxfev,
+                    use_full_resolution=residual_full_resolution,
+                    write_patterns=write_patterns,
+                    selected_index=(
+                        selected_index if np.any(residual_indices == selected_index) else None
+                    ),
+                    progress_callback=stage_progress(4, "Residual refinement", self._set_overlap_progress),
+                )
+                if np.any(residual_indices == selected_index):
+                    self.last_overlap = self.session.get_residual_point_result(selected_index)
+            else:
+                residual_refine_msg = "Skipped because automatic orientation refinement is off."
+            finish_stage(4, "Residual refinement", residual_refine_msg, map_view_index=2, skipped=not auto_refine)
 
             if not include_step4:
                 self.last_overlap_mixture = None
-                self.after(
-                    0,
-                    lambda: self._set_complete_analysis_progress(
+                self._post_ui(lambda: self._set_complete_analysis_progress(
                         100.0,
                         "Steps 2–3 ROI analysis finished successfully.",
                     ),
                 )
                 return (
-                    f"Steps 2–3 ROI analysis finished for {roi_indices.size} point(s): re-indexed and refined "
-                    f"the primary orientations, then generated, indexed, and refined {residual_indices.size} "
-                    f"residual(s). Skipped {skipped_primary} point(s) at the primary NCC threshold. "
+                    f"Steps 2–3 ROI analysis finished for {roi_indices.size} point(s): re-indexed "
+                    f"the primary orientations, then generated and indexed {residual_indices.size} residual(s). "
+                    + ("Primary and residual orientations refined. " if auto_refine else "Orientation refinement skipped (auto-refine off). ")
+                    + f"Skipped {skipped_primary} point(s) at the primary NCC threshold. "
                     "Step 4 mixture fitting was not run."
                 )
 
@@ -2932,7 +2529,7 @@ class MultiStepOverlapGUI(tk.Tk):
             skipped_residual = int(residual_indices.size - overlap_indices.size)
             if overlap_indices.size == 0:
                 raise RuntimeError(
-                    "Residual refinement finished, but no ROI points meet the minimum residual NCC "
+                    "Residual processing finished, but no ROI points meet the minimum residual NCC "
                     f"of {residual_ncc_threshold:.3f}."
                 )
 
@@ -2961,18 +2558,18 @@ class MultiStepOverlapGUI(tk.Tk):
             else:
                 self.last_overlap_mixture = None
 
-            self.after(
-                0,
-                lambda: self._set_complete_analysis_progress(
+            self._post_ui(lambda: self._set_complete_analysis_progress(
                     100.0,
                     "Complete ROI analysis finished successfully.",
                 ),
             )
             return (
-                f"Complete ROI analysis finished for {roi_indices.size} point(s): re-indexed and refined "
+                f"Complete ROI analysis finished for {roi_indices.size} point(s): re-indexed "
                 f"the primary orientations, processed {residual_indices.size} residual(s), and optimized "
-                f"{overlap_indices.size} overlap mixture(s). Skipped {skipped_primary} point(s) at the "
-                f"primary NCC threshold and {skipped_residual} at the residual NCC threshold."
+                f"{overlap_indices.size} overlap mixture(s). "
+                + ("Primary and residual orientations refined. " if auto_refine else "Orientation refinement skipped (auto-refine off). ")
+                + f"Skipped {skipped_primary} point(s) at the primary NCC threshold and "
+                f"{skipped_residual} at the residual NCC threshold."
             )
 
         def action() -> str:
@@ -2980,9 +2577,7 @@ class MultiStepOverlapGUI(tk.Tk):
                 return execute()
             except Exception as exc:
                 error_message = str(exc)
-                self.after(
-                    0,
-                    lambda error_message=error_message: self.complete_analysis_status_var.set(
+                self._post_ui(lambda error_message=error_message: self.complete_analysis_status_var.set(
                         f"ROI analysis {workflow_label} stopped: {error_message}"
                     ),
                 )
@@ -2992,6 +2587,64 @@ class MultiStepOverlapGUI(tk.Tk):
 
     # -------------------------- Step 3 -------------------------- #
 
+    @_guarded_action
+    def _run_residual_roi_analysis(self) -> None:
+        if self.session.data is None or self.session.dictionary_cache is None:
+            raise ValueError("Load input and a dictionary before analyzing residuals.")
+        indices, skipped = self._filter_roi_indices_by_threshold(self.session.roi_indices(*self._roi_bounds()))
+        if indices.size == 0:
+            raise ValueError("No indexed ROI points meet the minimum primary NCC.")
+        selected_index = int(self.index_var.get())
+        selected_index = selected_index if np.any(indices == selected_index) else None
+        keep_n = int(self.dictionary_keep_n_var.get())
+        auto_refine = bool(self.auto_refine_var.get())
+        refinement = self._index_refinement_settings() if auto_refine else None
+        fit_blur_gain = bool(self.fit_blur_gain_var.get())
+        blur_sigma = float(self.blur_sigma_var.get())
+        if not np.isfinite(blur_sigma) or blur_sigma < 0:
+            raise ValueError("Manual blur sigma must be finite and non-negative.")
+        fit_maxiter = int(self.gain_fit_maxiter_var.get())
+        fit_popsize = int(self.gain_fit_popsize_var.get())
+        fit_bounds = self._primary_fit_bounds() if fit_blur_gain else None
+        parallel_cores = int(self.parallel_cores_var.get())
+        write_patterns = bool(self.write_residual_patterns_var.get())
+        output = self.residual_pattern_path_var.get().strip()
+        if keep_n < 1 or fit_maxiter < 1 or fit_popsize < 1 or parallel_cores < 1:
+            raise ValueError("Keep N, optimizer limits and parallel cores must be positive.")
+        if write_patterns and not output:
+            raise ValueError("Choose a residual-pattern output path first.")
+        stages = 3 if auto_refine else 2
+        def progress(stage):
+            def update(value, message):
+                self._check_job_cancelled()
+                overall = (stage * 100.0 + float(value)) / stages
+                self._post_ui(lambda v=overall, m=message: self._set_overlap_progress(v, m))
+            return update
+        def action():
+            messages = [self.session.compute_overlap_residual_indices(
+                indices, fit_blur_gain=fit_blur_gain, blur_sigma=blur_sigma, fit_maxiter=fit_maxiter,
+                fit_popsize=fit_popsize, fit_bounds=fit_bounds, parallel_cores=parallel_cores,
+                write_patterns=write_patterns, residual_output_path=output if write_patterns else None,
+                selected_index=selected_index, progress_callback=progress(0),
+            )]
+            self._check_job_cancelled()
+            messages.append(self.session.index_overlap_residual_indices(
+                indices, keep_n=keep_n, write_patterns=write_patterns,
+                selected_index=selected_index, progress_callback=progress(1),
+            ))
+            if refinement is not None:
+                self._check_job_cancelled()
+                trust, maxfev, full_resolution = refinement
+                messages.append(self.session.refine_overlap_residual_indices(
+                    indices, trust_euler_deg=trust, maxfev=maxfev,
+                    use_full_resolution=full_resolution, write_patterns=write_patterns,
+                    selected_index=selected_index, progress_callback=progress(2),
+                ))
+            return " ".join(messages) + f" Skipped {skipped} point(s) at the primary NCC filter."
+        self._set_overlap_progress(0.0, "Starting residual ROI analysis...")
+        self._run_threaded(action)
+
+    @_guarded_action
     def _analyze_overlap(self) -> None:
         index = int(self.index_var.get())
         blur_sigma = float(self.blur_sigma_var.get())
@@ -3019,7 +2672,7 @@ class MultiStepOverlapGUI(tk.Tk):
             self.last_overlap = result
             self.last_overlap_mixture = None
             resid_rms = float(np.sqrt(np.mean(np.square(result.residual))))
-            self.after(0, lambda: self._set_overlap_progress(100.0, "Selected-point residual fit complete."))
+            self._post_ui(lambda: self._set_overlap_progress(100.0, "Selected-point residual fit complete."))
             threshold_note = ""
             note_ncc = primary_ncc if primary_ncc is not None else float(result.ncc_es)
             if np.isfinite(note_ncc) and threshold > 0.0 and note_ncc < threshold:
@@ -3035,11 +2688,12 @@ class MultiStepOverlapGUI(tk.Tk):
 
         self._run_threaded(action)
 
+    @_guarded_action
     def _index_overlap_residual(self) -> None:
         index = int(self.index_var.get())
         blur_sigma = float(self.blur_sigma_var.get())
         keep_n = max(1, int(self.residual_keep_n_var.get()))
-        residual_result = self.last_overlap
+        residual_result = self.session.get_residual_point_result(index)
         threshold = self._residual_ncc_threshold()
         primary_ncc = self._selected_primary_ncc(index)
         if residual_result is None or residual_result.index != index:
@@ -3063,15 +2717,18 @@ class MultiStepOverlapGUI(tk.Tk):
         self._set_overlap_progress(0.0, "Indexing the selected-point residual...")
 
         def action() -> str:
+            current_result = self.session.get_residual_point_result(index)
+            if current_result is None:
+                raise ValueError("The selected result is no longer valid. Recompute it using the current settings first.")
             result = self.session.index_overlap_residual(
                 index,
                 blur_sigma=blur_sigma,
                 keep_n=keep_n,
-                residual_result=residual_result,
+                residual_result=current_result,
             )
             self.last_overlap = result
             self.last_overlap_mixture = None
-            self.after(0, lambda: self._set_overlap_progress(100.0, "Selected-point residual indexed."))
+            self._post_ui(lambda: self._set_overlap_progress(100.0, "Selected-point residual indexed."))
             return (
                 f"Indexed residual at idx={result.index} with the step 2 dictionary: "
                 f"KP NCC={result.secondary_ncc_kp:.4f}, full-pattern NCC={result.secondary_ncc_full:.4f}, "
@@ -3080,18 +2737,17 @@ class MultiStepOverlapGUI(tk.Tk):
 
         self._run_threaded(action)
 
+    @_guarded_action
     def _refine_overlap_residual(self) -> None:
         index = int(self.index_var.get())
-        result = self.last_overlap
+        result = self.session.get_residual_point_result(index)
         if result is None or result.index != index or result.secondary_euler_rad is None:
             messagebox.showerror(
                 "Residual match unavailable",
                 "Build and index the residual for the selected point before refinement.",
             )
             return
-        trust_euler = float(self.residual_trust_euler_var.get())
-        maxfev = int(self.residual_maxfev_var.get())
-        use_full_resolution = bool(self.residual_refine_full_resolution_var.get())
+        trust_euler, maxfev, use_full_resolution = self._index_refinement_settings()
         threshold = self._residual_ncc_threshold()
         primary_ncc = self._selected_primary_ncc(index)
         if primary_ncc is None:
@@ -3109,19 +2765,20 @@ class MultiStepOverlapGUI(tk.Tk):
         self._set_overlap_progress(0.0, "Refining the selected-point residual match...")
 
         def action() -> str:
+            current_result = self.session.get_residual_point_result(index)
+            if current_result is None:
+                raise ValueError("The selected result is no longer valid. Recompute it using the current settings first.")
             refined = self.session.refine_overlap_residual(
-                result,
+                current_result,
                 trust_euler_deg=trust_euler,
                 maxfev=maxfev,
                 use_full_resolution=use_full_resolution,
-                progress_callback=lambda value, message: self.after(
-                    0,
-                    lambda v=value, m=message: self._set_overlap_progress(v, m),
+                progress_callback=lambda value, message: self._post_ui(lambda v=value, m=message: self._set_overlap_progress(v, m),
                 ),
             )
             self.last_overlap = refined
             self.last_overlap_mixture = None
-            self.after(0, lambda: self._set_overlap_progress(100.0, "Selected-point residual refined."))
+            self._post_ui(lambda: self._set_overlap_progress(100.0, "Selected-point residual refined."))
             return (
                 f"Refined residual orientation at idx={refined.index}: "
                 f"KP NCC={refined.secondary_ncc_kp:.4f}, full-pattern NCC={refined.secondary_ncc_full:.4f}. "
@@ -3130,6 +2787,7 @@ class MultiStepOverlapGUI(tk.Tk):
 
         self._run_threaded(action)
 
+    @_guarded_action
     def _compute_overlap_residual_roi(self) -> None:
         if self.session.data is None:
             messagebox.showerror("Error", "Load input data first.")
@@ -3146,6 +2804,9 @@ class MultiStepOverlapGUI(tk.Tk):
             return
         selected_index = int(self.index_var.get())
         fit_blur_gain = bool(self.fit_blur_gain_var.get())
+        blur_sigma = float(self.blur_sigma_var.get())
+        if not np.isfinite(blur_sigma) or blur_sigma < 0:
+            raise ValueError("Manual blur sigma must be finite and non-negative.")
         fit_maxiter = int(self.gain_fit_maxiter_var.get())
         fit_popsize = int(self.gain_fit_popsize_var.get())
         parallel_cores = int(self.step3_parallel_cores_var.get())
@@ -3162,12 +2823,14 @@ class MultiStepOverlapGUI(tk.Tk):
         self._set_overlap_progress(0.0, f"Computing residuals for {indices.size} ROI point(s)...")
 
         def progress(value: float, message: str) -> None:
-            self.after(0, lambda v=value, m=message: self._set_overlap_progress(v, m))
+            self._check_job_cancelled()
+            self._post_ui(lambda v=value, m=message: self._set_overlap_progress(v, m))
 
         def action() -> str:
             msg = self.session.compute_overlap_residual_indices(
                 indices,
                 fit_blur_gain=fit_blur_gain,
+                blur_sigma=blur_sigma,
                 fit_maxiter=fit_maxiter,
                 fit_popsize=fit_popsize,
                 fit_bounds=fit_bounds,
@@ -3182,7 +2845,7 @@ class MultiStepOverlapGUI(tk.Tk):
                 if selected_result is not None:
                     self.last_overlap = selected_result
             self.last_overlap_mixture = None
-            self.after(0, lambda: self._set_overlap_progress(100.0, "Residuals computed for the ROI."))
+            self._post_ui(lambda: self._set_overlap_progress(100.0, "Residuals computed for the ROI."))
             skipped_note = (
                 f" Skipped {skipped} point(s) that were not dictionary indexed or were below NCC {threshold:.3f}."
                 if skipped > 0 else ""
@@ -3191,6 +2854,7 @@ class MultiStepOverlapGUI(tk.Tk):
 
         self._run_threaded(action)
 
+    @_guarded_action
     def _index_overlap_residual_roi(self) -> None:
         if self.session.data is None:
             messagebox.showerror("Error", "Load input data first.")
@@ -3214,7 +2878,8 @@ class MultiStepOverlapGUI(tk.Tk):
         self._set_overlap_progress(0.0, f"Indexing residuals for {indices.size} ROI point(s)...")
 
         def progress(value: float, message: str) -> None:
-            self.after(0, lambda v=value, m=message: self._set_overlap_progress(v, m))
+            self._check_job_cancelled()
+            self._post_ui(lambda v=value, m=message: self._set_overlap_progress(v, m))
 
         def action() -> str:
             msg = self.session.index_overlap_residual_indices(
@@ -3229,7 +2894,7 @@ class MultiStepOverlapGUI(tk.Tk):
                 if selected_result is not None:
                     self.last_overlap = selected_result
             self.last_overlap_mixture = None
-            self.after(0, lambda: self._set_overlap_progress(100.0, "Residual ROI indexing complete."))
+            self._post_ui(lambda: self._set_overlap_progress(100.0, "Residual ROI indexing complete."))
             skipped_note = (
                 f" Skipped {skipped} point(s) that were not dictionary indexed or were below NCC {threshold:.3f}."
                 if skipped > 0 else ""
@@ -3238,6 +2903,7 @@ class MultiStepOverlapGUI(tk.Tk):
 
         self._run_threaded(action)
 
+    @_guarded_action
     def _refine_overlap_residual_roi(self) -> None:
         if self.session.data is None:
             messagebox.showerror("Error", "Load input data first.")
@@ -3256,14 +2922,13 @@ class MultiStepOverlapGUI(tk.Tk):
             )
             return
         selected_index = int(self.index_var.get())
-        trust_euler = float(self.residual_trust_euler_var.get())
-        maxfev = int(self.residual_maxfev_var.get())
-        use_full_resolution = bool(self.residual_refine_full_resolution_var.get())
+        trust_euler, maxfev, use_full_resolution = self._index_refinement_settings()
         write_patterns = bool(self.write_residual_patterns_var.get())
         self._set_overlap_progress(0.0, f"Refining residuals for {indices.size} ROI point(s)...")
 
         def progress(value: float, message: str) -> None:
-            self.after(0, lambda v=value, m=message: self._set_overlap_progress(v, m))
+            self._check_job_cancelled()
+            self._post_ui(lambda v=value, m=message: self._set_overlap_progress(v, m))
 
         def action() -> str:
             msg = self.session.refine_overlap_residual_indices(
@@ -3280,7 +2945,7 @@ class MultiStepOverlapGUI(tk.Tk):
                 if selected_result is not None:
                     self.last_overlap = selected_result
             self.last_overlap_mixture = None
-            self.after(0, lambda: self._set_overlap_progress(100.0, "Residual ROI refinement complete."))
+            self._post_ui(lambda: self._set_overlap_progress(100.0, "Residual ROI refinement complete."))
             skipped_note = (
                 f" Skipped {skipped} point(s) that were not dictionary indexed or were below NCC {threshold:.3f}."
                 if skipped > 0 else ""
@@ -3289,6 +2954,7 @@ class MultiStepOverlapGUI(tk.Tk):
 
         self._run_threaded(action)
 
+    @_guarded_action
     def _fit_overlap_mixture(self) -> None:
         if self.session.data is None:
             messagebox.showerror("Error", "Load input data first.")
@@ -3296,7 +2962,7 @@ class MultiStepOverlapGUI(tk.Tk):
         index = int(self.index_var.get())
         fit_maxiter = int(self.gain_fit_maxiter_var.get())
         fit_popsize = int(self.gain_fit_popsize_var.get())
-        residual_result = self.last_overlap if self.last_overlap is not None and self.last_overlap.index == index else None
+        residual_result = self.session.get_residual_point_result(index)
         threshold = self._overlap_mixture_residual_ncc_threshold()
         residual_ncc = self._overlap_mixture_residual_ncc_for_index(index)
         if threshold > 0.0 and (residual_ncc is None or residual_ncc < threshold):
@@ -3315,15 +2981,18 @@ class MultiStepOverlapGUI(tk.Tk):
         self._set_overlap_optimization_progress(0.0, "Fitting selected-point overlap mixture...")
 
         def action() -> str:
+            current_result = self.session.get_residual_point_result(index)
+            if current_result is None:
+                raise ValueError("The selected result is no longer valid. Recompute it using the current settings first.")
             result = self.session.fit_overlap_mixture_point(
                 index,
-                residual_result=residual_result,
+                residual_result=current_result,
                 fit_maxiter=fit_maxiter,
                 fit_popsize=fit_popsize,
                 fit_bounds=fit_bounds,
             )
             self.last_overlap_mixture = result
-            self.after(0, lambda: self._set_overlap_optimization_progress(100.0, "Selected-point mixture fit complete."))
+            self._post_ui(lambda: self._set_overlap_optimization_progress(100.0, "Selected-point mixture fit complete."))
             return (
                 f"idx={result.index} overlap mixture: primary={result.primary_fraction:.3f}, "
                 f"secondary={result.secondary_fraction:.3f}, NCC={result.ncc_mixture:.4f}, "
@@ -3332,16 +3001,13 @@ class MultiStepOverlapGUI(tk.Tk):
 
         self._run_threaded(action)
 
+    @_guarded_action
     def _refine_overlap_mixture_orientations(self) -> None:
         if self.session.data is None:
             messagebox.showerror("Error", "Load input data first.")
             return
         index = int(self.index_var.get())
-        result = (
-            self.last_overlap_mixture
-            if self.last_overlap_mixture is not None and self.last_overlap_mixture.index == index
-            else self.session.get_overlap_mixture_result(index)
-        )
+        result = self.session.get_overlap_mixture_result(index)
         if result is None:
             messagebox.showinfo(
                 "Mixture unavailable",
@@ -3364,15 +3030,18 @@ class MultiStepOverlapGUI(tk.Tk):
         self._set_overlap_optimization_progress(0.0, "Refining selected mixture orientations...")
 
         def action() -> str:
+            current_result = self.session.get_overlap_mixture_result(index)
+            if current_result is None:
+                raise ValueError("The selected result is no longer valid. Recompute it using the current settings first.")
             refined = self.session.refine_overlap_mixture_orientations(
-                result,
+                current_result,
                 trust_euler_deg=trust_euler,
                 maxfev=maxfev,
             )
             self.last_overlap_mixture = refined
             if refined.orientation_refined:
                 self.last_overlap = None
-            self.after(0, lambda: self._set_overlap_optimization_progress(100.0, "Selected mixture orientation refinement complete."))
+            self._post_ui(lambda: self._set_overlap_optimization_progress(100.0, "Selected mixture orientation refinement complete."))
             initial = refined.initial_mixture_ncc if refined.initial_mixture_ncc is not None else float("nan")
             return (
                 f"Refined mixture orientations at idx={refined.index}: NCC {initial:.4f} -> "
@@ -3382,6 +3051,7 @@ class MultiStepOverlapGUI(tk.Tk):
 
         self._run_threaded(action)
 
+    @_guarded_action
     def _fit_overlap_mixture_roi(self) -> None:
         if self.session.data is None:
             messagebox.showerror("Error", "Load input data first.")
@@ -3409,7 +3079,8 @@ class MultiStepOverlapGUI(tk.Tk):
         self._set_overlap_optimization_progress(0.0, f"Fitting overlap mixtures for {indices.size} ROI point(s)...")
 
         def progress(value: float, message: str) -> None:
-            self.after(0, lambda v=value, m=message: self._set_overlap_optimization_progress(v, m))
+            self._check_job_cancelled()
+            self._post_ui(lambda v=value, m=message: self._set_overlap_optimization_progress(v, m))
 
         def action() -> str:
             msg = self.session.compute_overlap_mixture_indices(
@@ -3424,7 +3095,7 @@ class MultiStepOverlapGUI(tk.Tk):
             selected_result = self.session.get_overlap_mixture_result(selected_index)
             if selected_result is not None:
                 self.last_overlap_mixture = selected_result
-            self.after(0, lambda: self._set_overlap_optimization_progress(100.0, "Overlap mixture ROI fit complete."))
+            self._post_ui(lambda: self._set_overlap_optimization_progress(100.0, "Overlap mixture ROI fit complete."))
             threshold_note = (
                 f" Skipped {skipped_low_residual} point(s) below residual NCC {threshold:.3f}."
                 if threshold > 0.0 and skipped_low_residual > 0
@@ -3434,6 +3105,7 @@ class MultiStepOverlapGUI(tk.Tk):
 
         self._run_threaded(action)
 
+    @_guarded_action
     def _export_overlap_optimization_results(self) -> None:
         if self.session.data is None:
             messagebox.showerror("Error", "Load input data first.")
@@ -3464,14 +3136,13 @@ class MultiStepOverlapGUI(tk.Tk):
                 bounds,
                 settings=settings,
             )
-            self.after(
-                0,
-                lambda: self._set_overlap_optimization_progress(100.0, "Step 4 HDF5 export complete."),
+            self._post_ui(lambda: self._set_overlap_optimization_progress(100.0, "Step 4 HDF5 export complete."),
             )
             return msg
 
         self._run_threaded(action)
 
+    @_guarded_action
     def _export_primary_roi_map(self) -> None:
         if self.session.data is None:
             messagebox.showerror("Error", "Load input data first.")
@@ -3484,7 +3155,8 @@ class MultiStepOverlapGUI(tk.Tk):
         self._set_overlap_progress(0.0, "Exporting primary ROI map...")
 
         def progress(value: float, message: str) -> None:
-            self.after(0, lambda v=value, m=message: self._set_overlap_progress(v, m))
+            self._check_job_cancelled()
+            self._post_ui(lambda v=value, m=message: self._set_overlap_progress(v, m))
 
         def action() -> str:
             msg = self.session.export_primary_roi_results(
@@ -3493,11 +3165,12 @@ class MultiStepOverlapGUI(tk.Tk):
                 include_primary_patterns=include_patterns,
                 progress_callback=progress,
             )
-            self.after(0, lambda: self._set_overlap_progress(100.0, "Primary ROI export complete."))
+            self._post_ui(lambda: self._set_overlap_progress(100.0, "Primary ROI export complete."))
             return msg
 
         self._run_threaded(action)
 
+    @_guarded_action
     def _export_residual_roi_map(self) -> None:
         if self.session.data is None:
             messagebox.showerror("Error", "Load input data first.")
@@ -3511,7 +3184,8 @@ class MultiStepOverlapGUI(tk.Tk):
         self._set_overlap_progress(0.0, "Exporting residual ROI map...")
 
         def progress(value: float, message: str) -> None:
-            self.after(0, lambda v=value, m=message: self._set_overlap_progress(v, m))
+            self._check_job_cancelled()
+            self._post_ui(lambda v=value, m=message: self._set_overlap_progress(v, m))
 
         def action() -> str:
             msg = self.session.export_residual_roi_results(
@@ -3521,20 +3195,19 @@ class MultiStepOverlapGUI(tk.Tk):
                 include_residual_patterns=include_patterns,
                 progress_callback=progress,
             )
-            self.after(0, lambda: self._set_overlap_progress(100.0, "Residual ROI export complete."))
+            self._post_ui(lambda: self._set_overlap_progress(100.0, "Residual ROI export complete."))
             return msg
 
         self._run_threaded(action)
 
+    @_guarded_action
     def _show_current_overlap_inspection(self) -> None:
         index = int(self.index_var.get())
-        if self.last_overlap is None or self.last_overlap.index != index:
-            messagebox.showinfo(
-                "No inspection available",
-                "Fit and index the selected residual point first.",
-            )
+        result = self.session.get_residual_point_result(index)
+        if result is None:
+            messagebox.showinfo("No inspection available", "Fit and index the selected residual point first.")
             return
-        self._show_overlap_inspection(self.last_overlap)
+        self._show_overlap_inspection(result)
 
     def _show_overlap_inspection(self, result: OverlapPointResult) -> None:
         if self.overlap_inspection_window is None or not self.overlap_inspection_window.winfo_exists():
@@ -3610,17 +3283,17 @@ class MultiStepOverlapGUI(tk.Tk):
     def _edited_point_overrides(self) -> tuple[np.ndarray, np.ndarray]:
         euler_deg = np.array(
             [
-                self._quantize(float(self.euler1_deg_var.get()), self._euler_step_deg),
-                self._quantize(float(self.euler2_deg_var.get()), self._euler_step_deg),
-                self._quantize(float(self.euler3_deg_var.get()), self._euler_step_deg),
+                float(self.euler1_deg_var.get()),
+                float(self.euler2_deg_var.get()),
+                float(self.euler3_deg_var.get()),
             ],
             dtype=np.float64,
         )
         pc_custom = np.array(
             [
-                self._quantize(float(self.pcx_var.get()), self._pc_step),
-                self._quantize(float(self.pcy_var.get()), self._pc_step),
-                self._quantize(float(self.pcz_var.get()), self._pc_step),
+                float(self.pcx_var.get()),
+                float(self.pcy_var.get()),
+                float(self.pcz_var.get()),
             ],
             dtype=np.float64,
         )
@@ -3671,7 +3344,17 @@ class MultiStepOverlapGUI(tk.Tk):
         # Always redraw the visible map and the tab whose state changed. This
         # keeps intermediate results ready even when that tab is not selected.
         for view_index in dict.fromkeys((active_view, int(stage_view_index))):
+            old_axes = self._plot_views[view_index].get("axes", [])
+            limits = {
+                i: (ax.get_xlim(), ax.get_ylim())
+                for i, ax in enumerate(np.asarray(old_axes, dtype=object).flat)
+                if getattr(ax, "_overlap_ebsd_scan_map", False) and ax.images
+            }
             self._refresh_plot(view_index=view_index)
+            for i, (xlim, ylim) in limits.items():
+                axis = np.asarray(self._plot_views[view_index]["axes"], dtype=object).flat[i]
+                axis.set_xlim(xlim)
+                axis.set_ylim(ylim)
             canvas = self._plot_views[view_index].get("canvas")
             if canvas is not None:
                 canvas.draw()
@@ -3710,6 +3393,8 @@ class MultiStepOverlapGUI(tk.Tk):
         row = max(0, min(int(self.row_var.get()), data.rows - 1))
         col = max(0, min(int(self.col_var.get()), data.cols - 1))
         idx = self.session.index_from_row_col(row, col)
+        self.last_overlap = self.session.get_residual_point_result(idx)
+        self.last_overlap_mixture = self.session.get_overlap_mixture_result(idx)
         self.index_var.set(idx)
         self.row_var.set(row)
         self.col_var.set(col)
@@ -4199,7 +3884,7 @@ class MultiStepOverlapGUI(tk.Tk):
                 preview_scale = None
                 preview_residual_ncc = None
 
-        result = self.last_overlap if self.last_overlap is not None and self.last_overlap.index == index else self.session.get_residual_point_result(index)
+        result = self.session.get_residual_point_result(index)
         if result is not None and result.index == index:
             exp_ax.imshow(normalize_for_view(result.experimental), cmap="gray")
             self._overlay_pattern_mask(exp_ax)
@@ -4457,11 +4142,7 @@ class MultiStepOverlapGUI(tk.Tk):
         )
         _decorate_map_axis(residual_ax, residual_ipf, residual_note, residual_note)
 
-        result = (
-            self.last_overlap_mixture
-            if self.last_overlap_mixture is not None and self.last_overlap_mixture.index == index
-            else self.session.get_overlap_mixture_result(index)
-        )
+        result = self.session.get_overlap_mixture_result(index)
 
         if result is not None and result.index == index:
             exp_ax.imshow(normalize_for_view(result.experimental), cmap="gray")
@@ -4545,6 +4226,7 @@ class MultiStepOverlapGUI(tk.Tk):
         self._safe_tight_layout(self.figure)
         self.canvas.draw_idle()
 
+    @_guarded_action
     def _on_plot_click(self, event, view_index: int | None = None) -> None:
         if self.session.data is None:
             return
@@ -4591,12 +4273,12 @@ class MultiStepOverlapGUI(tk.Tk):
         conv = str(state["pc_convention"])
         self._suspend_point_trace = True
         try:
-            self.euler1_deg_var.set(self._quantize(float(e_deg[0]), self._euler_step_deg))
-            self.euler2_deg_var.set(self._quantize(float(e_deg[1]), self._euler_step_deg))
-            self.euler3_deg_var.set(self._quantize(float(e_deg[2]), self._euler_step_deg))
-            self.pcx_var.set(self._quantize(float(pc[0]), self._pc_step))
-            self.pcy_var.set(self._quantize(float(pc[1]), self._pc_step))
-            self.pcz_var.set(self._quantize(float(pc[2]), self._pc_step))
+            for variable, value in zip(
+                (self.euler1_deg_var, self.euler2_deg_var, self.euler3_deg_var,
+                 self.pcx_var, self.pcy_var, self.pcz_var),
+                (*e_deg, *pc),
+            ):
+                variable.set(float(value))
         finally:
             self._suspend_point_trace = False
         self.pc_conv_label_var.set(f"PC convention: {conv} | point phase: {phase}")

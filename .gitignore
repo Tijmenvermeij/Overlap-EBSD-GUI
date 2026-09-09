@@ -52,3 +52,10 @@ overlap_ebsd_gui.py
 2601.14155v3-2.pdf
 2601.14155v3-2.txt
 AGENTS.rtf
+
+# Local copper examples and presentation (excluded from releases)
+/Cu.png
+/Cu_overlap.png
+/Cu_30kV.sht
+/Cu_30kV_overlap.sht
+/Slides_OverlapGIO_Grzegorz.pptx

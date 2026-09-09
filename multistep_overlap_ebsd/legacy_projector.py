@@ -50,7 +50,8 @@ def homogeneous_to_stereographic(xyz: np.ndarray) -> tuple[np.ndarray, np.ndarra
 
 
 class XProjector:
-    def __init__(self, hemi_pair: tuple[np.ndarray, np.ndarray] | dict, h: int, w: int):
+    def __init__(self, hemi_pair: tuple[np.ndarray, np.ndarray] | dict, h: int, w: int,
+                 detector_geometry: dict | None = None):
         if isinstance(hemi_pair, dict):
             up = hemi_pair["up"]
             lo = hemi_pair["lo"]
@@ -63,6 +64,24 @@ class XProjector:
         self.size = int(self.up.shape[0])
         self.h = int(h)
         self.w = int(w)
+        self.detector_geometry = detector_geometry
+        self._direction_cosines_pc: tuple[float, ...] | None = None
+        self._direction_cosines_cache: np.ndarray | None = None
+
+    def _directions_for_pc(self, pc: tuple[float, float, float]) -> np.ndarray:
+        """Generate UP detector rays for the current (or optimizer candidate) PC."""
+        key = tuple(float(value) for value in pc)
+        if key != self._direction_cosines_pc:
+            import kikuchipy as kp
+            from kikuchipy.signals.util._master_pattern import _get_direction_cosines_from_detector
+
+            detector = kp.detectors.EBSDDetector(shape=(self.h, self.w), pc=key,
+                                                  **self.detector_geometry)
+            self._direction_cosines_cache = np.asarray(
+                _get_direction_cosines_from_detector(detector), dtype=np.float64
+            ).reshape(-1, 3).T
+            self._direction_cosines_pc = key
+        return self._direction_cosines_cache
 
     def project(
         self,
@@ -71,6 +90,8 @@ class XProjector:
         rot_sd: np.ndarray,
         direction_cosines: np.ndarray | None = None,
     ) -> np.ndarray:
+        if self.detector_geometry is not None:
+            direction_cosines = self._directions_for_pc(pc)
         if self.projection == "lambert":
             return self._project_lambert(euler_rad, pc, rot_sd, direction_cosines=direction_cosines)
         return self._project_stereographic(euler_rad, pc, rot_sd, direction_cosines=direction_cosines)
