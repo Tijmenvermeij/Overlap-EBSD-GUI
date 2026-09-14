@@ -1,0 +1,21 @@
+{
+  "total": 11.855216958094388,
+  "times": {
+    "_residual_signal_from_indices": 0.02211433299817145,
+    "_refine_orientation_signal": 3.104862292064354,
+    "_simulate_pattern_for_euler": 8.608663293067366,
+    "_batch_refine_residual_points": 11.849751334404573
+  },
+  "calls": {
+    "_residual_signal_from_indices": 4,
+    "_refine_orientation_signal": 4,
+    "_simulate_pattern_for_euler": 320,
+    "_batch_refine_residual_points": 4
+  },
+  "batches": [
+    16,
+    64,
+    139,
+    101
+  ]
+}

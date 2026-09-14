@@ -1,0 +1,137 @@
+{
+  "dictionary_count": 304053,
+  "pattern_shape": [
+    64,
+    78
+  ],
+  "dictionary_iteration": 26886,
+  "keep_n": 5,
+  "versions": {
+    "numpy": "2.4.6",
+    "scipy": "1.17.1",
+    "kikuchipy": "0.12.1",
+    "dask": "2026.3.0"
+  },
+  "records": [
+    {
+      "method": "current_kikuchipy",
+      "count": 16,
+      "dask_workers": 1,
+      "seconds": 12.28675812506117,
+      "cpu_seconds": 10.403174,
+      "average_cpu_cores": 0.8466980381733695,
+      "patterns_per_second": 1.302214940437785,
+      "rss_bytes": 484622336,
+      "candidate_indices_equal": true,
+      "maximum_score_difference": 0.0
+    },
+    {
+      "method": "current_kikuchipy",
+      "count": 16,
+      "dask_workers": 10,
+      "seconds": 11.125830583972856,
+      "cpu_seconds": 10.179468,
+      "average_cpu_cores": 0.9149400508276546,
+      "patterns_per_second": 1.4380948801295386,
+      "rss_bytes": 543604736,
+      "candidate_indices_equal": true,
+      "maximum_score_difference": 0.0
+    },
+    {
+      "method": "current_kikuchipy",
+      "count": 128,
+      "dask_workers": 1,
+      "seconds": 11.856653249938972,
+      "cpu_seconds": 10.772380000000002,
+      "average_cpu_cores": 0.9085514919697469,
+      "patterns_per_second": 10.795626497777425,
+      "rss_bytes": 672071680,
+      "candidate_indices_equal": true,
+      "maximum_score_difference": 0.0
+    },
+    {
+      "method": "current_kikuchipy",
+      "count": 128,
+      "dask_workers": 10,
+      "seconds": 10.294622084009461,
+      "cpu_seconds": 11.065982000000005,
+      "average_cpu_cores": 1.0749284344481853,
+      "patterns_per_second": 12.433676433719814,
+      "rss_bytes": 741867520,
+      "candidate_indices_equal": true,
+      "maximum_score_difference": 0.0
+    },
+    {
+      "method": "current_kikuchipy",
+      "count": 512,
+      "dask_workers": 1,
+      "seconds": 15.98209904099349,
+      "cpu_seconds": 15.08502,
+      "average_cpu_cores": 0.9438697608685496,
+      "patterns_per_second": 32.03584201841942,
+      "rss_bytes": 715227136,
+      "candidate_indices_equal": true,
+      "maximum_score_difference": 0.0
+    },
+    {
+      "method": "current_kikuchipy",
+      "count": 512,
+      "dask_workers": 10,
+      "seconds": 12.110047416063026,
+      "cpu_seconds": 17.185007000000006,
+      "average_cpu_cores": 1.4190701662493448,
+      "patterns_per_second": 42.27894263410334,
+      "rss_bytes": 730611712,
+      "candidate_indices_equal": true,
+      "maximum_score_difference": 0.0
+    },
+    {
+      "method": "streamed_ncc_prototype",
+      "count": 16,
+      "seconds": 4.365743958042003,
+      "cpu_seconds": 4.017089000000013,
+      "average_cpu_cores": 0.9201384777960366,
+      "patterns_per_second": 3.664896556869051,
+      "rss_bytes": 762019840,
+      "candidate_indices_equal": true,
+      "maximum_score_difference": 0.0,
+      "read_seconds": 0.7786340431775898,
+      "normalize_seconds": 3.3613725811010227,
+      "match_seconds": 0.18086254422087222,
+      "topk_seconds": 0.044756583869457245
+    },
+    {
+      "method": "streamed_ncc_prototype",
+      "count": 128,
+      "seconds": 4.823032000102103,
+      "cpu_seconds": 4.6164930000000055,
+      "average_cpu_cores": 0.9571765229636202,
+      "patterns_per_second": 26.53932215197624,
+      "rss_bytes": 683081728,
+      "candidate_indices_equal": true,
+      "maximum_score_difference": 0.0,
+      "read_seconds": 0.7838962060632184,
+      "normalize_seconds": 3.3904128773137927,
+      "match_seconds": 0.28945920895785093,
+      "topk_seconds": 0.35917096224147826
+    },
+    {
+      "method": "streamed_ncc_prototype",
+      "count": 512,
+      "seconds": 6.619991791900247,
+      "cpu_seconds": 6.8148649999999975,
+      "average_cpu_cores": 1.0294370769973133,
+      "patterns_per_second": 77.34148562335785,
+      "rss_bytes": 633143296,
+      "candidate_indices_equal": true,
+      "maximum_score_difference": 0.0,
+      "read_seconds": 0.7773673731135204,
+      "normalize_seconds": 3.451495922054164,
+      "match_seconds": 0.8238551628310233,
+      "topk_seconds": 1.567176415817812
+    }
+  ],
+  "blas": "Apple Accelerate",
+  "veclib_maximum_threads": null,
+  "timing_scope": "Workflow restore and experimental input selection excluded; dictionary I/O included."
+}

@@ -1,0 +1,113 @@
+[
+  {
+    "count": 1536,
+    "cores": 6,
+    "keep_n": 5,
+    "maxfev": 25,
+    "full_resolution": false
+  },
+  {
+    "label": "compiled_first_use_two_points",
+    "seconds": 5.2972199998330325
+  },
+  {
+    "label": "reference",
+    "repeat": 0,
+    "seconds": 11.768656958127394,
+    "fitting_seconds": 11.351052833721042,
+    "process_cpu_seconds": 38.693467000000005,
+    "average_cpu_cores": 3.287840501908625,
+    "candidate_fit_batches": [
+      385,
+      1540,
+      3530,
+      2225
+    ],
+    "max_euler_score_differences": [
+      0.0,
+      0.0
+    ]
+  },
+  {
+    "label": "shared_pc_maximum_batch",
+    "repeat": 0,
+    "seconds": 11.033570540836081,
+    "fitting_seconds": 10.694805625127628,
+    "process_cpu_seconds": 37.212924,
+    "average_cpu_cores": 3.372700057725842,
+    "candidate_fit_batches": [
+      5120,
+      2560
+    ],
+    "max_euler_score_differences": [
+      0.0,
+      0.0
+    ]
+  },
+  {
+    "label": "implemented",
+    "repeat": 0,
+    "seconds": 4.4034192499239,
+    "fitting_seconds": 4.0387689168564975,
+    "process_cpu_seconds": 21.700417,
+    "average_cpu_cores": 4.928083329874854,
+    "candidate_fit_batches": [
+      5120,
+      2560
+    ],
+    "max_euler_score_differences": [
+      0.0,
+      0.0
+    ]
+  },
+  {
+    "label": "reference",
+    "repeat": 1,
+    "seconds": 10.992239334154874,
+    "fitting_seconds": 10.587775792228058,
+    "process_cpu_seconds": 36.796707,
+    "average_cpu_cores": 3.347516905464929,
+    "candidate_fit_batches": [
+      385,
+      1540,
+      3535,
+      2220
+    ],
+    "max_euler_score_differences": [
+      0.0,
+      0.0
+    ]
+  },
+  {
+    "label": "shared_pc_maximum_batch",
+    "repeat": 1,
+    "seconds": 11.384875416988507,
+    "fitting_seconds": 10.995112374890596,
+    "process_cpu_seconds": 37.67730399999999,
+    "average_cpu_cores": 3.309417329571998,
+    "candidate_fit_batches": [
+      5120,
+      2560
+    ],
+    "max_euler_score_differences": [
+      0.0,
+      0.0
+    ]
+  },
+  {
+    "label": "implemented",
+    "repeat": 1,
+    "seconds": 4.627012958051637,
+    "fitting_seconds": 4.24356658407487,
+    "process_cpu_seconds": 23.0197,
+    "average_cpu_cores": 4.9750671132101685,
+    "candidate_fit_batches": [
+      5120,
+      2560
+    ],
+    "max_euler_score_differences": [
+      0.0,
+      0.0
+    ]
+  }
+]

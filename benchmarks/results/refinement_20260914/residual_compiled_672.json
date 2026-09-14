@@ -1,0 +1,62 @@
+[
+  {
+    "count": 672,
+    "cores": 6,
+    "keep_n": 5,
+    "maxfev": 25,
+    "full_resolution": true,
+    "residual": true
+  },
+  {
+    "label": "compiled_first_use_two_points",
+    "seconds": 2.8330618750769645
+  },
+  {
+    "label": "reference",
+    "repeat": 0,
+    "seconds": 11.256520124850795,
+    "fitting_seconds": 11.12566474918276,
+    "process_cpu_seconds": 56.207162000000004,
+    "average_cpu_cores": 4.993298228633961,
+    "candidate_fit_batches": [
+      385,
+      1500,
+      1470,
+      5
+    ],
+    "max_euler_score_differences": [
+      0.0,
+      0.0
+    ]
+  },
+  {
+    "label": "shared_pc_maximum_batch",
+    "repeat": 0,
+    "seconds": 10.202814291929826,
+    "fitting_seconds": 10.086274750065058,
+    "process_cpu_seconds": 52.915829,
+    "average_cpu_cores": 5.1863953891481795,
+    "candidate_fit_batches": [
+      3360
+    ],
+    "max_euler_score_differences": [
+      0.0,
+      0.0
+    ]
+  },
+  {
+    "label": "implemented",
+    "repeat": 0,
+    "seconds": 7.506812375038862,
+    "fitting_seconds": 7.407518958905712,
+    "process_cpu_seconds": 41.631663,
+    "average_cpu_cores": 5.545851011067062,
+    "candidate_fit_batches": [
+      3360
+    ],
+    "max_euler_score_differences": [
+      0.0,
+      0.0
+    ]
+  }
+]

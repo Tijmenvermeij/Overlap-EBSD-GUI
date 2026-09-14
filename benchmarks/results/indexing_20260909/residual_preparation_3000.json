@@ -1,0 +1,32 @@
+[
+  {
+    "count": 3000,
+    "cores": 10,
+    "reference": "f315c75",
+    "map_count": 95340,
+    "binning": 2
+  },
+  {
+    "label": "serial_restored_preparation",
+    "seconds": 82.45272587507498
+  },
+  {
+    "label": "batched_restored_preparation",
+    "seconds": 2.1007133750244975,
+    "max_pixel_difference": 0.0,
+    "pixels_equal": true,
+    "progress_callbacks": 35
+  },
+  {
+    "label": "cached_residual_preparation",
+    "seconds": 0.31358166702557355
+  },
+  {
+    "label": "primary_preparation",
+    "seconds": 0.10779641603585333
+  },
+  {
+    "label": "dictionary_matching_first_pass",
+    "seconds": 7.905939791002311
+  }
+]

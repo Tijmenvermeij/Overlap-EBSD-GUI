@@ -1,0 +1,50 @@
+{
+  "count": 3000,
+  "cores": 10,
+  "keep_n": 5,
+  "maxfev": 25,
+  "full_resolution": false,
+  "stages": {
+    "index": {
+      "seconds": 13.535060999915004,
+      "times": {
+        "_materialize_signal_batch": 3.7247780710458755e-05,
+        "_processed_patterns_from_indices": 0.14283520518802106,
+        "_simulate_patterns_for_eulers": 0.7820360432378948,
+        "_residual_signal_from_indices": 2.5709605840966105
+      },
+      "calls": {
+        "_materialize_signal_batch": 33,
+        "_processed_patterns_from_indices": 33,
+        "_simulate_patterns_for_eulers": 33,
+        "_residual_signal_from_indices": 2
+      },
+      "batches": []
+    },
+    "refine": {
+      "seconds": 25.635360416956246,
+      "times": {
+        "_residual_signal_from_indices": 0.29949783300980926,
+        "_materialize_signal_batch": 0.11534637329168618,
+        "_batch_refine_residual_points": 25.62178329145536
+      },
+      "calls": {
+        "_residual_signal_from_indices": 6,
+        "_materialize_signal_batch": 12,
+        "_batch_refine_residual_points": 6
+      },
+      "batches": [
+        128,
+        455,
+        723,
+        497,
+        663,
+        534
+      ]
+    }
+  },
+  "total_seconds": 39.17042141687125,
+  "refinement_input_seconds": 0.41484420630149543,
+  "optimistic_saved_percent": 1.0590751676794987,
+  "residuals_reconstructed_during_refinement": 0
+}

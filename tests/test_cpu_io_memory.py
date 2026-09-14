@@ -78,6 +78,16 @@ class CPUInputTests(unittest.TestCase):
         ))
         np.testing.assert_array_equal(direct, lazy)
 
+    def test_processed_batch_matches_single_patterns_including_background_dtype(self) -> None:
+        session = self.session()
+        indices = np.array([11, 2, 11, 4])
+        for background in (False, True):
+            session.set_dynamic_background(background, std_px=1.5)
+            expected = np.stack([session._processed_pattern_at(int(i)) for i in indices])
+            actual = session._processed_patterns_from_indices(indices)
+            np.testing.assert_array_equal(actual, expected)
+            self.assertEqual(actual.dtype, np.dtype(np.float32))
+
     def test_transformed_loader_data_disables_direct_access_and_reuses_flat_view(self) -> None:
         session = self.session()
         session.data.signal.data = session.data.signal.data[..., ::-1]
@@ -132,6 +142,8 @@ class CPUResidualMemoryTests(unittest.TestCase):
         self.weights[:, :2] = 0
         self.session._overlap_weights = Mock(return_value=self.weights)
         self.session._processed_pattern_at = Mock(return_value=self.experimental)
+        self.session._processed_patterns_from_indices = Mock(
+            side_effect=lambda indices: np.stack([self.experimental] * len(indices)))
         self.session._simulate_pattern_for_euler = Mock(return_value=self.simulated)
         self.session.dictionary_cache = SimpleNamespace(software_binning=1, crop_extent=(0, 8, 0, 10))
 
@@ -219,6 +231,61 @@ class CPUResidualMemoryTests(unittest.TestCase):
         self.assertIsNone(self.session.residual_point_results[0].experimental)
         self.assertIsNone(self.session.residual_point_results[0].residual)
         self.assertTrue(self.session._residual_pattern_store.available[0])
+        self.assertEqual(self.session._processed_patterns_from_indices.call_count, 1)
+        np.testing.assert_array_equal(self.session._processed_patterns_from_indices.call_args.args[0], [0])
+
+    def test_partial_cache_reconstructs_only_missing_rows_and_preserves_fit_metadata(self) -> None:
+        originals = [self.result(i) for i in range(4)]
+        for result in originals:
+            self.session.residual_point_results[result.index] = self.session._strip_residual_point_result(result)
+        self.session._store_residual_result(originals[0])
+        self.session._store_residual_result(originals[1], keep_patterns=True)
+        # Include a fitted nontrivial gain, blur and secondary orientation. The
+        # secondary simulation is irrelevant to residual dictionary matching.
+        result = replace(self.session.residual_point_results[2], fitted_sigma=1.3,
+                         gain_params=(.7, 1.2, .9), ellipse_params=(.8, 1.1, .2, -.1),
+                         secondary_euler_rad=np.array([.1, .2, .3]), fit_message="saved fit")
+        self.session.residual_point_results[2] = result
+        originals[2] = self.session._materialize_residual_point_result(result)
+        self.session._simulate_pattern_for_euler.reset_mock()
+        callbacks = []
+        actual = self.session._residual_signal_from_indices(
+            np.array([2, 0, 1, 2, 3]), progress_callback=callbacks.append,
+        ).data.compute()
+        np.testing.assert_array_equal(actual, np.stack([originals[i].residual for i in [2, 0, 1, 2, 3]]))
+        np.testing.assert_array_equal(self.session._processed_patterns_from_indices.call_args.args[0], [2, 3])
+        self.assertEqual(self.session._simulate_pattern_for_euler.call_count, 2)
+        saved = self.session.residual_point_results[2]
+        self.assertEqual(saved.gain_params, result.gain_params)
+        self.assertEqual(saved.scale, result.scale)
+        self.assertEqual(saved.fit_message, "saved fit")
+        np.testing.assert_array_equal(saved.secondary_euler_rad, result.secondary_euler_rad)
+        self.assertEqual(callbacks[0], 0.)
+        self.assertEqual(callbacks[-1], 1.)
+        self.assertEqual(callbacks, sorted(callbacks))
+
+    def test_reconstruction_can_cancel_between_bounded_batches_and_resume(self) -> None:
+        count = 300
+        self.session.data.count = self.session.data.cols = count
+        self.session.current_eulers_rad = np.zeros((count, 3))
+        original = self.result(0)
+        self.session.residual_point_results = {
+            i: replace(self.session._strip_residual_point_result(original), index=i, col=i)
+            for i in range(count)
+        }
+        def cancel(fraction):
+            if fraction > 0:
+                raise InterruptedError()
+        with self.assertRaises(InterruptedError):
+            self.session._residual_signal_from_indices(np.arange(count), progress_callback=cancel)
+        available = self.session._residual_pattern_store.available.copy()
+        self.assertGreater(available.sum(), 0)
+        self.assertLess(available.sum(), count)
+        self.session._processed_patterns_from_indices.reset_mock()
+        actual = self.session._residual_signal_from_indices(np.arange(count)).data.compute()
+        np.testing.assert_array_equal(actual, np.stack([original.residual] * count))
+        read_indices = np.concatenate([call.args[0] for call in self.session._processed_patterns_from_indices.call_args_list])
+        np.testing.assert_array_equal(read_indices, np.flatnonzero(~available))
 
     def test_session_cleanup_removes_owned_temporary_store(self) -> None:
         self.session._store_residual_result(self.result(0))

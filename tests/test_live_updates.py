@@ -75,26 +75,34 @@ class LiveUpdateTests(unittest.TestCase):
         self.assertFalse(gui._worker_thread.is_alive())
         self.assertEqual(events, [("progress", main), ("draw", main)])
 
-    def test_batches_adapt_to_duration_without_skipping_or_repeating_points(self):
-        for seconds_per_point in (0.001, 2.0):
-            with self.subTest(seconds_per_point=seconds_per_point):
-                now = [0.0]
-                points = np.arange(123)[::-1]
-                batches = []
-                for start, batch in progress_batches(points, 32, Mock(), clock=lambda: now[0]):
-                    self.assertEqual(start, sum(map(len, batches)))
-                    self.assertLessEqual(len(batch), 32)
-                    batches.append(batch)
-                    now[0] += seconds_per_point * len(batch)
-                np.testing.assert_array_equal(np.concatenate(batches), points)
-                if seconds_per_point > 1:
-                    self.assertLess(len(batches[1]), len(batches[0]))
-                else:
-                    self.assertGreater(len(batches[1]), len(batches[0]))
+    def test_batches_fill_memory_cap_without_skipping_or_repeating_points(self):
+        points = np.arange(123)[::-1]
+        batches = []
+        for start, batch in progress_batches(points, 32):
+            self.assertEqual(start, sum(map(len, batches)))
+            batches.append(batch)
+        self.assertEqual(list(map(len, batches)), [32, 32, 32, 27])
+        np.testing.assert_array_equal(np.concatenate(batches), points)
 
-    def test_no_callback_retains_existing_batch_size(self):
+    def test_partial_final_batch(self):
         batches = [batch for _, batch in progress_batches(np.arange(35), 20)]
         self.assertEqual(list(map(len, batches)), [20, 15])
+
+    def test_expensive_drawing_reduces_refresh_frequency(self):
+        now = [0.]
+        gate = LiveUpdateGate(clock=lambda: now[0])
+        def slow_render():
+            now[0] += 2.
+        render = Mock(side_effect=slow_render)
+        now[0] = 5.
+        gate.at_boundary(lambda callback: callback(), render)
+        self.assertEqual(render.call_count, 1)
+        now[0] += 197.
+        gate.at_boundary(lambda callback: callback(), render)
+        self.assertEqual(render.call_count, 1)
+        now[0] += 1.
+        gate.at_boundary(lambda callback: callback(), render)
+        self.assertEqual(render.call_count, 2)
 
     def test_live_redraw_preserves_tab_and_scan_zoom(self):
         views = {}
@@ -125,6 +133,17 @@ class LiveUpdateTests(unittest.TestCase):
             self.assertEqual(views[view]["axes"][0].get_ylim(), (4, 1))
         gui._activate_plot_view.assert_called_once_with(3)
 
+    def test_live_refresh_draws_visible_tab_once_for_multiple_changed_stages(self):
+        gui = SimpleNamespace(
+            busy=True, session=SimpleNamespace(data=object()), _job_result_views={1, 2, 3},
+            workflow_notebook=SimpleNamespace(select=lambda: "residual", index=lambda _: 2),
+            _populate_point_vars=Mock(), _refresh_complete_analysis_maps=Mock(),
+            live_update_status_var=Mock(), _activate_plot_view=Mock(), _log=Mock(),
+        )
+        MultiStepOverlapGUI._refresh_job_maps(gui)
+        gui._refresh_complete_analysis_maps.assert_called_once_with(2)
+        self.assertEqual(gui._job_result_views, set())
+
     def test_each_progress_kind_marks_its_relevant_view(self):
         for method, view in (("_set_reindex_progress", 1), ("_set_refinement_progress", 1),
                              ("_set_overlap_progress", 2), ("_set_overlap_optimization_progress", 3)):
@@ -139,7 +158,7 @@ class LiveUpdateTests(unittest.TestCase):
     def test_calibration_batching_preserves_small_selection_retry_policy(self):
         for count in (3, 20):
             session = WorkflowSession()
-            session.data = object()
+            session.data = SimpleNamespace(h=128, w=156)
             session.master = SimpleNamespace(kind="kikuchipy")
             session.current_phases = np.ones(count, dtype=int)
             session.current_eulers_rad = np.zeros((count, 3))

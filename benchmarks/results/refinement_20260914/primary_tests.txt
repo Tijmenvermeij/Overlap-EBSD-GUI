@@ -1,0 +1,311 @@
+............../Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/orix/crystal_map/_phase.py:145: DeprecationWarning: 'diffpy.structure.Structure.placeInLattice' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Structure.place_in_lattice' instead.
+  new_value.placeInLattice(Lattice(base=new_matrix))
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/kikuchipy/signals/util/_crystal_map.py:40: UserWarning: Signal navigation axes must be named 'x' and/or 'y' in order to compare the signal navigation scales to the crystal map step sizes 'dx' and 'dy' (see EBSD.axes_manager)
+  warnings.warn(
+../Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/orix/crystal_map/_phase.py:145: DeprecationWarning: 'diffpy.structure.Structure.placeInLattice' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Structure.place_in_lattice' instead.
+  new_value.placeInLattice(Lattice(base=new_matrix))
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/kikuchipy/signals/util/_crystal_map.py:40: UserWarning: Signal navigation axes must be named 'x' and/or 'y' in order to compare the signal navigation scales to the crystal map step sizes 'dx' and 'dy' (see EBSD.axes_manager)
+  warnings.warn(
+  0%|          | 0/5 [00:00<?, ?it/s]100%|██████████| 5/5 [00:00<00:00, 221.26it/s]
+  0%|          | 0/5 [00:00<?, ?it/s]100%|██████████| 5/5 [00:00<00:00, 263.17it/s]
+../Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/orix/crystal_map/_phase.py:145: DeprecationWarning: 'diffpy.structure.Structure.placeInLattice' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Structure.place_in_lattice' instead.
+  new_value.placeInLattice(Lattice(base=new_matrix))
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/orix/crystal_map/_phase.py:145: DeprecationWarning: 'diffpy.structure.Structure.placeInLattice' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Structure.place_in_lattice' instead.
+  new_value.placeInLattice(Lattice(base=new_matrix))
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/orix/crystal_map/_phase.py:145: DeprecationWarning: 'diffpy.structure.Structure.placeInLattice' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Structure.place_in_lattice' instead.
+  new_value.placeInLattice(Lattice(base=new_matrix))
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/orix/crystal_map/_phase.py:145: DeprecationWarning: 'diffpy.structure.Structure.placeInLattice' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Structure.place_in_lattice' instead.
+  new_value.placeInLattice(Lattice(base=new_matrix))
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/orix/crystal_map/_phase.py:145: DeprecationWarning: 'diffpy.structure.Structure.placeInLattice' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Structure.place_in_lattice' instead.
+  new_value.placeInLattice(Lattice(base=new_matrix))
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/orix/crystal_map/_phase.py:145: DeprecationWarning: 'diffpy.structure.Structure.placeInLattice' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Structure.place_in_lattice' instead.
+  new_value.placeInLattice(Lattice(base=new_matrix))
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/orix/crystal_map/_phase.py:145: DeprecationWarning: 'diffpy.structure.Structure.placeInLattice' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Structure.place_in_lattice' instead.
+  new_value.placeInLattice(Lattice(base=new_matrix))
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/orix/crystal_map/_phase.py:145: DeprecationWarning: 'diffpy.structure.Structure.placeInLattice' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Structure.place_in_lattice' instead.
+  new_value.placeInLattice(Lattice(base=new_matrix))
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/orix/crystal_map/_phase.py:145: DeprecationWarning: 'diffpy.structure.Structure.placeInLattice' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Structure.place_in_lattice' instead.
+  new_value.placeInLattice(Lattice(base=new_matrix))
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/orix/crystal_map/_phase.py:145: DeprecationWarning: 'diffpy.structure.Structure.placeInLattice' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Structure.place_in_lattice' instead.
+  new_value.placeInLattice(Lattice(base=new_matrix))
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/orix/crystal_map/_phase.py:145: DeprecationWarning: 'diffpy.structure.Structure.placeInLattice' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Structure.place_in_lattice' instead.
+  new_value.placeInLattice(Lattice(base=new_matrix))
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/orix/crystal_map/_phase.py:145: DeprecationWarning: 'diffpy.structure.Structure.placeInLattice' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Structure.place_in_lattice' instead.
+  new_value.placeInLattice(Lattice(base=new_matrix))
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/orix/crystal_map/_phase.py:145: DeprecationWarning: 'diffpy.structure.Structure.placeInLattice' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Structure.place_in_lattice' instead.
+  new_value.placeInLattice(Lattice(base=new_matrix))
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/orix/crystal_map/_phase.py:145: DeprecationWarning: 'diffpy.structure.Structure.placeInLattice' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Structure.place_in_lattice' instead.
+  new_value.placeInLattice(Lattice(base=new_matrix))
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/orix/crystal_map/_phase.py:145: DeprecationWarning: 'diffpy.structure.Structure.placeInLattice' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Structure.place_in_lattice' instead.
+  new_value.placeInLattice(Lattice(base=new_matrix))
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/orix/crystal_map/_phase.py:145: DeprecationWarning: 'diffpy.structure.Structure.placeInLattice' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Structure.place_in_lattice' instead.
+  new_value.placeInLattice(Lattice(base=new_matrix))
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/orix/crystal_map/_phase.py:145: DeprecationWarning: 'diffpy.structure.Structure.placeInLattice' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Structure.place_in_lattice' instead.
+  new_value.placeInLattice(Lattice(base=new_matrix))
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/orix/crystal_map/_phase.py:145: DeprecationWarning: 'diffpy.structure.Structure.placeInLattice' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Structure.place_in_lattice' instead.
+  new_value.placeInLattice(Lattice(base=new_matrix))
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/orix/crystal_map/_phase.py:145: DeprecationWarning: 'diffpy.structure.Structure.placeInLattice' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Structure.place_in_lattice' instead.
+  new_value.placeInLattice(Lattice(base=new_matrix))
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/orix/crystal_map/_phase.py:145: DeprecationWarning: 'diffpy.structure.Structure.placeInLattice' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Structure.place_in_lattice' instead.
+  new_value.placeInLattice(Lattice(base=new_matrix))
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/orix/crystal_map/_phase.py:145: DeprecationWarning: 'diffpy.structure.Structure.placeInLattice' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Structure.place_in_lattice' instead.
+  new_value.placeInLattice(Lattice(base=new_matrix))
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/orix/crystal_map/_phase.py:145: DeprecationWarning: 'diffpy.structure.Structure.placeInLattice' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Structure.place_in_lattice' instead.
+  new_value.placeInLattice(Lattice(base=new_matrix))
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/orix/crystal_map/_phase.py:145: DeprecationWarning: 'diffpy.structure.Structure.placeInLattice' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Structure.place_in_lattice' instead.
+  new_value.placeInLattice(Lattice(base=new_matrix))
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/orix/crystal_map/_phase.py:145: DeprecationWarning: 'diffpy.structure.Structure.placeInLattice' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Structure.place_in_lattice' instead.
+  new_value.placeInLattice(Lattice(base=new_matrix))
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/orix/crystal_map/_phase.py:145: DeprecationWarning: 'diffpy.structure.Structure.placeInLattice' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Structure.place_in_lattice' instead.
+  new_value.placeInLattice(Lattice(base=new_matrix))
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/orix/crystal_map/_phase.py:145: DeprecationWarning: 'diffpy.structure.Structure.placeInLattice' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Structure.place_in_lattice' instead.
+  new_value.placeInLattice(Lattice(base=new_matrix))
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/orix/crystal_map/_phase.py:145: DeprecationWarning: 'diffpy.structure.Structure.placeInLattice' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Structure.place_in_lattice' instead.
+  new_value.placeInLattice(Lattice(base=new_matrix))
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/orix/crystal_map/_phase.py:145: DeprecationWarning: 'diffpy.structure.Structure.placeInLattice' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Structure.place_in_lattice' instead.
+  new_value.placeInLattice(Lattice(base=new_matrix))
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/orix/crystal_map/_phase.py:145: DeprecationWarning: 'diffpy.structure.Structure.placeInLattice' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Structure.place_in_lattice' instead.
+  new_value.placeInLattice(Lattice(base=new_matrix))
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/orix/crystal_map/_phase.py:145: DeprecationWarning: 'diffpy.structure.Structure.placeInLattice' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Structure.place_in_lattice' instead.
+  new_value.placeInLattice(Lattice(base=new_matrix))
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/orix/crystal_map/_phase.py:145: DeprecationWarning: 'diffpy.structure.Structure.placeInLattice' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Structure.place_in_lattice' instead.
+  new_value.placeInLattice(Lattice(base=new_matrix))
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/orix/crystal_map/_phase.py:145: DeprecationWarning: 'diffpy.structure.Structure.placeInLattice' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Structure.place_in_lattice' instead.
+  new_value.placeInLattice(Lattice(base=new_matrix))
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/orix/crystal_map/_phase.py:145: DeprecationWarning: 'diffpy.structure.Structure.placeInLattice' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Structure.place_in_lattice' instead.
+  new_value.placeInLattice(Lattice(base=new_matrix))
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/orix/crystal_map/_phase.py:145: DeprecationWarning: 'diffpy.structure.Structure.placeInLattice' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Structure.place_in_lattice' instead.
+  new_value.placeInLattice(Lattice(base=new_matrix))
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/orix/crystal_map/_phase.py:145: DeprecationWarning: 'diffpy.structure.Structure.placeInLattice' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Structure.place_in_lattice' instead.
+  new_value.placeInLattice(Lattice(base=new_matrix))
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/orix/crystal_map/_phase.py:145: DeprecationWarning: 'diffpy.structure.Structure.placeInLattice' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Structure.place_in_lattice' instead.
+  new_value.placeInLattice(Lattice(base=new_matrix))
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/orix/crystal_map/_phase.py:145: DeprecationWarning: 'diffpy.structure.Structure.placeInLattice' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Structure.place_in_lattice' instead.
+  new_value.placeInLattice(Lattice(base=new_matrix))
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/orix/crystal_map/_phase.py:145: DeprecationWarning: 'diffpy.structure.Structure.placeInLattice' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Structure.place_in_lattice' instead.
+  new_value.placeInLattice(Lattice(base=new_matrix))
+./Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/orix/crystal_map/_phase.py:145: DeprecationWarning: 'diffpy.structure.Structure.placeInLattice' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Structure.place_in_lattice' instead.
+  new_value.placeInLattice(Lattice(base=new_matrix))
+../Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/kikuchipy/signals/util/_crystal_map.py:40: UserWarning: Signal navigation axes must be named 'x' and/or 'y' in order to compare the signal navigation scales to the crystal map step sizes 'dx' and 'dy' (see EBSD.axes_manager)
+  warnings.warn(
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/kikuchipy/signals/util/_crystal_map.py:97: DeprecationWarning: 'diffpy.structure.Lattice.abcABG' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Lattice.cell_parms' instead.
+  if not np.allclose(structure1.lattice.abcABG(), structure2.lattice.abcABG()):
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/orix/crystal_map/_phase.py:145: DeprecationWarning: 'diffpy.structure.Structure.placeInLattice' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Structure.place_in_lattice' instead.
+  new_value.placeInLattice(Lattice(base=new_matrix))
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/kikuchipy/signals/util/_crystal_map.py:40: UserWarning: Signal navigation axes must be named 'x' and/or 'y' in order to compare the signal navigation scales to the crystal map step sizes 'dx' and 'dy' (see EBSD.axes_manager)
+  warnings.warn(
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/kikuchipy/signals/util/_crystal_map.py:97: DeprecationWarning: 'diffpy.structure.Lattice.abcABG' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Lattice.cell_parms' instead.
+  if not np.allclose(structure1.lattice.abcABG(), structure2.lattice.abcABG()):
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/kikuchipy/signals/util/_crystal_map.py:40: UserWarning: Signal navigation axes must be named 'x' and/or 'y' in order to compare the signal navigation scales to the crystal map step sizes 'dx' and 'dy' (see EBSD.axes_manager)
+  warnings.warn(
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/kikuchipy/signals/util/_crystal_map.py:97: DeprecationWarning: 'diffpy.structure.Lattice.abcABG' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Lattice.cell_parms' instead.
+  if not np.allclose(structure1.lattice.abcABG(), structure2.lattice.abcABG()):
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/kikuchipy/signals/util/_crystal_map.py:97: DeprecationWarning: 'diffpy.structure.Lattice.abcABG' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Lattice.cell_parms' instead.
+  if not np.allclose(structure1.lattice.abcABG(), structure2.lattice.abcABG()):
+................/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/orix/crystal_map/_phase.py:145: DeprecationWarning: 'diffpy.structure.Structure.placeInLattice' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Structure.place_in_lattice' instead.
+  new_value.placeInLattice(Lattice(base=new_matrix))
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/kikuchipy/signals/util/_crystal_map.py:97: DeprecationWarning: 'diffpy.structure.Lattice.abcABG' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Lattice.cell_parms' instead.
+  if not np.allclose(structure1.lattice.abcABG(), structure2.lattice.abcABG()):
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/orix/crystal_map/_phase.py:145: DeprecationWarning: 'diffpy.structure.Structure.placeInLattice' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Structure.place_in_lattice' instead.
+  new_value.placeInLattice(Lattice(base=new_matrix))
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/kikuchipy/signals/util/_crystal_map.py:97: DeprecationWarning: 'diffpy.structure.Lattice.abcABG' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Lattice.cell_parms' instead.
+  if not np.allclose(structure1.lattice.abcABG(), structure2.lattice.abcABG()):
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/kikuchipy/signals/util/_crystal_map.py:97: DeprecationWarning: 'diffpy.structure.Lattice.abcABG' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Lattice.cell_parms' instead.
+  if not np.allclose(structure1.lattice.abcABG(), structure2.lattice.abcABG()):
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/kikuchipy/signals/util/_crystal_map.py:97: DeprecationWarning: 'diffpy.structure.Lattice.abcABG' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Lattice.cell_parms' instead.
+  if not np.allclose(structure1.lattice.abcABG(), structure2.lattice.abcABG()):
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/kikuchipy/signals/util/_crystal_map.py:97: DeprecationWarning: 'diffpy.structure.Lattice.abcABG' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Lattice.cell_parms' instead.
+  if not np.allclose(structure1.lattice.abcABG(), structure2.lattice.abcABG()):
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/kikuchipy/signals/util/_crystal_map.py:97: DeprecationWarning: 'diffpy.structure.Lattice.abcABG' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Lattice.cell_parms' instead.
+  if not np.allclose(structure1.lattice.abcABG(), structure2.lattice.abcABG()):
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/kikuchipy/signals/util/_crystal_map.py:97: DeprecationWarning: 'diffpy.structure.Lattice.abcABG' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Lattice.cell_parms' instead.
+  if not np.allclose(structure1.lattice.abcABG(), structure2.lattice.abcABG()):
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/kikuchipy/signals/util/_crystal_map.py:97: DeprecationWarning: 'diffpy.structure.Lattice.abcABG' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Lattice.cell_parms' instead.
+  if not np.allclose(structure1.lattice.abcABG(), structure2.lattice.abcABG()):
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/kikuchipy/signals/util/_crystal_map.py:97: DeprecationWarning: 'diffpy.structure.Lattice.abcABG' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Lattice.cell_parms' instead.
+  if not np.allclose(structure1.lattice.abcABG(), structure2.lattice.abcABG()):
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/kikuchipy/signals/util/_crystal_map.py:97: DeprecationWarning: 'diffpy.structure.Lattice.abcABG' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Lattice.cell_parms' instead.
+  if not np.allclose(structure1.lattice.abcABG(), structure2.lattice.abcABG()):
+./Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/orix/crystal_map/_phase.py:145: DeprecationWarning: 'diffpy.structure.Structure.placeInLattice' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Structure.place_in_lattice' instead.
+  new_value.placeInLattice(Lattice(base=new_matrix))
+../Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/kikuchipy/signals/util/_crystal_map.py:97: DeprecationWarning: 'diffpy.structure.Lattice.abcABG' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Lattice.cell_parms' instead.
+  if not np.allclose(structure1.lattice.abcABG(), structure2.lattice.abcABG()):
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/orix/crystal_map/_phase.py:145: DeprecationWarning: 'diffpy.structure.Structure.placeInLattice' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Structure.place_in_lattice' instead.
+  new_value.placeInLattice(Lattice(base=new_matrix))
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/kikuchipy/signals/util/_crystal_map.py:97: DeprecationWarning: 'diffpy.structure.Lattice.abcABG' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Lattice.cell_parms' instead.
+  if not np.allclose(structure1.lattice.abcABG(), structure2.lattice.abcABG()):
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/kikuchipy/signals/util/_crystal_map.py:97: DeprecationWarning: 'diffpy.structure.Lattice.abcABG' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Lattice.cell_parms' instead.
+  if not np.allclose(structure1.lattice.abcABG(), structure2.lattice.abcABG()):
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/kikuchipy/signals/util/_crystal_map.py:97: DeprecationWarning: 'diffpy.structure.Lattice.abcABG' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Lattice.cell_parms' instead.
+  if not np.allclose(structure1.lattice.abcABG(), structure2.lattice.abcABG()):
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/kikuchipy/signals/util/_crystal_map.py:97: DeprecationWarning: 'diffpy.structure.Lattice.abcABG' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Lattice.cell_parms' instead.
+  if not np.allclose(structure1.lattice.abcABG(), structure2.lattice.abcABG()):
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/kikuchipy/signals/util/_crystal_map.py:97: DeprecationWarning: 'diffpy.structure.Lattice.abcABG' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Lattice.cell_parms' instead.
+  if not np.allclose(structure1.lattice.abcABG(), structure2.lattice.abcABG()):
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/kikuchipy/signals/util/_crystal_map.py:97: DeprecationWarning: 'diffpy.structure.Lattice.abcABG' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Lattice.cell_parms' instead.
+  if not np.allclose(structure1.lattice.abcABG(), structure2.lattice.abcABG()):
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/kikuchipy/signals/util/_crystal_map.py:97: DeprecationWarning: 'diffpy.structure.Lattice.abcABG' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Lattice.cell_parms' instead.
+  if not np.allclose(structure1.lattice.abcABG(), structure2.lattice.abcABG()):
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/kikuchipy/signals/util/_crystal_map.py:97: DeprecationWarning: 'diffpy.structure.Lattice.abcABG' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Lattice.cell_parms' instead.
+  if not np.allclose(structure1.lattice.abcABG(), structure2.lattice.abcABG()):
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/kikuchipy/signals/util/_crystal_map.py:97: DeprecationWarning: 'diffpy.structure.Lattice.abcABG' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Lattice.cell_parms' instead.
+  if not np.allclose(structure1.lattice.abcABG(), structure2.lattice.abcABG()):
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/kikuchipy/signals/util/_crystal_map.py:97: DeprecationWarning: 'diffpy.structure.Lattice.abcABG' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Lattice.cell_parms' instead.
+  if not np.allclose(structure1.lattice.abcABG(), structure2.lattice.abcABG()):
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/kikuchipy/signals/util/_crystal_map.py:97: DeprecationWarning: 'diffpy.structure.Lattice.abcABG' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Lattice.cell_parms' instead.
+  if not np.allclose(structure1.lattice.abcABG(), structure2.lattice.abcABG()):
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/kikuchipy/signals/util/_crystal_map.py:97: DeprecationWarning: 'diffpy.structure.Lattice.abcABG' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Lattice.cell_parms' instead.
+  if not np.allclose(structure1.lattice.abcABG(), structure2.lattice.abcABG()):
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/kikuchipy/signals/util/_crystal_map.py:97: DeprecationWarning: 'diffpy.structure.Lattice.abcABG' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Lattice.cell_parms' instead.
+  if not np.allclose(structure1.lattice.abcABG(), structure2.lattice.abcABG()):
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/kikuchipy/signals/util/_crystal_map.py:97: DeprecationWarning: 'diffpy.structure.Lattice.abcABG' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Lattice.cell_parms' instead.
+  if not np.allclose(structure1.lattice.abcABG(), structure2.lattice.abcABG()):
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/kikuchipy/signals/util/_crystal_map.py:97: DeprecationWarning: 'diffpy.structure.Lattice.abcABG' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Lattice.cell_parms' instead.
+  if not np.allclose(structure1.lattice.abcABG(), structure2.lattice.abcABG()):
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/kikuchipy/signals/util/_crystal_map.py:97: DeprecationWarning: 'diffpy.structure.Lattice.abcABG' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Lattice.cell_parms' instead.
+  if not np.allclose(structure1.lattice.abcABG(), structure2.lattice.abcABG()):
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/kikuchipy/signals/util/_crystal_map.py:97: DeprecationWarning: 'diffpy.structure.Lattice.abcABG' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Lattice.cell_parms' instead.
+  if not np.allclose(structure1.lattice.abcABG(), structure2.lattice.abcABG()):
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/kikuchipy/signals/util/_crystal_map.py:97: DeprecationWarning: 'diffpy.structure.Lattice.abcABG' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Lattice.cell_parms' instead.
+  if not np.allclose(structure1.lattice.abcABG(), structure2.lattice.abcABG()):
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/kikuchipy/signals/util/_crystal_map.py:97: DeprecationWarning: 'diffpy.structure.Lattice.abcABG' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Lattice.cell_parms' instead.
+  if not np.allclose(structure1.lattice.abcABG(), structure2.lattice.abcABG()):
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/kikuchipy/signals/util/_crystal_map.py:97: DeprecationWarning: 'diffpy.structure.Lattice.abcABG' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Lattice.cell_parms' instead.
+  if not np.allclose(structure1.lattice.abcABG(), structure2.lattice.abcABG()):
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/kikuchipy/signals/util/_crystal_map.py:97: DeprecationWarning: 'diffpy.structure.Lattice.abcABG' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Lattice.cell_parms' instead.
+  if not np.allclose(structure1.lattice.abcABG(), structure2.lattice.abcABG()):
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/kikuchipy/signals/util/_crystal_map.py:97: DeprecationWarning: 'diffpy.structure.Lattice.abcABG' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Lattice.cell_parms' instead.
+  if not np.allclose(structure1.lattice.abcABG(), structure2.lattice.abcABG()):
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/kikuchipy/signals/util/_crystal_map.py:97: DeprecationWarning: 'diffpy.structure.Lattice.abcABG' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Lattice.cell_parms' instead.
+  if not np.allclose(structure1.lattice.abcABG(), structure2.lattice.abcABG()):
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/kikuchipy/signals/util/_crystal_map.py:97: DeprecationWarning: 'diffpy.structure.Lattice.abcABG' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Lattice.cell_parms' instead.
+  if not np.allclose(structure1.lattice.abcABG(), structure2.lattice.abcABG()):
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/kikuchipy/signals/util/_crystal_map.py:97: DeprecationWarning: 'diffpy.structure.Lattice.abcABG' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Lattice.cell_parms' instead.
+  if not np.allclose(structure1.lattice.abcABG(), structure2.lattice.abcABG()):
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/kikuchipy/signals/util/_crystal_map.py:97: DeprecationWarning: 'diffpy.structure.Lattice.abcABG' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Lattice.cell_parms' instead.
+  if not np.allclose(structure1.lattice.abcABG(), structure2.lattice.abcABG()):
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/kikuchipy/signals/util/_crystal_map.py:97: DeprecationWarning: 'diffpy.structure.Lattice.abcABG' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Lattice.cell_parms' instead.
+  if not np.allclose(structure1.lattice.abcABG(), structure2.lattice.abcABG()):
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/kikuchipy/signals/util/_crystal_map.py:97: DeprecationWarning: 'diffpy.structure.Lattice.abcABG' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Lattice.cell_parms' instead.
+  if not np.allclose(structure1.lattice.abcABG(), structure2.lattice.abcABG()):
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/kikuchipy/signals/util/_crystal_map.py:97: DeprecationWarning: 'diffpy.structure.Lattice.abcABG' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Lattice.cell_parms' instead.
+  if not np.allclose(structure1.lattice.abcABG(), structure2.lattice.abcABG()):
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/kikuchipy/signals/util/_crystal_map.py:97: DeprecationWarning: 'diffpy.structure.Lattice.abcABG' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Lattice.cell_parms' instead.
+  if not np.allclose(structure1.lattice.abcABG(), structure2.lattice.abcABG()):
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/kikuchipy/signals/util/_crystal_map.py:97: DeprecationWarning: 'diffpy.structure.Lattice.abcABG' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Lattice.cell_parms' instead.
+  if not np.allclose(structure1.lattice.abcABG(), structure2.lattice.abcABG()):
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/kikuchipy/signals/util/_crystal_map.py:97: DeprecationWarning: 'diffpy.structure.Lattice.abcABG' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Lattice.cell_parms' instead.
+  if not np.allclose(structure1.lattice.abcABG(), structure2.lattice.abcABG()):
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/kikuchipy/signals/util/_crystal_map.py:97: DeprecationWarning: 'diffpy.structure.Lattice.abcABG' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Lattice.cell_parms' instead.
+  if not np.allclose(structure1.lattice.abcABG(), structure2.lattice.abcABG()):
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/kikuchipy/signals/util/_crystal_map.py:97: DeprecationWarning: 'diffpy.structure.Lattice.abcABG' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Lattice.cell_parms' instead.
+  if not np.allclose(structure1.lattice.abcABG(), structure2.lattice.abcABG()):
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/kikuchipy/signals/util/_crystal_map.py:97: DeprecationWarning: 'diffpy.structure.Lattice.abcABG' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Lattice.cell_parms' instead.
+  if not np.allclose(structure1.lattice.abcABG(), structure2.lattice.abcABG()):
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/kikuchipy/signals/util/_crystal_map.py:97: DeprecationWarning: 'diffpy.structure.Lattice.abcABG' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Lattice.cell_parms' instead.
+  if not np.allclose(structure1.lattice.abcABG(), structure2.lattice.abcABG()):
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/kikuchipy/signals/util/_crystal_map.py:97: DeprecationWarning: 'diffpy.structure.Lattice.abcABG' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Lattice.cell_parms' instead.
+  if not np.allclose(structure1.lattice.abcABG(), structure2.lattice.abcABG()):
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/kikuchipy/signals/util/_crystal_map.py:97: DeprecationWarning: 'diffpy.structure.Lattice.abcABG' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Lattice.cell_parms' instead.
+  if not np.allclose(structure1.lattice.abcABG(), structure2.lattice.abcABG()):
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/kikuchipy/signals/util/_crystal_map.py:97: DeprecationWarning: 'diffpy.structure.Lattice.abcABG' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Lattice.cell_parms' instead.
+  if not np.allclose(structure1.lattice.abcABG(), structure2.lattice.abcABG()):
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/kikuchipy/signals/util/_crystal_map.py:97: DeprecationWarning: 'diffpy.structure.Lattice.abcABG' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Lattice.cell_parms' instead.
+  if not np.allclose(structure1.lattice.abcABG(), structure2.lattice.abcABG()):
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/kikuchipy/signals/util/_crystal_map.py:97: DeprecationWarning: 'diffpy.structure.Lattice.abcABG' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Lattice.cell_parms' instead.
+  if not np.allclose(structure1.lattice.abcABG(), structure2.lattice.abcABG()):
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/kikuchipy/signals/util/_crystal_map.py:97: DeprecationWarning: 'diffpy.structure.Lattice.abcABG' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Lattice.cell_parms' instead.
+  if not np.allclose(structure1.lattice.abcABG(), structure2.lattice.abcABG()):
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/kikuchipy/signals/util/_crystal_map.py:97: DeprecationWarning: 'diffpy.structure.Lattice.abcABG' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Lattice.cell_parms' instead.
+  if not np.allclose(structure1.lattice.abcABG(), structure2.lattice.abcABG()):
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/kikuchipy/signals/util/_crystal_map.py:97: DeprecationWarning: 'diffpy.structure.Lattice.abcABG' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Lattice.cell_parms' instead.
+  if not np.allclose(structure1.lattice.abcABG(), structure2.lattice.abcABG()):
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/kikuchipy/signals/util/_crystal_map.py:97: DeprecationWarning: 'diffpy.structure.Lattice.abcABG' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Lattice.cell_parms' instead.
+  if not np.allclose(structure1.lattice.abcABG(), structure2.lattice.abcABG()):
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/kikuchipy/signals/util/_crystal_map.py:97: DeprecationWarning: 'diffpy.structure.Lattice.abcABG' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Lattice.cell_parms' instead.
+  if not np.allclose(structure1.lattice.abcABG(), structure2.lattice.abcABG()):
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/kikuchipy/signals/util/_crystal_map.py:97: DeprecationWarning: 'diffpy.structure.Lattice.abcABG' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Lattice.cell_parms' instead.
+  if not np.allclose(structure1.lattice.abcABG(), structure2.lattice.abcABG()):
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/kikuchipy/signals/util/_crystal_map.py:97: DeprecationWarning: 'diffpy.structure.Lattice.abcABG' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Lattice.cell_parms' instead.
+  if not np.allclose(structure1.lattice.abcABG(), structure2.lattice.abcABG()):
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/kikuchipy/signals/util/_crystal_map.py:97: DeprecationWarning: 'diffpy.structure.Lattice.abcABG' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Lattice.cell_parms' instead.
+  if not np.allclose(structure1.lattice.abcABG(), structure2.lattice.abcABG()):
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/kikuchipy/signals/util/_crystal_map.py:97: DeprecationWarning: 'diffpy.structure.Lattice.abcABG' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Lattice.cell_parms' instead.
+  if not np.allclose(structure1.lattice.abcABG(), structure2.lattice.abcABG()):
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/kikuchipy/signals/util/_crystal_map.py:97: DeprecationWarning: 'diffpy.structure.Lattice.abcABG' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Lattice.cell_parms' instead.
+  if not np.allclose(structure1.lattice.abcABG(), structure2.lattice.abcABG()):
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/kikuchipy/signals/util/_crystal_map.py:97: DeprecationWarning: 'diffpy.structure.Lattice.abcABG' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Lattice.cell_parms' instead.
+  if not np.allclose(structure1.lattice.abcABG(), structure2.lattice.abcABG()):
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/kikuchipy/signals/util/_crystal_map.py:97: DeprecationWarning: 'diffpy.structure.Lattice.abcABG' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Lattice.cell_parms' instead.
+  if not np.allclose(structure1.lattice.abcABG(), structure2.lattice.abcABG()):
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/kikuchipy/signals/util/_crystal_map.py:97: DeprecationWarning: 'diffpy.structure.Lattice.abcABG' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Lattice.cell_parms' instead.
+  if not np.allclose(structure1.lattice.abcABG(), structure2.lattice.abcABG()):
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/kikuchipy/signals/util/_crystal_map.py:97: DeprecationWarning: 'diffpy.structure.Lattice.abcABG' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Lattice.cell_parms' instead.
+  if not np.allclose(structure1.lattice.abcABG(), structure2.lattice.abcABG()):
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/kikuchipy/signals/util/_crystal_map.py:97: DeprecationWarning: 'diffpy.structure.Lattice.abcABG' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Lattice.cell_parms' instead.
+  if not np.allclose(structure1.lattice.abcABG(), structure2.lattice.abcABG()):
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/kikuchipy/signals/util/_crystal_map.py:97: DeprecationWarning: 'diffpy.structure.Lattice.abcABG' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Lattice.cell_parms' instead.
+  if not np.allclose(structure1.lattice.abcABG(), structure2.lattice.abcABG()):
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/kikuchipy/signals/util/_crystal_map.py:97: DeprecationWarning: 'diffpy.structure.Lattice.abcABG' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Lattice.cell_parms' instead.
+  if not np.allclose(structure1.lattice.abcABG(), structure2.lattice.abcABG()):
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/kikuchipy/signals/util/_crystal_map.py:97: DeprecationWarning: 'diffpy.structure.Lattice.abcABG' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Lattice.cell_parms' instead.
+  if not np.allclose(structure1.lattice.abcABG(), structure2.lattice.abcABG()):
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/kikuchipy/signals/util/_crystal_map.py:97: DeprecationWarning: 'diffpy.structure.Lattice.abcABG' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Lattice.cell_parms' instead.
+  if not np.allclose(structure1.lattice.abcABG(), structure2.lattice.abcABG()):
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/kikuchipy/signals/util/_crystal_map.py:97: DeprecationWarning: 'diffpy.structure.Lattice.abcABG' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Lattice.cell_parms' instead.
+  if not np.allclose(structure1.lattice.abcABG(), structure2.lattice.abcABG()):
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/kikuchipy/signals/util/_crystal_map.py:97: DeprecationWarning: 'diffpy.structure.Lattice.abcABG' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Lattice.cell_parms' instead.
+  if not np.allclose(structure1.lattice.abcABG(), structure2.lattice.abcABG()):
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/kikuchipy/signals/util/_crystal_map.py:97: DeprecationWarning: 'diffpy.structure.Lattice.abcABG' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Lattice.cell_parms' instead.
+  if not np.allclose(structure1.lattice.abcABG(), structure2.lattice.abcABG()):
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/kikuchipy/signals/util/_crystal_map.py:97: DeprecationWarning: 'diffpy.structure.Lattice.abcABG' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Lattice.cell_parms' instead.
+  if not np.allclose(structure1.lattice.abcABG(), structure2.lattice.abcABG()):
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/kikuchipy/signals/util/_crystal_map.py:97: DeprecationWarning: 'diffpy.structure.Lattice.abcABG' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Lattice.cell_parms' instead.
+  if not np.allclose(structure1.lattice.abcABG(), structure2.lattice.abcABG()):
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/kikuchipy/signals/util/_crystal_map.py:97: DeprecationWarning: 'diffpy.structure.Lattice.abcABG' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Lattice.cell_parms' instead.
+  if not np.allclose(structure1.lattice.abcABG(), structure2.lattice.abcABG()):
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/kikuchipy/signals/util/_crystal_map.py:97: DeprecationWarning: 'diffpy.structure.Lattice.abcABG' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Lattice.cell_parms' instead.
+  if not np.allclose(structure1.lattice.abcABG(), structure2.lattice.abcABG()):
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/kikuchipy/signals/util/_crystal_map.py:97: DeprecationWarning: 'diffpy.structure.Lattice.abcABG' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Lattice.cell_parms' instead.
+  if not np.allclose(structure1.lattice.abcABG(), structure2.lattice.abcABG()):
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/kikuchipy/signals/util/_crystal_map.py:97: DeprecationWarning: 'diffpy.structure.Lattice.abcABG' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Lattice.cell_parms' instead.
+  if not np.allclose(structure1.lattice.abcABG(), structure2.lattice.abcABG()):
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/kikuchipy/signals/util/_crystal_map.py:97: DeprecationWarning: 'diffpy.structure.Lattice.abcABG' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Lattice.cell_parms' instead.
+  if not np.allclose(structure1.lattice.abcABG(), structure2.lattice.abcABG()):
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/kikuchipy/signals/util/_crystal_map.py:97: DeprecationWarning: 'diffpy.structure.Lattice.abcABG' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Lattice.cell_parms' instead.
+  if not np.allclose(structure1.lattice.abcABG(), structure2.lattice.abcABG()):
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/kikuchipy/signals/util/_crystal_map.py:97: DeprecationWarning: 'diffpy.structure.Lattice.abcABG' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Lattice.cell_parms' instead.
+  if not np.allclose(structure1.lattice.abcABG(), structure2.lattice.abcABG()):
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/kikuchipy/signals/util/_crystal_map.py:97: DeprecationWarning: 'diffpy.structure.Lattice.abcABG' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Lattice.cell_parms' instead.
+  if not np.allclose(structure1.lattice.abcABG(), structure2.lattice.abcABG()):
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/kikuchipy/signals/util/_crystal_map.py:97: DeprecationWarning: 'diffpy.structure.Lattice.abcABG' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Lattice.cell_parms' instead.
+  if not np.allclose(structure1.lattice.abcABG(), structure2.lattice.abcABG()):
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/kikuchipy/signals/util/_crystal_map.py:97: DeprecationWarning: 'diffpy.structure.Lattice.abcABG' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Lattice.cell_parms' instead.
+  if not np.allclose(structure1.lattice.abcABG(), structure2.lattice.abcABG()):
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/kikuchipy/signals/util/_crystal_map.py:97: DeprecationWarning: 'diffpy.structure.Lattice.abcABG' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Lattice.cell_parms' instead.
+  if not np.allclose(structure1.lattice.abcABG(), structure2.lattice.abcABG()):
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/kikuchipy/signals/util/_crystal_map.py:97: DeprecationWarning: 'diffpy.structure.Lattice.abcABG' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Lattice.cell_parms' instead.
+  if not np.allclose(structure1.lattice.abcABG(), structure2.lattice.abcABG()):
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/kikuchipy/signals/util/_crystal_map.py:97: DeprecationWarning: 'diffpy.structure.Lattice.abcABG' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Lattice.cell_parms' instead.
+  if not np.allclose(structure1.lattice.abcABG(), structure2.lattice.abcABG()):
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/kikuchipy/signals/util/_crystal_map.py:97: DeprecationWarning: 'diffpy.structure.Lattice.abcABG' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Lattice.cell_parms' instead.
+  if not np.allclose(structure1.lattice.abcABG(), structure2.lattice.abcABG()):
+.../Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/orix/crystal_map/_phase.py:145: DeprecationWarning: 'diffpy.structure.Structure.placeInLattice' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Structure.place_in_lattice' instead.
+  new_value.placeInLattice(Lattice(base=new_matrix))
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/orix/crystal_map/_phase.py:145: DeprecationWarning: 'diffpy.structure.Structure.placeInLattice' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Structure.place_in_lattice' instead.
+  new_value.placeInLattice(Lattice(base=new_matrix))
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/orix/crystal_map/_phase.py:145: DeprecationWarning: 'diffpy.structure.Structure.placeInLattice' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Structure.place_in_lattice' instead.
+  new_value.placeInLattice(Lattice(base=new_matrix))
+/Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/orix/crystal_map/_phase.py:145: DeprecationWarning: 'diffpy.structure.Structure.placeInLattice' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Structure.place_in_lattice' instead.
+  new_value.placeInLattice(Lattice(base=new_matrix))
+./Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/orix/crystal_map/_phase.py:145: DeprecationWarning: 'diffpy.structure.Structure.placeInLattice' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Structure.place_in_lattice' instead.
+  new_value.placeInLattice(Lattice(base=new_matrix))
+../Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/orix/crystal_map/_phase.py:145: DeprecationWarning: 'diffpy.structure.Structure.placeInLattice' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Structure.place_in_lattice' instead.
+  new_value.placeInLattice(Lattice(base=new_matrix))
+../Users/tvermeij/Dropbox/Work/Software/overlapEBSDIndexing/.venv/lib/python3.12/site-packages/orix/crystal_map/_phase.py:145: DeprecationWarning: 'diffpy.structure.Structure.placeInLattice' is deprecated and will be removed in version 4.0.0. Please use 'diffpy.structure.Structure.place_in_lattice' instead.
+  new_value.placeInLattice(Lattice(base=new_matrix))
+...........................................................................................................................
+----------------------------------------------------------------------
+Ran 171 tests in 19.104s
+
+OK

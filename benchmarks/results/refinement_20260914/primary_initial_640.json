@@ -1,0 +1,49 @@
+[
+  {
+    "label": "current",
+    "seconds": 30.75516483397223,
+    "fitting_seconds": 30.687060040887445,
+    "candidate_fit_batches": [
+      385,
+      550,
+      545,
+      495,
+      460,
+      550,
+      215
+    ],
+    "max_euler_score_differences": [
+      0.0,
+      0.0
+    ]
+  },
+  {
+    "label": "shared_pc",
+    "seconds": 26.32846804196015,
+    "fitting_seconds": 26.264708623988554,
+    "candidate_fit_batches": [
+      385,
+      585,
+      615,
+      610,
+      615,
+      390
+    ],
+    "max_euler_score_differences": [
+      0.0,
+      0.0
+    ]
+  },
+  {
+    "label": "shared_pc_maximum_batch",
+    "seconds": 25.652669084025547,
+    "fitting_seconds": 25.60315033304505,
+    "candidate_fit_batches": [
+      3200
+    ],
+    "max_euler_score_differences": [
+      0.0,
+      0.0
+    ]
+  }
+]

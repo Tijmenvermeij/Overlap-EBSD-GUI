@@ -282,6 +282,45 @@ class ResultInvalidationTests(unittest.TestCase):
         self.assertIn(1, s.residual_point_results)
         s._dictionary_index_kikuchipy_signal.assert_called_once()
 
+    def test_cancel_during_dictionary_scan_keeps_current_batch_unmodified(self) -> None:
+        self._prepare_dictionary_backend()
+        s = self.session
+        before_eulers = s.current_eulers_rad.copy()
+        before_scores = s.last_scores_map.copy()
+        before_residual = s.residual_point_results[0]
+        def matching(*args, progress_callback, **kwargs):
+            progress_callback(.5)
+            raise AssertionError('Cancellation did not propagate')
+        s._dictionary_index_kikuchipy_signal.side_effect = matching
+        with self.assertRaises(InterruptedError):
+            s.dictionary_index_indices(np.array([0, 1]), phase_id=1, keep_n=1,
+                progress_callback=self._cancel_after_completed_work, parallel_cores=2)
+        np.testing.assert_array_equal(s.current_eulers_rad, before_eulers)
+        np.testing.assert_array_equal(s.last_scores_map, before_scores)
+        self.assertIs(s.residual_point_results[0], before_residual)
+
+    def test_cancel_during_residual_preparation_does_not_start_matching(self) -> None:
+        self._prepare_dictionary_backend()
+        s = self.session
+        before_eulers = s.residual_eulers_rad.copy()
+        before_scores = s.last_residual_scores_map.copy()
+        messages = []
+        def prepare(*args, progress_callback, **kwargs):
+            progress_callback(.5)
+            raise AssertionError('Cancellation did not propagate')
+        def cancel(value, message):
+            messages.append(message)
+            if s._residual_signal_from_indices.call_count:
+                raise InterruptedError()
+        s._residual_signal_from_indices.side_effect = prepare
+        with self.assertRaises(InterruptedError):
+            s._batch_index_residual_points(np.array([0, 1]), keep_n=1, progress_callback=cancel)
+        s._residual_signal_from_indices.assert_called_once()
+        s._dictionary_index_kikuchipy_signal.assert_not_called()
+        np.testing.assert_array_equal(s.residual_eulers_rad, before_eulers)
+        np.testing.assert_array_equal(s.last_residual_scores_map, before_scores)
+        self.assertTrue(any('Preparing residual batch' in message for message in messages))
+
     def test_cancelled_legacy_indexing_commits_completed_point_validity(self) -> None:
         s = self.session
         pattern = np.arange(16, dtype=np.float32).reshape(4, 4)
@@ -343,6 +382,41 @@ class ResultInvalidationTests(unittest.TestCase):
         self.assertNotIn(0, s.overlap_mixture_results)
         self.assertIn(1, s.overlap_mixture_results)
 
+    def test_residual_refinement_projects_only_selected_inspection_and_keeps_best_candidates(self) -> None:
+        import kikuchipy as kp
+        from orix.crystal_map import Phase, PhaseList
+        from orix.quaternion import Rotation
+
+        for candidates in (1, 3):
+            for target in (None, 1):
+                with self.subTest(candidates=candidates, target=target):
+                    self._prepare_dictionary_backend()
+                    s = self.session
+                    s._residual_signal_from_indices.return_value = kp.signals.EBSD(np.ones((2, 4, 4), dtype=np.float32))
+                    s._kikuchipy_refinement_binning_settings = Mock(return_value=(1, (0, 4, 0, 4), None, "full"))
+                    s._kikuchipy_detector_for_indices = Mock(return_value=object())
+                    s._phase_list_for_current_master = Mock(return_value=PhaseList(Phase(name='Cu', point_group='m-3m')))
+                    s.residual_candidate_eulers_rad = np.ones((2, candidates, 3)) if candidates > 1 else None
+                    eulers = np.arange(2*candidates*3).reshape(2*candidates, 3) / 30 + .1
+                    rotations = Rotation.from_euler(eulers)
+                    scores = np.array([.4, .8]) if candidates == 1 else np.array([.3, .9, .5, .8, .4, .2])
+                    s._refine_orientation_signal = Mock(return_value=SimpleNamespace(rotations=rotations, prop={'scores': scores}))
+                    s._simulate_pattern_for_euler = Mock(return_value=np.arange(16).reshape(4, 4).astype(np.float32))
+                    results = s._batch_refine_residual_points(
+                        np.array([0, 1]), trust_euler_deg=1.4, maxfev=25, inspection_index=target,
+                    )
+                    expected = np.argmax(scores.reshape(2, candidates), axis=1) + np.arange(2)*candidates
+                    np.testing.assert_array_equal([r.secondary_euler_rad for r in results], rotations.to_euler()[expected])
+                    np.testing.assert_array_equal([r.secondary_ncc_kp for r in results], scores[expected])
+                    self.assertIsNone(results[0].secondary_simulated)
+                    if target is None:
+                        s._simulate_pattern_for_euler.assert_not_called()
+                        self.assertIsNone(results[1].secondary_simulated)
+                    else:
+                        s._simulate_pattern_for_euler.assert_called_once()
+                        self.assertEqual(s._simulate_pattern_for_euler.call_args.args[0], 1)
+                        self.assertIsNotNone(results[1].secondary_simulated)
+
     def test_index_refine_residual_sequence_retains_new_primary_validity(self) -> None:
         s = self.session
         s.master = SimpleNamespace(kind="kikuchipy", mp_signal=object(), phase=object(), energy_kv=20.0)
@@ -369,6 +443,7 @@ class ResultInvalidationTests(unittest.TestCase):
         s._kikuchipy_refinement_binning_settings = Mock(return_value=(1, (0, 4, 0, 4), None, "full"))
         s._phase_list_for_current_master = Mock(return_value=None)
         s._kikuchipy_detector_for_indices = Mock(return_value=object())
+        s._refine_orientation_signal = Mock(return_value=refined)
         with patch("orix.crystal_map.CrystalMap", return_value=object()):
             s.refine_orientations_indices(np.array([0]), phase_id=1)
         self.assertEqual(s.get_primary_index_ncc(0), 0.85)

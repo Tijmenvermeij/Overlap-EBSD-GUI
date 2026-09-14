@@ -70,7 +70,7 @@ class MultiStepOverlapGUI(GUIControls, tk.Tk):
         self._live_refresh_after_id: str | None = None
         self._job_update_gate = None
         self._job_result_views = set()
-        self.live_update_status_var = tk.StringVar(value="Live maps: refresh about every 5 s as results become available.")
+        self.live_update_status_var = tk.StringVar(value="Speed priority: maps refresh between batches, less often when drawing is expensive.")
         self._residual_colorbar = None
         self._euler_step_deg = 0.01
         self._pc_step = 0.001
@@ -448,11 +448,12 @@ class MultiStepOverlapGUI(GUIControls, tk.Tk):
             self._populate_point_vars()
             if 0 in views:
                 self.calibration_summary_var.set(self.session.calibration_point_summary(include_statistics=False))
-            for view_index in views:
-                self._refresh_complete_analysis_maps(view_index)
+            # Hidden tabs will refresh when opened. Draw the visible view once
+            # even if several stages have produced results since the last draw.
+            self._refresh_complete_analysis_maps(active)
             from time import strftime
             self.live_update_status_var.set(
-                f"Live maps updated {strftime('%H:%M:%S')} — completed results; 5 s refresh target."
+                f"Live maps updated {strftime('%H:%M:%S')} — speed priority; completed batches."
             )
         except Exception:
             self.live_update_status_var.set("Live map refresh failed; processing continues.")
@@ -1412,7 +1413,7 @@ class MultiStepOverlapGUI(GUIControls, tk.Tk):
     def _on_action_done(self, msg: str) -> None:
         self._worker_thread = None
         self._job_result_views = set()
-        self.live_update_status_var.set("Live maps: refresh about every 5 s as results become available.")
+        self.live_update_status_var.set("Speed priority: maps refresh between batches, less often when drawing is expensive.")
         self._set_busy(False)
         if self._pending_restore_path is not None:
             restore_path = self._pending_restore_path
@@ -2148,6 +2149,7 @@ class MultiStepOverlapGUI(GUIControls, tk.Tk):
 
     @_guarded_action
     def _refine_selected_point(self) -> None:
+        indexing_cores = int(self.parallel_cores_var.get())
         indices = np.array([int(self.index_var.get())], dtype=np.int64)
         if indices.size == 0:
             raise ValueError("Add calibration points from the map first.")
@@ -2163,10 +2165,12 @@ class MultiStepOverlapGUI(GUIControls, tk.Tk):
         self._run_threaded(lambda: self.session.refine_indices(
             indices=indices, phase_id=phase_id, trust_euler_deg=trust_euler,
             trust_pc=trust_pc, maxfev=maxfev, progress_callback=self._calibration_progress,
+            parallel_cores=indexing_cores,
         ), on_success=lambda msg: self._finish_calibration_optimization(msg, indices))
 
     @_guarded_action
     def _refine_calibration_points(self) -> None:
+        indexing_cores = int(self.parallel_cores_var.get())
         indices = np.asarray(self.session.calibration_indices, dtype=np.int64).copy()
         if indices.size == 0:
             raise ValueError("Add calibration points from the map first.")
@@ -2184,6 +2188,7 @@ class MultiStepOverlapGUI(GUIControls, tk.Tk):
         self._run_threaded(lambda: self.session.refine_indices(
             indices=indices, phase_id=phase_id, trust_euler_deg=trust_euler,
             trust_pc=trust_pc, maxfev=maxfev, progress_callback=self._calibration_progress,
+            parallel_cores=indexing_cores,
         ), on_success=lambda msg: self._finish_calibration_optimization(msg, indices))
 
     @_guarded_action
@@ -2197,6 +2202,7 @@ class MultiStepOverlapGUI(GUIControls, tk.Tk):
 
     @_guarded_action
     def _refine_roi(self) -> None:
+        indexing_cores = int(self.parallel_cores_var.get())
         indices = self.session.roi_indices(*self._roi_bounds())
         if indices.size == 0:
             raise ValueError("Add calibration points from the map first.")
@@ -2210,6 +2216,7 @@ class MultiStepOverlapGUI(GUIControls, tk.Tk):
         self._run_threaded(lambda: self.session.refine_indices(
             indices=indices, phase_id=phase_id, trust_euler_deg=trust_euler,
             trust_pc=trust_pc, maxfev=maxfev, progress_callback=self._calibration_progress,
+            parallel_cores=indexing_cores,
         ))
 
     @_guarded_action
@@ -2232,6 +2239,7 @@ class MultiStepOverlapGUI(GUIControls, tk.Tk):
         return trust, maxfev, bool(self.refine_full_resolution_var.get())
 
     def _index_primary_indices(self, indices: np.ndarray, *, label: str) -> None:
+        indexing_cores = int(self.parallel_cores_var.get())
         phase_id = int(self.phase_id_var.get())
         resolution_deg = float(self.di_res_deg_var.get())
         keep_n = int(self.dictionary_keep_n_var.get())
@@ -2250,6 +2258,7 @@ class MultiStepOverlapGUI(GUIControls, tk.Tk):
             message = self.session.dictionary_index_indices(
                 indices=indices, phase_id=phase_id, keep_n=keep_n,
                 resolution_deg=resolution_deg, progress_callback=progress,
+                parallel_cores=indexing_cores,
             )
             if refinement is not None:
                 self._check_job_cancelled()
@@ -2257,6 +2266,7 @@ class MultiStepOverlapGUI(GUIControls, tk.Tk):
                 refined = self.session.refine_orientations_indices(
                     indices, phase_id=phase_id, trust_euler_deg=trust, maxfev=maxfev,
                     use_full_resolution=full_resolution, progress_callback=refinement_progress,
+                    parallel_cores=indexing_cores,
                 )
                 message = f"{message} {refined}"
             return message
@@ -2327,6 +2337,7 @@ class MultiStepOverlapGUI(GUIControls, tk.Tk):
 
     @_guarded_action
     def _refine_last_indexed(self) -> None:
+        indexing_cores = int(self.parallel_cores_var.get())
         phase_id = int(self.phase_id_var.get())
         trust_euler, maxfev, use_full_resolution = self._index_refinement_settings()
         indices = self.session.last_indexed_indices
@@ -2340,10 +2351,12 @@ class MultiStepOverlapGUI(GUIControls, tk.Tk):
         self._run_threaded(lambda: self.session.refine_orientations_indices(
             indices, phase_id=phase_id, trust_euler_deg=trust_euler, maxfev=maxfev,
             use_full_resolution=use_full_resolution, progress_callback=progress,
+            parallel_cores=indexing_cores,
         ))
 
     @_guarded_action
     def _run_complete_roi_analysis(self, *, include_step4: bool = True) -> None:
+        indexing_cores = int(self.parallel_cores_var.get())
         workflow_label = "Steps 2–4" if include_step4 else "Steps 2–3"
         if self.session.data is None:
             messagebox.showerror("Error", "Load input data first.")
@@ -2421,28 +2434,19 @@ class MultiStepOverlapGUI(GUIControls, tk.Tk):
         ) -> None:
             self._check_job_cancelled()
             overall = 100.0 * (stage_index + 1) / stage_count
-            refresh_complete = threading.Event()
 
-            def update_and_refresh() -> None:
-                try:
-                    self._set_complete_analysis_progress(
-                        overall,
-                        f"{stage_index + 1}/{stage_count} {stage_name} "
-                        + ("skipped (auto-refine off)." if skipped else "complete."),
-                    )
-                    self._log(f"ROI analysis {workflow_label} — {stage_name}: {message}")
-                    self._refresh_complete_analysis_maps(map_view_index)
-                except Exception:
-                    self._log(
-                        f"Intermediate map refresh failed after {stage_name}:\n{traceback.format_exc()}"
-                    )
-                finally:
-                    refresh_complete.set()
+            def update() -> None:
+                self._set_complete_analysis_progress(
+                    overall,
+                    f"{stage_index + 1}/{stage_count} {stage_name} "
+                    + ("skipped (auto-refine off)." if skipped else "complete."),
+                )
+                self._log(f"ROI analysis {workflow_label} — {stage_name}: {message}")
+                self._job_result_views.add(map_view_index)
 
-            self._post_ui(update_and_refresh)
-            # Do not let the next numerical stage mutate session maps until
-            # the GUI has drawn this completed stage's intermediate result.
-            refresh_complete.wait()
+            # Stage transitions use the same cost-aware preview gate as all
+            # other progress boundaries, avoiding duplicate forced redraws.
+            self._post_ui(update)
 
         def execute() -> str:
             primary_index_msg = self.session.dictionary_index_indices(
@@ -2451,6 +2455,7 @@ class MultiStepOverlapGUI(GUIControls, tk.Tk):
                 keep_n=keep_n,
                 resolution_deg=resolution_deg,
                 progress_callback=stage_progress(0, "Primary indexing", self._set_reindex_progress),
+                parallel_cores=indexing_cores,
             )
             self.last_overlap = None
             self.last_overlap_mixture = None
@@ -2464,6 +2469,7 @@ class MultiStepOverlapGUI(GUIControls, tk.Tk):
                     maxfev=primary_maxfev,
                     use_full_resolution=primary_full_resolution,
                     progress_callback=stage_progress(1, "Primary refinement", self._set_refinement_progress),
+                    parallel_cores=indexing_cores,
                 )
             else:
                 primary_refine_msg = "Skipped because automatic orientation refinement is off."
@@ -2510,6 +2516,7 @@ class MultiStepOverlapGUI(GUIControls, tk.Tk):
                     selected_index if np.any(residual_indices == selected_index) else None
                 ),
                 progress_callback=stage_progress(3, "Residual indexing", self._set_overlap_progress),
+                parallel_cores=indexing_cores,
             )
             if np.any(residual_indices == selected_index):
                 self.last_overlap = self.session.get_residual_point_result(selected_index)
@@ -2526,6 +2533,7 @@ class MultiStepOverlapGUI(GUIControls, tk.Tk):
                         selected_index if np.any(residual_indices == selected_index) else None
                     ),
                     progress_callback=stage_progress(4, "Residual refinement", self._set_overlap_progress),
+                    parallel_cores=indexing_cores,
                 )
                 if np.any(residual_indices == selected_index):
                     self.last_overlap = self.session.get_residual_point_result(selected_index)
@@ -2620,6 +2628,7 @@ class MultiStepOverlapGUI(GUIControls, tk.Tk):
 
     @_guarded_action
     def _run_residual_roi_analysis(self) -> None:
+        indexing_cores = int(self.parallel_cores_var.get())
         if self.session.data is None or self.session.dictionary_cache is None:
             raise ValueError("Load input and a dictionary before analyzing residuals.")
         indices, skipped = self._filter_roi_indices_by_threshold(self.session.roi_indices(*self._roi_bounds()))
@@ -2664,6 +2673,7 @@ class MultiStepOverlapGUI(GUIControls, tk.Tk):
             messages.append(self.session.index_overlap_residual_indices(
                 indices, keep_n=keep_n, write_patterns=write_patterns,
                 selected_index=selected_index, progress_callback=progress(1),
+                parallel_cores=indexing_cores,
             ))
             if refinement is not None:
                 self._check_job_cancelled()
@@ -2672,6 +2682,7 @@ class MultiStepOverlapGUI(GUIControls, tk.Tk):
                     indices, trust_euler_deg=trust, maxfev=maxfev,
                     use_full_resolution=full_resolution, write_patterns=write_patterns,
                     selected_index=selected_index, progress_callback=progress(2),
+                    parallel_cores=indexing_cores,
                 ))
             return " ".join(messages) + f" Skipped {skipped} point(s) at the primary NCC filter."
         self._set_overlap_progress(0.0, "Starting residual ROI analysis...")
@@ -2725,6 +2736,7 @@ class MultiStepOverlapGUI(GUIControls, tk.Tk):
 
     @_guarded_action
     def _index_overlap_residual(self) -> None:
+        indexing_cores = int(self.parallel_cores_var.get())
         index = int(self.index_var.get())
         blur_sigma = float(self.blur_sigma_var.get())
         keep_n = max(1, int(self.residual_keep_n_var.get()))
@@ -2760,6 +2772,7 @@ class MultiStepOverlapGUI(GUIControls, tk.Tk):
                 blur_sigma=blur_sigma,
                 keep_n=keep_n,
                 residual_result=current_result,
+                parallel_cores=indexing_cores,
             )
             self.last_overlap = result
             self.last_overlap_mixture = None
@@ -2774,6 +2787,7 @@ class MultiStepOverlapGUI(GUIControls, tk.Tk):
 
     @_guarded_action
     def _refine_overlap_residual(self) -> None:
+        indexing_cores = int(self.parallel_cores_var.get())
         index = int(self.index_var.get())
         result = self.session.get_residual_point_result(index)
         if result is None or result.index != index or result.secondary_euler_rad is None:
@@ -2810,6 +2824,7 @@ class MultiStepOverlapGUI(GUIControls, tk.Tk):
                 use_full_resolution=use_full_resolution,
                 progress_callback=lambda value, message: self._post_ui(lambda v=value, m=message: self._set_overlap_progress(v, m),
                 ),
+                parallel_cores=indexing_cores,
             )
             self.last_overlap = refined
             self.last_overlap_mixture = None
@@ -2893,6 +2908,7 @@ class MultiStepOverlapGUI(GUIControls, tk.Tk):
 
     @_guarded_action
     def _index_overlap_residual_roi(self) -> None:
+        indexing_cores = int(self.parallel_cores_var.get())
         if self.session.data is None:
             messagebox.showerror("Error", "Load input data first.")
             return
@@ -2925,6 +2941,7 @@ class MultiStepOverlapGUI(GUIControls, tk.Tk):
                 write_patterns=write_patterns,
                 selected_index=selected_index if np.any(indices == selected_index) else None,
                 progress_callback=progress,
+                parallel_cores=indexing_cores,
             )
             if np.any(indices == selected_index):
                 selected_result = self.session.get_residual_point_result(selected_index)
@@ -2942,6 +2959,7 @@ class MultiStepOverlapGUI(GUIControls, tk.Tk):
 
     @_guarded_action
     def _refine_overlap_residual_roi(self) -> None:
+        indexing_cores = int(self.parallel_cores_var.get())
         if self.session.data is None:
             messagebox.showerror("Error", "Load input data first.")
             return
@@ -2976,6 +2994,7 @@ class MultiStepOverlapGUI(GUIControls, tk.Tk):
                 write_patterns=write_patterns,
                 selected_index=selected_index if np.any(indices == selected_index) else None,
                 progress_callback=progress,
+                parallel_cores=indexing_cores,
             )
             if np.any(indices == selected_index):
                 selected_result = self.session.get_residual_point_result(selected_index)

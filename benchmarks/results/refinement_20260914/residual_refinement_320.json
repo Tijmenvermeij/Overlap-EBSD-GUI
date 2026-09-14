@@ -1,0 +1,88 @@
+[
+  {
+    "count": 320,
+    "cores": 10,
+    "keep_n": 5,
+    "maxfev": 25,
+    "full_resolution": true,
+    "map_count": 95340
+  },
+  {
+    "label": "reference",
+    "seconds": 11.830836625071242,
+    "batches": [
+      16,
+      64,
+      140,
+      100
+    ],
+    "times": {
+      "_refine_orientation_signal": 3.0982337079476565,
+      "_simulate_pattern_for_euler": 8.58712045615539,
+      "_batch_refine_residual_points": 11.76582229230553
+    },
+    "calls": {
+      "_refine_orientation_signal": 4,
+      "_simulate_pattern_for_euler": 322,
+      "_batch_refine_residual_points": 4
+    },
+    "eulers_scores_and_selected_patterns_equal": true
+  },
+  {
+    "label": "deferred_images_original_batches",
+    "seconds": 2.9315691250376403,
+    "batches": [
+      16,
+      64,
+      240
+    ],
+    "times": {
+      "_refine_orientation_signal": 2.8064348329789937,
+      "_batch_refine_residual_points": 2.863985874922946,
+      "_simulate_pattern_for_euler": 0.06009195907972753
+    },
+    "calls": {
+      "_refine_orientation_signal": 3,
+      "_batch_refine_residual_points": 3,
+      "_simulate_pattern_for_euler": 2
+    },
+    "eulers_scores_and_selected_patterns_equal": true
+  },
+  {
+    "label": "implemented",
+    "seconds": 2.9185950830578804,
+    "batches": [
+      128,
+      192
+    ],
+    "times": {
+      "_refine_orientation_signal": 2.7778328750282526,
+      "_simulate_pattern_for_euler": 0.08905804110690951,
+      "_batch_refine_residual_points": 2.850684667006135
+    },
+    "calls": {
+      "_refine_orientation_signal": 2,
+      "_simulate_pattern_for_euler": 3,
+      "_batch_refine_residual_points": 2
+    },
+    "eulers_scores_and_selected_patterns_equal": true
+  },
+  {
+    "label": "fixed_maximum_batch",
+    "seconds": 3.1115094171836972,
+    "batches": [
+      320
+    ],
+    "times": {
+      "_refine_orientation_signal": 2.9734590421430767,
+      "_simulate_pattern_for_euler": 0.0850007499102503,
+      "_batch_refine_residual_points": 3.0491852501872927
+    },
+    "calls": {
+      "_refine_orientation_signal": 1,
+      "_simulate_pattern_for_euler": 3,
+      "_batch_refine_residual_points": 1
+    },
+    "eulers_scores_and_selected_patterns_equal": true
+  }
+]

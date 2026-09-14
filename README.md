@@ -18,16 +18,18 @@ python multistep_overlap_ebsd_gui.py
 3. **Residual indexing:** fit and subtract the primary simulated pattern, then index and refine the residual to find a second orientation of the same phase.
 4. **Mixture optimization:** fit the two orientations together and inspect the NCC and contribution maps.
 
-**Run steps 2–3** and **Run steps 2–4** automate the corresponding stages. Workflow Open/Save, shared pattern conditioning, Cancel, and worker-core controls are available across tabs. The core limit applies to parallel residual and mixture fits and defaults to **1**.
+**Run steps 2–3** and **Run steps 2–4** automate the corresponding stages. Workflow Open/Save, shared pattern conditioning, Cancel, and worker-core controls are available across tabs. The worker limit applies to indexing, orientation/PC refinement, residual fitting and mixture fitting; it defaults to **1** and is saved with the workflow.
 
-Maps update during processing with a **5-second target**, preserving the selected tab, inspection point and zoom. Updates and cancellation wait for completed work; slow batches or individual optimizations can take longer.
+Maps update between completed batches, preserving the selected tab, inspection point and zoom. Refreshes are at least five seconds apart and become less frequent when drawing is expensive. Updates and cancellation wait for completed work; slow batches or individual optimizations can take longer.
 
 ## Defaults and results
 
 - Dictionary spacing **1.5°**, software binning **2**, and **5 retained matches**. Primary and residual indexing share refinement settings.
 - Refinement uses full-resolution patterns and a search range following the dictionary spacing; both can be adjusted. New master loads use the highest available energy.
 - Steps 3 and 4 share a **Blur / gain fitting method** selector. **Blur then gain (fastest)** is the default; choose **Blur then gain + joint refinement** to further optimize both together, or **Joint blur and gain** for a joint search. The choice is saved with the workflow.
-- Residuals are cached at full float32 precision in temporary disk storage, with only a few selected-point inspection images kept in memory. The cache is removed on normal shutdown; saved workflows reconstruct images from the saved fits. See [CPU fitting and performance](docs/cpu_performance.md).
+- Residuals are cached at full float32 precision in temporary disk storage, with only a few selected-point inspection images kept in memory. The cache is removed on normal shutdown; loaded workflows reconstruct images from saved fits in bounded batches, reusing the master pattern and reporting preparation progress. See [CPU fitting and performance](docs/cpu_performance.md).
+- The global worker limit also controls primary/residual dictionary indexing and orientation/PC refinement. Indexing reuses dictionary normalization statistics. Primary/residual orientation refinement uses a compiled Nelder–Mead loop with Kikuchipy's projection and NCC kernels, reuses identical detector geometry and avoids fitting repeated candidates. Residual refinement builds inspection images only for the selected point. See [indexing and refinement performance](docs/indexing_refinement_performance.md).
+- Speed takes priority over live previews throughout the workflow. Numerical batches fill their memory allowance; map refresh timing never shrinks them. The visible map refreshes between batches, with longer intervals when drawing is expensive (a 1% preview-overhead target). Progress and cancellation remain available at safe boundaries. First use of the compiled solver can take a few extra seconds to initialize its cached code.
 - Save dictionaries explicitly to retain them beyond the session. Workflow save/restore preserves settings, calibration and results.
 - Export primary/residual results as H5OINA or ANG, with optional patterns. ROI exports retain the full scan dimensions and mark the ROI results. Per-point PCs are preserved; keep ANG `.pc_map.npz` companions with their ANG files.
 

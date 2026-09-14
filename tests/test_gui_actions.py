@@ -113,6 +113,7 @@ class GuiActionTests(unittest.TestCase):
         )
         gui = bind(SimpleNamespace(
             session=session, busy=False,
+            parallel_cores_var=Value(6),
             phase_id_var=Value(1), di_res_deg_var=Value(2.0), dictionary_keep_n_var=Value(5),
             auto_refine_var=Value(auto), follow_dictionary_trust_var=Value(True),
             trust_euler_var=Value(9.0), maxfev_var=Value(50), refine_full_resolution_var=Value(True),
@@ -130,11 +131,14 @@ class GuiActionTests(unittest.TestCase):
         gui.auto_refine_var.set(False)
         gui.phase_id_var.set(7)
         gui.trust_euler_var.set(15)
+        gui.parallel_cores_var.set(1)
         actions[0]()
         index = gui.session.dictionary_index_indices.call_args.kwargs
         refine = gui.session.refine_orientations_indices.call_args.kwargs
         self.assertEqual(index['phase_id'], 1)
         self.assertEqual(index['keep_n'], 5)
+        self.assertEqual(index['parallel_cores'], 6)
+        self.assertEqual(refine['parallel_cores'], 6)
         self.assertEqual(refine['trust_euler_deg'], 1.2)
         self.assertEqual(refine['maxfev'], 50)
         self.assertTrue(refine['use_full_resolution'])
@@ -191,6 +195,7 @@ class GuiActionTests(unittest.TestCase):
 
     def test_stale_gui_residual_cannot_be_indexed_after_session_invalidation(self):
         gui = SimpleNamespace(
+            parallel_cores_var=Value(4),
             busy=False, index_var=Value(4), blur_sigma_var=Value(0.0), residual_keep_n_var=Value(5),
             last_overlap=SimpleNamespace(index=4),
             session=SimpleNamespace(get_residual_point_result=Mock(return_value=None)),
@@ -207,6 +212,7 @@ class GuiActionTests(unittest.TestCase):
     def test_conditioning_invalidation_between_preflight_and_worker_cannot_reuse_residual(self):
         actions = []
         gui = SimpleNamespace(
+            parallel_cores_var=Value(4),
             busy=False, index_var=Value(4), blur_sigma_var=Value(0.0), residual_keep_n_var=Value(5),
             session=SimpleNamespace(
                 get_residual_point_result=Mock(side_effect=[SimpleNamespace(index=4), None]),
@@ -357,6 +363,7 @@ class GuiActionTests(unittest.TestCase):
             setattr(session, name, Mock(return_value='done'))
         gui = SimpleNamespace(
             session=session, busy=False, index_var=Value(0),
+            _job_result_views=set(),
             phase_id_var=Value(1), di_res_deg_var=Value(1.0),
             dictionary_keep_n_var=Value(5), auto_refine_var=Value(False),
             fit_method_var=Value(FIT_METHOD_LABELS[method]),

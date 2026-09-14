@@ -127,7 +127,7 @@ class GUIControls:
         self.btn_cancel = ttk.Button(bar, text="Cancel", command=self._cancel_current_action, state="disabled")
         self.btn_cancel.grid(row=0, column=7, padx=(8, 0))
         ttk.Label(bar, textvariable=self.context_summary_var, anchor="w", wraplength=800).grid(row=1, column=0, columnspan=5, sticky="ew", pady=(5, 0))
-        ttk.Label(bar, text="Cores: residual + mixture fitting", anchor="e").grid(row=1, column=5, columnspan=3, sticky="e", pady=(5, 0))
+        ttk.Label(bar, text="Cores: indexing, refinement + fitting", anchor="e").grid(row=1, column=5, columnspan=3, sticky="e", pady=(5, 0))
         ttk.Label(bar, textvariable=self.live_update_status_var, anchor="w").grid(
             row=2, column=0, columnspan=8, sticky="ew", pady=(3, 0))
         bar.columnconfigure(3, weight=1)

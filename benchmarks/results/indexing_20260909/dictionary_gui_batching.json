@@ -1,0 +1,53 @@
+{
+  "dictionary_count": 304053,
+  "pattern_shape": [
+    64,
+    78
+  ],
+  "dictionary_iteration": 26886,
+  "keep_n": 5,
+  "versions": {
+    "numpy": "2.4.6",
+    "scipy": "1.17.1",
+    "kikuchipy": "0.12.1",
+    "dask": "2026.3.0"
+  },
+  "records": [
+    {
+      "method": "current_kikuchipy",
+      "count": 24,
+      "dask_workers": 10,
+      "seconds": 8.937272417009808,
+      "cpu_seconds": 8.50192,
+      "average_cpu_cores": 0.9512879996606989,
+      "patterns_per_second": 2.6853830654554236,
+      "rss_bytes": 864813056,
+      "candidate_indices_equal": true,
+      "maximum_score_difference": 0.0
+    },
+    {
+      "method": "application_without_progress",
+      "count": 24,
+      "dask_workers": 10,
+      "seconds": 8.014501290977933,
+      "cpu_seconds": 7.671385999999998,
+      "patterns_per_second": 2.9945718552715475,
+      "batches": []
+    },
+    {
+      "method": "application_with_progress",
+      "count": 24,
+      "dask_workers": 10,
+      "seconds": 15.87890062504448,
+      "cpu_seconds": 15.124030000000001,
+      "patterns_per_second": 1.5114396498046458,
+      "batches": [
+        "Indexing batch 1 (16 point(s)) against 304053 dictionary patterns (26886 dictionary patterns/iteration)...",
+        "Indexing batch 2 (8 point(s)) against 304053 dictionary patterns (26886 dictionary patterns/iteration)..."
+      ]
+    }
+  ],
+  "blas": "Apple Accelerate",
+  "veclib_maximum_threads": null,
+  "timing_scope": "Workflow restore and experimental input selection excluded; dictionary I/O included."
+}

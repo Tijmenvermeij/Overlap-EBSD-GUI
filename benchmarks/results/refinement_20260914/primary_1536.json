@@ -1,0 +1,67 @@
+[
+  {
+    "count": 1536,
+    "cores": 6,
+    "keep_n": 5,
+    "maxfev": 25,
+    "full_resolution": true
+  },
+  {
+    "label": "compiled_first_use_two_points",
+    "seconds": 4.499807332875207
+  },
+  {
+    "label": "reference",
+    "repeat": 0,
+    "seconds": 24.606603249907494,
+    "fitting_seconds": 24.518230789806694,
+    "process_cpu_seconds": 128.895948,
+    "average_cpu_cores": 5.238266602298494,
+    "candidate_fit_batches": [
+      385,
+      1540,
+      1585,
+      1540,
+      1435,
+      1195
+    ],
+    "max_euler_score_differences": [
+      0.0,
+      0.0
+    ]
+  },
+  {
+    "label": "shared_pc_maximum_batch",
+    "repeat": 0,
+    "seconds": 23.601960874861106,
+    "fitting_seconds": 23.518668750068173,
+    "process_cpu_seconds": 125.05894599999999,
+    "average_cpu_cores": 5.2986676260955345,
+    "candidate_fit_batches": [
+      3360,
+      3360,
+      960
+    ],
+    "max_euler_score_differences": [
+      0.0,
+      0.0
+    ]
+  },
+  {
+    "label": "implemented",
+    "repeat": 0,
+    "seconds": 18.618227333994582,
+    "fitting_seconds": 18.53701145807281,
+    "process_cpu_seconds": 103.562184,
+    "average_cpu_cores": 5.562408393784528,
+    "candidate_fit_batches": [
+      3360,
+      3360,
+      960
+    ],
+    "max_euler_score_differences": [
+      0.0,
+      0.0
+    ]
+  }
+]

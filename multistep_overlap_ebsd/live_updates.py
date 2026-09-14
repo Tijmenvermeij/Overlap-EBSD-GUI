@@ -1,8 +1,9 @@
-"""Safe progress-boundary redraws and time-targeted numerical batches."""
+"""Memory-bounded numerical batches and inexpensive progress-boundary redraws."""
 from threading import Event
 from time import monotonic
 
 LIVE_UPDATE_SECONDS = 5.0
+LIVE_UPDATE_COMPUTE_RATIO = 99.0
 
 
 class LiveUpdateGate:
@@ -18,11 +19,13 @@ class LiveUpdateGate:
         self.interval = interval
         self.clock = clock
         self.last_update = clock()
+        self.next_interval = interval
 
     def at_boundary(self, enqueue, render):
-        if self.clock() - self.last_update < self.interval:
+        if self.clock() - self.last_update < self.next_interval:
             return
         finished = Event()
+        before = self.clock()
 
         def update():
             try:
@@ -33,24 +36,14 @@ class LiveUpdateGate:
         enqueue(update)
         finished.wait()
         self.last_update = self.clock()
+        # Include queueing as well as drawing. Expensive maps must not keep
+        # pausing the coordinator: aim for at most 1% preview overhead.
+        self.next_interval = max(self.interval,
+                                 (self.last_update - before) * LIVE_UPDATE_COMPUTE_RATIO)
 
 
-def progress_batches(indices, maximum, progress_callback=None, *, clock=monotonic):
-    """Yield disjoint batches, targeting five seconds when progress is requested.
-
-    Existing memory limits remain hard caps. Start small, then use the measured
-    batch duration to adjust subsequent batches. A single slow pattern cannot
-    be interrupted midway. Without a callback, retain the existing batch size.
-    """
+def progress_batches(indices, maximum):
+    """Yield full memory-bounded batches independently of GUI refresh timing."""
     maximum = max(1, int(maximum))
-    size = min(maximum, 16) if progress_callback is not None else maximum
-    start = 0
-    while start < len(indices):
-        batch = indices[start:start + size]
-        before = clock()
-        yield start, batch
-        elapsed = max(clock() - before, 0.001)
-        start += len(batch)
-        if progress_callback is not None:
-            estimate = max(1, int(len(batch) * LIVE_UPDATE_SECONDS / elapsed))
-            size = min(maximum, size * 4, estimate)
+    for start in range(0, len(indices), maximum):
+        yield start, indices[start:start + maximum]

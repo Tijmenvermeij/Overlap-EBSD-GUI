@@ -1,0 +1,60 @@
+[
+  {
+    "label": "dictionary_reference_512",
+    "seconds": 7.327266167034395
+  },
+  {
+    "label": "dictionary_first_pass_512",
+    "seconds": 4.009559334022924,
+    "candidate_eulers_equal": true,
+    "max_score_difference": 0.0
+  },
+  {
+    "label": "dictionary_reused_statistics_512",
+    "seconds": 2.7902108340058476,
+    "candidate_eulers_equal": true,
+    "max_score_difference": 0.0
+  },
+  {
+    "label": "gui_index_24_reference",
+    "seconds": 12.414836624986492
+  },
+  {
+    "label": "gui_index_24_implemented",
+    "seconds": 1.8089977919589728
+  },
+  {
+    "label": "repeat_refine_80_reference",
+    "seconds": 1.5938817920396104
+  },
+  {
+    "label": "repeat_refine_80_implemented",
+    "seconds": 0.3657901659607887,
+    "eulers_equal": true,
+    "scores_equal": true
+  },
+  {
+    "label": "residual_construction_6",
+    "seconds": 0.8225691250991076
+  },
+  {
+    "label": "residual_indexing_6",
+    "seconds": 1.759988250094466
+  },
+  {
+    "label": "residual_refinement_6",
+    "seconds": 0.2930897499900311
+  },
+  {
+    "label": "selected_residual_refinement",
+    "seconds": 0.1433465420268476
+  },
+  {
+    "label": "mixture_fitting_6",
+    "seconds": 1.2632230840390548
+  },
+  {
+    "label": "calibration_3",
+    "seconds": 0.22726841596886516
+  }
+]
