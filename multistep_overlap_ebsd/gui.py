@@ -913,20 +913,25 @@ class MultiStepOverlapGUI(GUIControls, tk.Tk):
         # notably the native macOS save dialog.  Supplying the suffix in both
         # options therefore presents e.g. ``map.h5oina.h5oina`` as the default.
         initialfile = current.name[: -len(ext)]
+        format_labels = {".ang": "ANG files", ".h5oina": "H5OINA files"}
+        format_extensions = [ext] + sorted(allowed_extensions - {ext})
+        selected_format = tk.StringVar(master=self, value="")
+        formats_title = " or ".join(format_extensions)
         fn = filedialog.asksaveasfilename(
+            title=f"Save {'residual' if residual else 'primary'} results ({formats_title})",
             defaultextension=ext,
             initialfile=initialfile,
             initialdir=str(current.parent),
-            filetypes=[
-                ("Pattern/orientation files", "*.ang *.h5oina"),
-                ("ANG files", "*.ang"),
-                ("H5OINA files", "*.h5oina"),
-                ("All files", "*.*"),
-            ],
+            filetypes=[(format_labels[suffix], f"*{suffix}") for suffix in format_extensions],
+            typevariable=selected_format,
         )
         if not fn:
             return None
         selected_ext = Path(fn).suffix.lower()
+        for suffix in format_extensions:
+            if selected_format.get() == format_labels[suffix]:
+                selected_ext = suffix
+                break
         if selected_ext not in allowed_extensions:
             selected_ext = ext
         output_path = str(self._path_with_single_suffix(fn, selected_ext))
@@ -1868,8 +1873,9 @@ class MultiStepOverlapGUI(GUIControls, tk.Tk):
     def _save_workflow(self, output_path: str | None = None) -> None:
         raw = output_path or self.workflow_path_var.get().strip() or self._default_workflow_path()
         path = Path(raw).expanduser().resolve()
-        if path.suffix.lower() != ".npz":
-            path = path.with_suffix(".npz")
+        while path.suffix.lower() == ".npz":
+            path = path.with_suffix("")
+        path = path.with_name(path.name + ".npz")
         self.workflow_path_var.set(str(path))
         self._auto_workflow_path = None
         ui_state = self._workflow_ui_state()
@@ -1878,6 +1884,8 @@ class MultiStepOverlapGUI(GUIControls, tk.Tk):
     @_guarded_action
     def _save_workflow_as(self) -> None:
         current = Path(self.workflow_path_var.get().strip() or self._default_workflow_path())
+        while current.suffix.lower() == ".npz":
+            current = current.with_suffix("")
         fn = filedialog.asksaveasfilename(
             defaultextension=".npz",
             initialfile=current.name,

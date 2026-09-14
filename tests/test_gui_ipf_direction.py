@@ -161,6 +161,7 @@ class IpfDirectionSelectorTests(unittest.TestCase):
             return SimpleNamespace(get=lambda: value[0], set=lambda new: value.__setitem__(0, new))
 
         gui_stub = SimpleNamespace(
+            tk=self.interpreter.tk, _root=self.interpreter._root,
             session=SimpleNamespace(data=SimpleNamespace(source_type="h5oina")),
             _default_roi_export_path=lambda *, residual: (
                 "/tmp/map_residual_roi.h5oina" if residual else "/tmp/map_primary_roi.h5oina"
@@ -185,6 +186,9 @@ class IpfDirectionSelectorTests(unittest.TestCase):
         self.assertEqual(save_dialog.call_args_list[1].kwargs["initialfile"], "map_residual_roi")
         self.assertEqual(save_dialog.call_args_list[0].kwargs["defaultextension"], ".h5oina")
         self.assertEqual(save_dialog.call_args_list[1].kwargs["defaultextension"], ".h5oina")
+        self.assertEqual(save_dialog.call_args_list[0].kwargs["filetypes"], [("H5OINA files", "*.h5oina")])
+        self.assertEqual(save_dialog.call_args_list[0].kwargs["title"], "Save primary results (.h5oina)")
+        self.assertEqual(save_dialog.call_args_list[1].kwargs["title"], "Save residual results (.h5oina)")
         self.assertEqual(Path(primary_var.get()).name, "map_primary_roi.h5oina")
         self.assertEqual(Path(residual_var.get()).name, "map_residual_roi.h5oina")
         self.assertEqual(Path(primary_path).name, "map_primary_roi.h5oina")
@@ -194,6 +198,7 @@ class IpfDirectionSelectorTests(unittest.TestCase):
         value = ["/tmp/map_primary_roi.ang"]
         path_var = SimpleNamespace(get=lambda: value[0], set=lambda new: value.__setitem__(0, new))
         gui_stub = SimpleNamespace(
+            tk=self.interpreter.tk, _root=self.interpreter._root,
             session=SimpleNamespace(
                 data=SimpleNamespace(pattern_path="/tmp/map.up1", source_type="up_ang")
             ),
@@ -210,6 +215,31 @@ class IpfDirectionSelectorTests(unittest.TestCase):
 
         self.assertEqual(Path(output).name, "map_primary_roi.h5oina")
         self.assertEqual(Path(path_var.get()).name, "map_primary_roi.h5oina")
+
+    def test_result_format_dropdown_overrides_filename_extension(self) -> None:
+        for residual in (False, True):
+            for suffix, label in ((".ang", "ANG files"), (".h5oina", "H5OINA files")):
+                with self.subTest(residual=residual, suffix=suffix):
+                    path_var = tk.StringVar(master=self.interpreter, value="/tmp/map.h5oina")
+                    gui = SimpleNamespace(
+                        tk=self.interpreter.tk, _root=self.interpreter._root,
+                        session=SimpleNamespace(data=SimpleNamespace(pattern_path="/tmp/map.up1")),
+                        _roi_export_suffix=lambda: ".h5oina",
+                        _path_with_single_suffix=MultiStepOverlapGUI._path_with_single_suffix,
+                    )
+                    def choose_format(**options):
+                        self.assertEqual(options["filetypes"], [
+                            ("H5OINA files", "*.h5oina"), ("ANG files", "*.ang"),
+                        ])
+                        self.assertIn("residual" if residual else "primary", options["title"])
+                        self.assertIn(".ang", options["title"])
+                        self.assertIn(".h5oina", options["title"])
+                        options["typevariable"].set(label)
+                        return "/tmp/map.h5oina"
+                    with patch("multistep_overlap_ebsd.gui.filedialog.asksaveasfilename", side_effect=choose_format):
+                        output = MultiStepOverlapGUI._browse_roi_export(gui, path_var, residual=residual)
+                    self.assertEqual(Path(output).name, "map" + suffix)
+                    self.assertEqual(path_var.get(), output)
 
     def test_up_ang_path_sync_preserves_selected_h5oina_format(self) -> None:
         def path_var(default: str):
@@ -394,6 +424,7 @@ class IpfDirectionSelectorTests(unittest.TestCase):
         outcome: list[str] = []
         gui_stub = SimpleNamespace(
             session=session,
+            _job_result_views=set(),
             index_var=variable(0),
             phase_id_var=variable(1),
             di_res_deg_var=variable(1.2),
@@ -412,6 +443,7 @@ class IpfDirectionSelectorTests(unittest.TestCase):
             residual_maxfev_var=variable(25),
             residual_refine_full_resolution_var=variable(False),
             step3_parallel_cores_var=variable(0),
+            parallel_cores_var=variable(0),
             step4_parallel_cores_var=variable(0),
             write_residual_patterns_var=variable(False),
             residual_pattern_path_var=variable("residuals.h5"),
@@ -461,7 +493,8 @@ class IpfDirectionSelectorTests(unittest.TestCase):
         np.testing.assert_array_equal(selected_by_stage["overlap optimization"], np.array([0]))
         self.assertIs(gui_stub.last_overlap, residual_result)
         self.assertIs(gui_stub.last_overlap_mixture, mixture_result)
-        self.assertEqual(refreshed_views, [1, 1, 2, 2, 2, 3])
+        self.assertEqual(refreshed_views, [])
+        self.assertEqual(gui_stub._job_result_views, {1, 2, 3})
         self.assertEqual(complete_progress[-1], (100.0, "Complete ROI analysis finished successfully."))
         self.assertIn("Complete ROI analysis finished for 2 point(s)", outcome[0])
 
@@ -469,6 +502,7 @@ class IpfDirectionSelectorTests(unittest.TestCase):
         selected_by_stage.clear()
         complete_progress.clear()
         refreshed_views.clear()
+        gui_stub._job_result_views.clear()
         outcome.clear()
         mixture_operation.reset_mock()
         session.refine_overlap_mixture_orientations.reset_mock()
@@ -501,7 +535,8 @@ class IpfDirectionSelectorTests(unittest.TestCase):
         np.testing.assert_array_equal(selected_by_stage["residual generation"], np.array([0]))
         self.assertIs(gui_stub.last_overlap, residual_result)
         self.assertIsNone(gui_stub.last_overlap_mixture)
-        self.assertEqual(refreshed_views, [1, 1, 2, 2, 2])
+        self.assertEqual(refreshed_views, [])
+        self.assertEqual(gui_stub._job_result_views, {1, 2})
         self.assertEqual(
             complete_progress[-1],
             (100.0, "Steps 2–3 ROI analysis finished successfully."),

@@ -8612,8 +8612,9 @@ class WorkflowSession:
         if self.current_pc_bruker is None or self.current_pc_custom is None:
             raise RuntimeError("Session state is not initialized.")
         out_path = Path(output_path).expanduser().resolve()
-        if out_path.suffix.lower() != ".npz":
-            out_path = out_path.with_suffix(".npz")
+        while out_path.suffix.lower() == ".npz":
+            out_path = out_path.with_suffix("")
+        out_path = out_path.with_name(out_path.name + ".npz")
         out_path.parent.mkdir(parents=True, exist_ok=True)
         settings = self.dictionary_settings or {}
         dict_pc = np.asarray(settings.get("pc_bruker", np.full(3, np.nan)), dtype=np.float64).reshape(3)
