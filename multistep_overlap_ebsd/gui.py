@@ -1534,6 +1534,12 @@ class MultiStepOverlapGUI(GUIControls, tk.Tk):
             self.residual_roi_export_path_var.set(self._default_roi_export_path(residual=True))
             self.overlap_optimization_export_path_var.set(self._default_overlap_optimization_export_path())
             self._refresh_default_workflow_path()
+            imported_count = int(np.count_nonzero(self.session.indexed_mask))
+            self._set_reindex_progress(
+                100.0 if imported_count else 0.0,
+                (f"Loaded {imported_count}/{self.session.data.count} indexed primary point(s); DI can be skipped."
+                 if imported_count else "Ready for primary dictionary indexing."),
+            )
             self._update_mode_controls()
             self._update_calibration_summary()
             self._populate_point_vars()

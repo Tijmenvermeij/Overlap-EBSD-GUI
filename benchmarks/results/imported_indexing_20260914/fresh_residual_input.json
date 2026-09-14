@@ -1,0 +1,23 @@
+{
+  "load_message": "Loaded H5OINA: map=210x454, pattern=128x156, N=95340. Restored 55964 dictionary-indexed point(s) from Pattern Matching NCC as primary indexing for the loaded patterns. Primary dictionary indexing can be skipped for these points.",
+  "primary_indexed_on_load": 55964,
+  "new_residual_state_empty": true,
+  "master_message": "Loaded master pattern via Kikuchipy: Cu_30kv_EMsOO.h5. Using single energy 30.000 kV; upper energy selected 30.000 kV (nearest to H5OINA beam 30.000 kV).",
+  "dictionary_message": "Loaded disk-backed dictionary: 304053 uint8 patterns, shape=64x78, software binning=2, master energy model=highest, from /Users/tvermeij/Dropbox/Work/EMPA/Research/Projects/CuAl/Sam NLs/Cu_30kv_EMsOO_dictionary_bin2_1p4deg.h5",
+  "primary_indexed_after_setup": 55964,
+  "next_residual_message": "Computed primary residuals for 8 point(s) in ROI.",
+  "next_index_message": "Residual re-indexed 8 point(s) in ROI (keep_n=5).",
+  "next_residual_indices": [
+    0,
+    1,
+    2,
+    12,
+    13,
+    14,
+    15,
+    16
+  ],
+  "next_residuals_indexed": 8,
+  "primary_di_calls": 0,
+  "primary_patterns_and_scores_unchanged": true
+}

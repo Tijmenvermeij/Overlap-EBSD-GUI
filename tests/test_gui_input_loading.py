@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+import numpy as np
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
@@ -86,6 +87,34 @@ class GuiInputLoadingTests(unittest.TestCase):
                 MultiStepOverlapGUI._browse_patterns(gui)
             gui.source_type_var.set.assert_called_once_with(expected)
             gui._sync_input_type_controls.assert_called_once_with(reset_up_tilt=True)
+
+    def test_loaded_ncc_is_presented_as_completed_primary_indexing(self):
+        session = SimpleNamespace(
+            data=SimpleNamespace(rows=2, cols=3, count=6, phases=np.ones(6), source_type='h5oina'),
+            indexed_mask=np.array([True, False, True, False, True, False]),
+            available_layers=lambda: ['NCC', 'Phase'],
+        )
+        gui = SimpleNamespace(
+            session=session, _plot_views={}, _sync_index_quality_layer_choices=Mock(),
+            _index_quality_layer_choices=lambda: ['NCC'], _default_index_quality_layer=lambda: 'NCC',
+            _default_input_phase_id=lambda data: 1, _default_residual_pattern_path=lambda: '/tmp/next.up1',
+            _default_roi_export_path=lambda residual: '/tmp/next.h5oina',
+            _default_overlap_optimization_export_path=lambda: '/tmp/mixture.h5',
+            _refresh_default_workflow_path=Mock(), _set_reindex_progress=Mock(),
+            _update_mode_controls=Mock(), _update_calibration_summary=Mock(), _populate_point_vars=Mock(),
+            _sync_loaded_geometry_controls=Mock(), _refresh_context_summary=Mock(),
+        )
+        for name in ('index_var', 'row_var', 'col_var', 'map_layer_var', 'index_quality_layer_var',
+                     'roi_r0_var', 'roi_c0_var', 'roi_nrows_var', 'roi_ncols_var', 'phase_id_var',
+                     'roi_export_format_var', 'residual_pattern_path_var', 'primary_roi_export_path_var',
+                     'residual_roi_export_path_var', 'overlap_optimization_export_path_var'):
+            setattr(gui, name, value('NCC'))
+        message = MultiStepOverlapGUI._finish_input_load(gui, 'Loaded saved NCC.')
+        gui._set_reindex_progress.assert_called_once_with(
+            100., 'Loaded 3/6 indexed primary point(s); DI can be skipped.')
+        self.assertIn('Load the master pattern', message)
+        self.assertIsNone(gui.last_overlap)
+        self.assertIsNone(gui.last_overlap_mixture)
 
 
 if __name__ == '__main__':

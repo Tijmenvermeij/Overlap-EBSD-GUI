@@ -484,46 +484,67 @@ def _h5_verified_residual_pattern_mask(
     return None
 
 
-def _h5_overlap_export_indexing_state(
+def _h5_primary_indexing_state(
     h5_file: h5py.File,
     *,
     roots: list[str] | None,
     rows: int,
     cols: int,
     phases: np.ndarray,
+    eulers: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray, str] | None:
-    """Read dictionary-indexed ROI state written by this GUI's H5OINA export."""
+    """Treat the loaded patterns' saved matching results as new primary data.
+
+    The standard NCC belongs to the stored Euler map, including when the file
+    contains previously residual patterns. Parent-run fit/mixture metadata is
+    never restored as this session's residual state.
+    """
     expected = int(rows * cols)
+    phase_values = np.asarray(phases).reshape(-1)
+    euler_values = np.asarray(eulers).reshape(-1, 3)
+    if phase_values.size != expected or len(euler_values) != expected:
+        return None
     search_roots = roots if roots is not None else _h5oina_analysis_roots(h5_file)
     for root in search_roots:
         group_path = f"{root}/{H5OINA_EXPORT_DATA_GROUP}" if root else H5OINA_EXPORT_DATA_GROUP
-        if group_path not in h5_file:
-            continue
-        group = h5_file[group_path]
-        export_type_value = group.attrs.get("Export Type", "")
+        group = h5_file.get(group_path)
+        export_type_value = group.attrs.get("Export Type", "") if group is not None else ""
         if isinstance(export_type_value, bytes):
             export_type_value = export_type_value.decode("utf-8", errors="replace")
         export_type = str(export_type_value).strip().lower()
-        if export_type not in {"primary", "residual"} or "ROI Mask" not in group:
-            continue
-        roi_mask = np.asarray(group["ROI Mask"][()], dtype=bool).reshape(-1)
-        if roi_mask.size != expected:
-            continue
-        score_name = "Residual NCC" if export_type == "residual" else "Primary NCC"
-        if score_name in group:
-            source_scores = np.asarray(group[score_name][()], dtype=np.float32).reshape(-1)
-        else:
-            ncc_path = f"{root}/{H5OINA_NCC_DATASET}" if root else H5OINA_NCC_DATASET
-            if ncc_path not in h5_file:
+        ncc_path = f"{root}/{H5OINA_NCC_DATASET}" if root else H5OINA_NCC_DATASET
+        candidates = [(ncc_path, "Pattern Matching NCC")]
+        if export_type in {"primary", "residual"}:
+            score_name = "Residual NCC" if export_type == "residual" else "Primary NCC"
+            candidates.append((f"{group_path}/{score_name}", f"GUI {export_type} export NCC"))
+        source_scores, source_label = None, ""
+        for path, label in candidates:
+            dataset = h5_file.get(path)
+            if not isinstance(dataset, h5py.Dataset) or dataset.size != expected:
                 continue
-            source_scores = np.asarray(h5_file[ncc_path][()], dtype=np.float32).reshape(-1)
-        if source_scores.size != expected:
+            if not (np.issubdtype(dataset.dtype, np.floating) or np.issubdtype(dataset.dtype, np.integer)):
+                continue
+            source_scores = np.asarray(dataset[()], dtype=np.float32).reshape(-1)
+            source_label = label
+            break
+        if source_scores is None:
             continue
-        phase_values = np.asarray(phases, dtype=np.int32).reshape(-1)
-        indexed = roi_mask & (phase_values > 0) & np.isfinite(source_scores)
+        indexed = (phase_values > 0) & np.isfinite(source_scores) & np.all(np.isfinite(euler_values), axis=1)
+        if group is not None:
+            mask_names = ["ROI Mask"]
+            if export_type == "residual":
+                mask_names.append("Residual Pattern Available")
+            for name in mask_names:
+                if name in group:
+                    mask = np.asarray(group[name][()]).reshape(-1)
+                    if mask.size != expected or not (
+                        np.issubdtype(mask.dtype, np.number) or np.issubdtype(mask.dtype, np.bool_)
+                    ):
+                        return None
+                    indexed &= np.isfinite(mask) & (mask != 0)
         scores = np.full(expected, np.nan, dtype=np.float32)
         scores[indexed] = source_scores[indexed]
-        return scores.reshape(rows, cols), indexed, export_type
+        return scores.reshape(rows, cols), indexed, source_label
     return None
 
 
@@ -3803,15 +3824,16 @@ class WorkflowSession:
                 phase_symmetries = _h5_phase_symmetries(f, roots=roots)
                 phase_euler_corrections = _h5_phase_euler_corrections(f, roots=roots)
                 eulers = _apply_phase_euler_corrections(eulers, phases, phase_euler_corrections)
-                loaded_indexing_state = _h5_overlap_export_indexing_state(
+                loaded_indexing_state = _h5_primary_indexing_state(
                     f,
-                    roots=roots,
+                    roots=[selected_root] if selected_root is not None else roots,
                     rows=rows,
                     cols=cols,
                     phases=phases,
+                    eulers=eulers,
                 )
                 if loaded_indexing_state is not None:
-                    loaded_scores, _loaded_mask, _loaded_export_type = loaded_indexing_state
+                    loaded_scores, _loaded_mask, _loaded_source = loaded_indexing_state
                     map_layers["NCC"] = loaded_scores.copy()
 
             det = s.detector
@@ -3889,8 +3911,10 @@ class WorkflowSession:
             if loaded_indexing_state is not None:
                 indexed_note = (
                     f" Restored {int(np.count_nonzero(self.indexed_mask))} dictionary-indexed point(s) "
-                    f"from the GUI {loaded_indexing_state[2]} export NCC data."
+                    f"from {loaded_indexing_state[2]} as primary indexing for the loaded patterns."
                 )
+                if np.any(self.indexed_mask):
+                    indexed_note += " Primary dictionary indexing can be skipped for these points."
             return (
                 f"Loaded H5OINA: map={rows}x{cols}, pattern={h}x{w}, N={rows * cols}."
                 f"{correction_note}{indexed_note}"
@@ -4077,8 +4101,14 @@ class WorkflowSession:
         energy_weights: np.ndarray | None = None,
         reference_pc_bruker: np.ndarray | None = None,
         clear_dictionary: bool = True,
+        invalidate_results: bool = True,
     ) -> str:
-        """Apply one persistent energy model to every master-pattern projection."""
+        """Apply one persistent energy model to every master-pattern projection.
+
+        Reapplying the same settings does not invalidate matching results.
+        Initial master loading handles invalidation itself, preserving imported
+        primary indexing when no previous master is being replaced.
+        """
         if self.master is None or self.master.kind != "kikuchipy":
             raise RuntimeError("Load a Kikuchipy master pattern before selecting its energy model.")
         mode = str(energy_mode).strip().lower()
@@ -4089,6 +4119,9 @@ class WorkflowSession:
             source = getattr(self.master, "mp_signal", None)
         if source is None:
             raise RuntimeError("The source master-pattern signal is unavailable.")
+        previous_mode = getattr(self.master, "energy_mode", MASTER_ENERGY_MODE_HIGHEST)
+        energy_fields = ("energy_values_kv", "energy_weights", "energy_reference_pc_bruker")
+        previous_values = [getattr(self.master, name, None) for name in energy_fields]
 
         if mode == MASTER_ENERGY_MODE_HIGHEST:
             selected_energy = getattr(self.master, "energy_kv", None)
@@ -4149,7 +4182,12 @@ class WorkflowSession:
             self._clear_dictionary_cache()
             self.dictionary_settings = None
         self._invalidate_orientation_cache()
-        self._invalidate_primary_results()
+        changed = previous_mode != mode or any(
+            not np.array_equal(before, getattr(self.master, name, None))
+            for before, name in zip(previous_values, energy_fields)
+        )
+        if invalidate_results and changed:
+            self._invalidate_primary_results()
         return note
 
     def _ensure_global_master_reference_pc(self, pc_bruker: np.ndarray) -> None:
@@ -4186,6 +4224,7 @@ class WorkflowSession:
         if not Path(p).exists():
             raise FileNotFoundError(p)
 
+        previous_master = self.master
         try:
             kwargs = {"projection": "lambert", "hemisphere": "both", "lazy": True}
             mp = kp.load(p, **kwargs)
@@ -4210,13 +4249,13 @@ class WorkflowSession:
             self._clear_dictionary_cache()
             self.dictionary_settings = None
             self._invalidate_orientation_cache()
-            self._invalidate_primary_results()
+            if previous_master is not None:
+                self._invalidate_primary_results()
             return (
                 f"Loaded master pattern with legacy projector fallback: {Path(p).name}. "
                 "Kikuchipy DI/refinement is unavailable for this MP format."
             )
 
-        previous_master = self.master
         try:
             energy_vals = _energy_axis_values_kv_from_master_signal(mp)
             selected_energy: float | None = None
@@ -4255,7 +4294,13 @@ class WorkflowSession:
                 energy_weights=energy_weights,
                 reference_pc_bruker=energy_reference_pc_bruker,
                 clear_dictionary=True,
+                invalidate_results=False,
             )
+            # A fresh input may already carry measured matching results. Its
+            # first master enables further analysis; replacing an existing
+            # master invalidates results computed against that earlier model.
+            if previous_master is not None:
+                self._invalidate_primary_results()
             if selected_energy is None:
                 return (
                     f"Loaded master pattern via Kikuchipy: {Path(p).name}. "
