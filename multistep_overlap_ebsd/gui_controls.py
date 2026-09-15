@@ -7,6 +7,7 @@ import tkinter as tk
 from tkinter import ttk
 
 from .cpu_fitting import FIT_METHOD_LABELS
+from .gui_theme import BACKGROUND, configure_theme
 
 
 class CollapsibleSection(ttk.Frame):
@@ -60,7 +61,7 @@ class GUIControls:
 
     def _hint(self, parent, text=None, *, variable=None):
         options = {"textvariable": variable} if variable is not None else {"text": text}
-        label = ttk.Label(parent, wraplength=370, **options)
+        label = ttk.Label(parent, wraplength=370, style="Hint.TLabel", **options)
         label.pack(fill=tk.X, pady=(3, 5))
         return label
 
@@ -71,6 +72,7 @@ class GUIControls:
         return bar
 
     def _build_ui(self):
+        configure_theme(self)
         ttk.Style(self).configure("Disclosure.TButton", anchor="w")
         for name, color in (("PendingCalibration", "#9f1239"), ("AppliedCalibration", "#166534")):
             ttk.Style(self).configure(f"{name}.TButton", foreground=color)
@@ -87,8 +89,8 @@ class GUIControls:
             style="PendingCalibration.TButton",
         )
         self._calibration_warning_button.pack(side=tk.RIGHT, padx=(10, 0))
-        self.workflow_notebook = ttk.Notebook(self)
-        self.workflow_notebook.pack(fill=tk.BOTH, expand=True)
+        self.workflow_notebook = ttk.Notebook(self, style="Workflow.TNotebook")
+        self.workflow_notebook.pack(fill=tk.BOTH, expand=True, padx=8, pady=(3, 6))
         builders = (
             ("1. Load & PC Calibration", self._build_calibration_workspace),
             ("2. Dictionary Indexing", self._build_indexing_workspace),
@@ -100,7 +102,7 @@ class GUIControls:
             self.workflow_notebook.add(tab, text=title)
             builder(tab)
         self.workflow_notebook.bind("<<NotebookTabChanged>>", self._on_workspace_changed)
-        ttk.Label(self, textvariable=self.status_var, padding=(8, 5), anchor="w").pack(fill=tk.X)
+        ttk.Label(self, textvariable=self.status_var, style="Status.TLabel", anchor="w").pack(fill=tk.X)
         self.bind("<Control-s>", lambda _e: self._save_workflow())
         self.bind("<Command-s>", lambda _e: self._save_workflow())
         self.bind("<Control-o>", lambda _e: self._restore_workflow())
@@ -141,7 +143,7 @@ class GUIControls:
         return left, right
 
     def _scrollable_controls(self, parent):
-        canvas = tk.Canvas(parent, highlightthickness=0, borderwidth=0, width=415)
+        canvas = tk.Canvas(parent, highlightthickness=0, borderwidth=0, width=415, background=BACKGROUND)
         canvas._workflow_controls = True
         scrollbar = ttk.Scrollbar(parent, orient=tk.VERTICAL, command=canvas.yview)
         canvas.configure(yscrollcommand=scrollbar.set)
@@ -555,7 +557,10 @@ class GUIControls:
         parts.append("Dictionary ready" if cache is not None else "No dictionary")
         if data is not None:
             try:
-                parts.append(f"ROI: {self.roi_nrows_var.get()} × {self.roi_ncols_var.get()}")
+                parts.append(
+                    f"ROI: {self.roi_nrows_var.get()} × {self.roi_ncols_var.get()} "
+                    f"from row {self.roi_r0_var.get()}, col {self.roi_c0_var.get()}"
+                )
             except tk.TclError:
                 pass
             parts.append(f"PC: {data.pc_output_convention}")

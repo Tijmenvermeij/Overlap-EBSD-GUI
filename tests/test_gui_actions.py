@@ -10,6 +10,7 @@ import numpy as np
 
 from multistep_overlap_ebsd.gui import MultiStepOverlapGUI
 from multistep_overlap_ebsd.cpu_fitting import FIT_METHOD_LABELS
+from multistep_overlap_ebsd.core import WorkflowSession
 
 
 class Value:
@@ -35,6 +36,91 @@ def bind(stub, *names):
 
 
 class GuiActionTests(unittest.TestCase):
+    def test_automated_run_checkpoints_primary_before_later_stage_fails(self):
+        gui, jobs = self.fitting_stub()
+        gui.complete_analysis_status_var = Value('')
+        gui.auto_refine_var.set(False)
+        gui.session.compute_overlap_residual_indices.side_effect = RuntimeError('residual failed')
+        MultiStepOverlapGUI._run_complete_roi_analysis(gui)
+        with patch.object(MultiStepOverlapGUI, '_autosave_stage') as checkpoint:
+            with self.assertRaisesRegex(RuntimeError, 'residual failed'):
+                jobs.pop()()
+        self.assertEqual([call.args[1] for call in checkpoint.call_args_list], ['Primary indexing'])
+
+    def test_combined_button_uses_new_roi_for_every_stage_on_second_run(self):
+        gui, jobs = self.fitting_stub()
+        gui.session.data = SimpleNamespace(rows=8, cols=10)
+        gui.session.roi_indices = MethodType(WorkflowSession.roi_indices, gui.session)
+        gui.auto_refine_var.set(True)
+        gui._index_refinement_settings = lambda: (1.5, 25, True)
+        gui.session.refine_orientations_indices = Mock(return_value='refined')
+        gui.session.refine_overlap_residual_indices = Mock(return_value='refined')
+        for name, value in (('r0', 0), ('c0', 0), ('nrows', 2), ('ncols', 2)):
+            setattr(gui, 'roi_' + name + '_var', Value(value))
+        bind(gui, '_roi_bounds')
+        MultiStepOverlapGUI._run_complete_roi_analysis(gui)
+        jobs.pop()()
+        gui.session.last_indexed_indices = np.array([0, 1, 10, 11])
+        gui.session.last_residual_indexed_indices = np.array([0, 1, 10, 11])
+        gui.session.residual_point_results = {0: gui.session.get_residual_point_result(0)}
+        gui.session.overlap_mixture_results = {0: gui.session.get_overlap_mixture_result(0)}
+        for name, value in (('r0', 3), ('c0', 4), ('nrows', 3), ('ncols', 4)):
+            getattr(gui, 'roi_' + name + '_var').set(value)
+        MultiStepOverlapGUI._run_complete_roi_analysis(gui)
+        self.assertIn('3 × 4 from row 3, col 4 (12 point(s))', gui._log.call_args.args[0])
+        jobs.pop()()
+        expected = np.array([34, 35, 36, 37, 44, 45, 46, 47, 54, 55, 56, 57])
+        np.testing.assert_array_equal(gui.session.dictionary_index_indices.call_args.kwargs['indices'], expected)
+        for name in ('refine_orientations_indices', 'compute_overlap_residual_indices',
+                     'index_overlap_residual_indices', 'refine_overlap_residual_indices',
+                     'compute_overlap_mixture_indices'):
+            np.testing.assert_array_equal(getattr(gui.session, name).call_args.args[0], expected)
+
+    def test_manual_roi_edits_update_shared_summary_and_schedule_map_refresh(self):
+        interpreter = tk.Tcl()
+        gui = SimpleNamespace(
+            session=SimpleNamespace(data=SimpleNamespace(rows=20, cols=30, pc_output_convention='oxford'),
+                                    master=None, dictionary_cache=None),
+            _suspend_point_trace=False, _schedule_live_refresh=Mock(),
+            context_summary_var=tk.StringVar(interpreter), phase_summary_var=tk.StringVar(interpreter),
+        )
+        for name in ('euler1_deg', 'euler2_deg', 'euler3_deg', 'pcx', 'pcy', 'pcz',
+                     'roi_r0', 'roi_c0', 'roi_nrows', 'roi_ncols'):
+            setattr(gui, name + '_var', tk.IntVar(interpreter, value=0))
+        bind(gui, '_on_point_values_changed', '_on_roi_values_changed', '_refresh_context_summary')
+        MultiStepOverlapGUI._attach_point_value_traces(gui)
+        for name, value in (('r0', 4), ('c0', 7), ('nrows', 3), ('ncols', 5)):
+            getattr(gui, 'roi_' + name + '_var').set(value)
+        self.assertIn('ROI: 3 × 5 from row 4, col 7', gui.context_summary_var.get())
+        self.assertEqual(gui._schedule_live_refresh.call_count, 4)
+        gui.roi_c0_var.set(9)
+        self.assertIn('from row 4, col 9', gui.context_summary_var.get())
+        gui.roi_nrows_var.set('')  # A partially edited field must not raise in its trace.
+        gui.roi_nrows_var.set(2)
+        self.assertIn('ROI: 2 × 5', gui.context_summary_var.get())
+
+    def test_steps_three_and_four_use_changed_roi_after_initial_indexing(self):
+        for action, operation in (
+            ('_run_residual_roi_analysis', 'compute_overlap_residual_indices'),
+            ('_fit_overlap_mixture_roi', 'compute_overlap_mixture_indices'),
+        ):
+            with self.subTest(action=action):
+                gui, jobs = self.fitting_stub()
+                gui.session.data = SimpleNamespace(rows=8, cols=10)
+                gui.session.roi_indices = MethodType(WorkflowSession.roi_indices, gui.session)
+                gui.session.last_indexed_indices = np.arange(20)
+                for name, value in (('r0', 0), ('c0', 0), ('nrows', 2), ('ncols', 10)):
+                    setattr(gui, 'roi_' + name + '_var', Value(value))
+                bind(gui, '_roi_bounds')
+                gui.roi_r0_var.set(1)
+                gui.roi_c0_var.set(3)
+                gui.roi_nrows_var.set(1)
+                gui.roi_ncols_var.set(4)
+                MultiStepOverlapGUI.__dict__[action](gui)
+                jobs[-1]()
+                np.testing.assert_array_equal(getattr(gui.session, operation).call_args.args[0], [13, 14, 15, 16])
+                np.testing.assert_array_equal(gui.session.last_indexed_indices, np.arange(20))
+
     def point_editor_stub(self):
         interpreter = tk.Tcl()
         eulers = np.array([13.1234567890123, 74.9876543210987, 226.123456789012])
@@ -120,7 +206,7 @@ class GuiActionTests(unittest.TestCase):
             _set_reindex_progress=Mock(), _set_refinement_progress=Mock(),
             _check_job_cancelled=Mock(), _post_ui=lambda cb: cb(),
             _sync_pattern_conditioning_settings=Mock(),
-            _run_threaded=lambda action: actions.append(action),
+            _run_threaded=lambda action, **kwargs: actions.append(action),
         ), '_index_refinement_settings', '_index_primary_indices')
         return gui, actions
 
@@ -220,7 +306,7 @@ class GuiActionTests(unittest.TestCase):
             ),
             _residual_ncc_threshold=lambda: 0.0, _selected_primary_ncc=lambda _index: 0.8,
             _sync_pattern_conditioning_settings=Mock(),
-            _set_overlap_progress=Mock(), _run_threaded=lambda action: actions.append(action),
+            _set_overlap_progress=Mock(), _run_threaded=lambda action, **kwargs: actions.append(action),
         )
         MultiStepOverlapGUI._index_overlap_residual(gui)
         with self.assertRaisesRegex(ValueError, "no longer valid"):
@@ -291,7 +377,7 @@ class GuiActionTests(unittest.TestCase):
             gui._roi_bounds = lambda: (0, 0, 1, 2)
             gui._filter_roi_indices_by_threshold = lambda indices: (indices, 0)
             gui._set_overlap_progress = Mock()
-            gui._run_threaded = lambda action: action()
+            gui._run_threaded = lambda action, **kwargs: action()
             MultiStepOverlapGUI._run_residual_roi_analysis(gui)
             self.assertEqual([name for name, _kw in calls], ['generate', 'index', 'refine'] if auto else ['generate', 'index'])
             self.assertEqual(calls[1][1]['keep_n'], 5)
@@ -386,7 +472,7 @@ class GuiActionTests(unittest.TestCase):
             _set_refinement_progress=Mock(), _refresh_complete_analysis_maps=Mock(),
             _sync_pattern_conditioning_settings=Mock(),
             _check_job_cancelled=Mock(), _post_ui=lambda callback: callback(), _log=Mock(),
-            _run_threaded=lambda action: jobs.append(action),
+            _run_threaded=lambda action, **kwargs: jobs.append(action),
         )
         return gui, jobs
 

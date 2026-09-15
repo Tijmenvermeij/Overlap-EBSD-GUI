@@ -469,7 +469,7 @@ class IpfDirectionSelectorTests(unittest.TestCase):
             after=lambda _delay, callback: callback(),
             _post_ui=lambda callback: callback(),
             _check_job_cancelled=lambda: None,
-            _run_threaded=lambda action: outcome.append(action()),
+            _run_threaded=lambda action, **kwargs: outcome.append(action()),
         )
 
         with patch("multistep_overlap_ebsd.gui.messagebox.showerror") as showerror:

@@ -144,6 +144,29 @@ class LiveUpdateTests(unittest.TestCase):
         gui._refresh_complete_analysis_maps.assert_called_once_with(2)
         self.assertEqual(gui._job_result_views, set())
 
+    def test_live_redraw_does_not_restore_previous_roi_on_residual_or_mixture_tab(self):
+        for active in (2, 3):
+            with self.subTest(active=active):
+                ax = Figure().subplots()
+                ax.imshow(np.zeros((12, 14)))
+                ax._overlap_ebsd_scan_map = True
+                ax.set_xlim(-.5, 2.5)
+                ax.set_ylim(2.5, -.5)
+                view = dict(axes=[ax], canvas=Mock(), roi_bounds=(0, 0, 3, 3))
+                def redraw(*, view_index):
+                    ax.clear()
+                    ax.imshow(np.ones((12, 14)))
+                    ax.set_xlim(4.5, 10.5)
+                    ax.set_ylim(8.5, 3.5)
+                    view['roi_bounds'] = (4, 5, 5, 6)
+                gui = SimpleNamespace(
+                    workflow_notebook=SimpleNamespace(select=lambda: active, index=lambda x: x),
+                    _plot_views={active: view}, _refresh_plot=redraw, _activate_plot_view=Mock(),
+                )
+                MultiStepOverlapGUI._refresh_complete_analysis_maps(gui, active)
+                self.assertEqual(ax.get_xlim(), (4.5, 10.5))
+                self.assertEqual(ax.get_ylim(), (8.5, 3.5))
+
     def test_each_progress_kind_marks_its_relevant_view(self):
         for method, view in (("_set_reindex_progress", 1), ("_set_refinement_progress", 1),
                              ("_set_overlap_progress", 2), ("_set_overlap_optimization_progress", 3)):

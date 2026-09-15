@@ -17,6 +17,7 @@ from tkinter import filedialog, messagebox, ttk
 from .gui_controls import GUIControls
 from .cpu_fitting import FIT_METHOD_DEFAULT, FIT_METHOD_LABELS, validate_fit_method
 from .live_updates import LiveUpdateGate
+from .workflow_autosave import save_checkpoint
 from .version import __version__
 
 from .core import (
@@ -550,13 +551,22 @@ class MultiStepOverlapGUI(GUIControls, tk.Tk):
             self.pcx_var,
             self.pcy_var,
             self.pcz_var,
+        )
+        for var in vars_to_watch:
+            var.trace_add("write", self._on_point_values_changed)
+        for var in (
             self.roi_r0_var,
             self.roi_c0_var,
             self.roi_nrows_var,
             self.roi_ncols_var,
-        )
-        for var in vars_to_watch:
-            var.trace_add("write", self._on_point_values_changed)
+        ):
+            var.trace_add("write", self._on_roi_values_changed)
+
+    def _on_roi_values_changed(self, *_args) -> None:
+        if self._suspend_point_trace:
+            return
+        self._refresh_context_summary()
+        self._schedule_live_refresh(delay_ms=250)
 
     def _on_point_values_changed(self, *_args) -> None:
         self._schedule_live_refresh(delay_ms=250)
@@ -1348,12 +1358,35 @@ class MultiStepOverlapGUI(GUIControls, tk.Tk):
     def _sync_residual_keep_n_to_dictionary(self, keep_n: int) -> None:
         self.residual_keep_n_var.set(max(1, int(keep_n)))
 
-    def _run_threaded(self, fn, *, on_success=None, sync_conditioning: bool = True) -> bool:
+    def _autosave_stage(self, stage: str) -> None:
+        context = getattr(self, "_job_autosave", None)
+        if context is None:
+            return
+        path, ui_state = context
+        try:
+            save_checkpoint(self.session, path, ui_state)
+            message = f"Workflow autosaved after {stage}: {path}"
+        except Exception as exc:
+            message = f"Workflow autosave FAILED after {stage}: {exc}. Use Save to retry."
+        self._last_autosave_message = message
+        self._post_ui(lambda message=message: self._log(message))
+
+    def _run_threaded(self, fn, *, on_success=None, sync_conditioning: bool = True,
+                      autosave: bool = False) -> bool:
         if self.busy:
             return False
         try:
             if sync_conditioning:
                 self._sync_pattern_conditioning_settings()
+            self._job_autosave = None
+            self._last_autosave_message = ""
+            if autosave:
+                path = Path(self.workflow_path_var.get().strip() or self._default_workflow_path()).expanduser().resolve()
+                while path.suffix.lower() == ".npz":
+                    path = path.with_suffix("")
+                path = path.with_name(path.name + ".npz")
+                self.workflow_path_var.set(str(path))
+                self._job_autosave = (path, self._workflow_ui_state())
             self.session.last_action_note = ""
         except Exception as exc:
             self._pending_restore_path = None
@@ -1382,10 +1415,15 @@ class MultiStepOverlapGUI(GUIControls, tk.Tk):
             try:
                 self._check_job_cancelled()
                 msg = fn()
+                if autosave:
+                    MultiStepOverlapGUI._autosave_stage(self, "completed analysis")
+                    msg = f"{msg} {self._last_autosave_message}"
                 self._post_ui(lambda msg=msg: finish(msg))
             except Exception as exc:
                 detail = traceback.format_exc()
                 self._post_ui(lambda exc=exc, detail=detail: self._on_action_error(exc, detail))
+            finally:
+                self._job_autosave = None
 
         self._worker_thread = threading.Thread(target=worker, daemon=False, name="overlap-ebsd-worker")
         self.after(25, self._drain_ui_callbacks)
@@ -2266,6 +2304,7 @@ class MultiStepOverlapGUI(GUIControls, tk.Tk):
                 resolution_deg=resolution_deg, progress_callback=progress,
                 parallel_cores=indexing_cores,
             )
+            MultiStepOverlapGUI._autosave_stage(self, "primary indexing")
             if refinement is not None:
                 self._check_job_cancelled()
                 trust, maxfev, full_resolution = refinement
@@ -2276,7 +2315,7 @@ class MultiStepOverlapGUI(GUIControls, tk.Tk):
                 )
                 message = f"{message} {refined}"
             return message
-        self._run_threaded(action)
+        self._run_threaded(action, autosave=True)
 
     @_guarded_action
     def _generate_dictionary(self) -> None:
@@ -2358,7 +2397,7 @@ class MultiStepOverlapGUI(GUIControls, tk.Tk):
             indices, phase_id=phase_id, trust_euler_deg=trust_euler, maxfev=maxfev,
             use_full_resolution=use_full_resolution, progress_callback=progress,
             parallel_cores=indexing_cores,
-        ))
+        ), autosave=True)
 
     @_guarded_action
     def _run_complete_roi_analysis(self, *, include_step4: bool = True) -> None:
@@ -2409,7 +2448,12 @@ class MultiStepOverlapGUI(GUIControls, tk.Tk):
             return
 
         self._sync_residual_keep_n_to_dictionary(keep_n)
-        self._set_complete_analysis_progress(0.0, f"Preparing ROI analysis ({workflow_label})...")
+        roi_description = (
+            f"{bounds[2]} × {bounds[3]} from row {bounds[0]}, col {bounds[1]} "
+            f"({roi_indices.size} point(s))"
+        )
+        self._set_complete_analysis_progress(0.0, f"Preparing {workflow_label}: ROI {roi_description}...")
+        self._log(f"Starting {workflow_label}: ROI {roi_description}.")
 
         stage_count = 6 if include_step4 else 5
 
@@ -2438,6 +2482,8 @@ class MultiStepOverlapGUI(GUIControls, tk.Tk):
             map_view_index: int,
             skipped: bool = False,
         ) -> None:
+            if not skipped:
+                MultiStepOverlapGUI._autosave_stage(self, stage_name)
             self._check_job_cancelled()
             overall = 100.0 * (stage_index + 1) / stage_count
 
@@ -2628,7 +2674,7 @@ class MultiStepOverlapGUI(GUIControls, tk.Tk):
                 )
                 raise
 
-        self._run_threaded(action)
+        self._run_threaded(action, autosave=True)
 
     # -------------------------- Step 3 -------------------------- #
 
@@ -2681,6 +2727,7 @@ class MultiStepOverlapGUI(GUIControls, tk.Tk):
                 selected_index=selected_index, progress_callback=progress(1),
                 parallel_cores=indexing_cores,
             ))
+            MultiStepOverlapGUI._autosave_stage(self, "residual indexing")
             if refinement is not None:
                 self._check_job_cancelled()
                 trust, maxfev, full_resolution = refinement
@@ -2692,7 +2739,7 @@ class MultiStepOverlapGUI(GUIControls, tk.Tk):
                 ))
             return " ".join(messages) + f" Skipped {skipped} point(s) at the primary NCC filter."
         self._set_overlap_progress(0.0, "Starting residual ROI analysis...")
-        self._run_threaded(action)
+        self._run_threaded(action, autosave=True)
 
     @_guarded_action
     def _analyze_overlap(self) -> None:
@@ -2738,7 +2785,7 @@ class MultiStepOverlapGUI(GUIControls, tk.Tk):
                 f"residual=E-NCC·S′, RMS={resid_rms:.4f}.{threshold_note} {result.fit_message}"
             )
 
-        self._run_threaded(action)
+        self._run_threaded(action, autosave=True)
 
     @_guarded_action
     def _index_overlap_residual(self) -> None:
@@ -2789,7 +2836,7 @@ class MultiStepOverlapGUI(GUIControls, tk.Tk):
                 f"keep_n={keep_n}."
             )
 
-        self._run_threaded(action)
+        self._run_threaded(action, autosave=True)
 
     @_guarded_action
     def _refine_overlap_residual(self) -> None:
@@ -2841,7 +2888,7 @@ class MultiStepOverlapGUI(GUIControls, tk.Tk):
                 f"{refined.secondary_refinement_note}"
             )
 
-        self._run_threaded(action)
+        self._run_threaded(action, autosave=True)
 
     @_guarded_action
     def _compute_overlap_residual_roi(self) -> None:
@@ -2910,7 +2957,7 @@ class MultiStepOverlapGUI(GUIControls, tk.Tk):
             )
             return f"{msg}{skipped_note} ROI bounds r0={bounds[0]}, c0={bounds[1]}, nrows={bounds[2]}, ncols={bounds[3]}."
 
-        self._run_threaded(action)
+        self._run_threaded(action, autosave=True)
 
     @_guarded_action
     def _index_overlap_residual_roi(self) -> None:
@@ -2961,7 +3008,7 @@ class MultiStepOverlapGUI(GUIControls, tk.Tk):
             )
             return f"{msg}{skipped_note}"
 
-        self._run_threaded(action)
+        self._run_threaded(action, autosave=True)
 
     @_guarded_action
     def _refine_overlap_residual_roi(self) -> None:
@@ -3014,7 +3061,7 @@ class MultiStepOverlapGUI(GUIControls, tk.Tk):
             )
             return f"{msg} trust Euler={trust_euler:g}°, maxfev={maxfev}.{skipped_note}"
 
-        self._run_threaded(action)
+        self._run_threaded(action, autosave=True)
 
     @_guarded_action
     def _fit_overlap_mixture(self) -> None:
@@ -3063,7 +3110,7 @@ class MultiStepOverlapGUI(GUIControls, tk.Tk):
                 f"RMS={result.residual_rms:.4f}."
             )
 
-        self._run_threaded(action)
+        self._run_threaded(action, autosave=True)
 
     @_guarded_action
     def _refine_overlap_mixture_orientations(self) -> None:
@@ -3113,7 +3160,7 @@ class MultiStepOverlapGUI(GUIControls, tk.Tk):
                 f"residual={refined.secondary_fraction:.3f}. {refined.orientation_refinement_note}"
             )
 
-        self._run_threaded(action)
+        self._run_threaded(action, autosave=True)
 
     @_guarded_action
     def _fit_overlap_mixture_roi(self) -> None:
@@ -3169,7 +3216,7 @@ class MultiStepOverlapGUI(GUIControls, tk.Tk):
             )
             return f"{msg}{threshold_note} ROI bounds r0={bounds[0]}, c0={bounds[1]}, nrows={bounds[2]}, ncols={bounds[3]}."
 
-        self._run_threaded(action)
+        self._run_threaded(action, autosave=True)
 
     @_guarded_action
     def _export_overlap_optimization_results(self) -> None:
@@ -3411,13 +3458,19 @@ class MultiStepOverlapGUI(GUIControls, tk.Tk):
         # Always redraw the visible map and the tab whose state changed. This
         # keeps intermediate results ready even when that tab is not selected.
         for view_index in dict.fromkeys((active_view, int(stage_view_index))):
+            view = self._plot_views[view_index]
             old_axes = self._plot_views[view_index].get("axes", [])
+            previous_roi = view.get("roi_bounds")
             limits = {
                 i: (ax.get_xlim(), ax.get_ylim())
                 for i, ax in enumerate(np.asarray(old_axes, dtype=object).flat)
                 if getattr(ax, "_overlap_ebsd_scan_map", False) and ax.images
             }
             self._refresh_plot(view_index=view_index)
+            if previous_roi != view.get("roi_bounds"):
+                # A hidden tab can still have the previous run's ROI zoom.
+                # Preserve manual zoom only while the shared ROI is unchanged.
+                limits = {}
             for i, (xlim, ylim) in limits.items():
                 axis = np.asarray(self._plot_views[view_index]["axes"], dtype=object).flat[i]
                 axis.set_xlim(xlim)
@@ -3443,6 +3496,7 @@ class MultiStepOverlapGUI(GUIControls, tk.Tk):
             self._draw_instruction("Load data and master pattern to start.")
             self._set_info_lines(["Load data and master pattern to start."])
             return
+        view["roi_bounds"] = self._roi_bounds()
         colorbar = view.get("colorbar")
         if colorbar is not None:
             try:
