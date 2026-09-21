@@ -2244,7 +2244,7 @@ class MultiStepOverlapGUI(GUIControls, tk.Tk):
         if indices.size == 0:
             raise ValueError("Add calibration points from the map first.")
         phase_id = int(self.phase_id_var.get())
-        if indices.size > 1 and np.any(self.session.current_phases[indices] != phase_id):
+        if not getattr(self.session, "phase_masters", {}) and indices.size > 1 and np.any(self.session.current_phases[indices] != phase_id):
             raise ValueError(f"Select calibration points from phase {phase_id} only before optimizing.")
         trust_euler = float(self.calibration_trust_euler_var.get())
         trust_pc = float(self.trust_pc_var.get())
@@ -3016,7 +3016,7 @@ class MultiStepOverlapGUI(GUIControls, tk.Tk):
             messagebox.showerror("Error", "Load input data first.")
             return
         if self.session.dictionary_cache is None:
-            messagebox.showerror("Error", "Generate or load a dictionary in tab 2 first.")
+            messagebox.showerror("Error", "Generate or load a dictionary in tab 1 first.")
             return
         bounds = self._roi_bounds()
         indices = self.session.roi_indices(*bounds)
@@ -3067,7 +3067,7 @@ class MultiStepOverlapGUI(GUIControls, tk.Tk):
             messagebox.showerror("Error", "Load input data first.")
             return
         if self.session.dictionary_cache is None:
-            messagebox.showerror("Error", "Generate or load a dictionary in tab 2 first.")
+            messagebox.showerror("Error", "Generate or load a dictionary in tab 1 first.")
             return
         bounds = self._roi_bounds()
         indices = self.session.roi_indices(*bounds)
@@ -3424,7 +3424,7 @@ class MultiStepOverlapGUI(GUIControls, tk.Tk):
             axes[1, 1].text(
                 0.5,
                 0.5,
-                "Index the residual with the tab 2 dictionary",
+                "Index the residual with the linked phase dictionaries",
                 ha="center",
                 va="center",
             )
@@ -3561,6 +3561,14 @@ class MultiStepOverlapGUI(GUIControls, tk.Tk):
             setattr(ax, "_overlap_ebsd_scan_map", False)
 
         data = self.session.data
+        if data is not None and not getattr(data, "patterns_available", True):
+            image = self.session.get_ipf_color_map()
+            self.axes.flat[0].imshow(image)
+            self.axes.flat[0].set_title("Imported IPF map · no pattern payload")
+            self.axes.flat[1].text(.5, .5, "Maps remain viewable.\nLoad matching pattern data to run indexing or fitting.", ha="center", va="center", wrap=True)
+            self.canvas.draw_idle()
+            return
+
         row = max(0, min(int(self.row_var.get()), data.rows - 1))
         col = max(0, min(int(self.col_var.get()), data.cols - 1))
         idx = self.session.index_from_row_col(row, col)
@@ -3798,6 +3806,13 @@ class MultiStepOverlapGUI(GUIControls, tk.Tk):
             self.index_quality_layer_var.set(quality_layer)
 
         quality_full = np.asarray(self.session.get_layer_map(quality_layer), dtype=np.float32).reshape(data.rows, data.cols)
+        phase_legend = self.session.phase_map_legend(quality_layer)
+        if phase_legend:
+            from matplotlib.colors import ListedColormap
+            categorical = np.full_like(quality_full, np.nan)
+            for n, (pid, _label, _color) in enumerate(phase_legend):
+                categorical[quality_full == pid] = n
+            quality_full = categorical
         quality_cmap = "tab20" if quality_layer.lower() == "phase" else "viridis"
         quality_vals = quality_full[np.isfinite(quality_full)]
         if quality_vals.size > 0:
@@ -3807,6 +3822,10 @@ class MultiStepOverlapGUI(GUIControls, tk.Tk):
                 qvmax = qvmin + 1e-8
         else:
             qvmin, qvmax = 0.0, 1.0
+
+        if phase_legend:
+            quality_cmap = ListedColormap([color for _, _, color in phase_legend])
+            qvmin, qvmax = -.5, len(phase_legend) - .5
 
         ipf_direction, ipf_label = self._selected_ipf_direction()
         preliminary_ipf = self.session.get_preliminary_ipf_color_map(direction=ipf_direction)
@@ -3886,12 +3905,16 @@ class MultiStepOverlapGUI(GUIControls, tk.Tk):
         _draw_numeric(
             axes[0, 1],
             quality_full,
-            f"Initial {quality_layer} map (full map)",
+            f"{quality_layer} map (full map)",
             zoom=False,
             cmap=quality_cmap,
             vmin=qvmin,
             vmax=qvmax,
         )
+        if phase_legend:
+            from matplotlib.patches import Patch
+            axes[0, 1].legend(handles=[Patch(color=color, label=label) for _, label, color in phase_legend],
+                              loc="upper left", fontsize=6, framealpha=.85)
         _draw_rgb(axes[0, 2], preliminary_ipf, f"Preliminary {ipf_label} (ROI zoom)", zoom=True)
         _draw_numeric(
             axes[1, 0],
@@ -4358,8 +4381,8 @@ class MultiStepOverlapGUI(GUIControls, tk.Tk):
         for ax in (exp_ax, primary_sim_ax, secondary_sim_ax, final_residual_ax):
             ax.set_axis_off()
 
-        _decorate_fraction_axis(primary_fraction_ax, self.session.overlap_primary_fraction_map, "Primary fraction map")
-        _decorate_fraction_axis(secondary_fraction_ax, self.session.overlap_secondary_fraction_map, "Residual fraction map")
+        _decorate_fraction_axis(primary_fraction_ax, self.session.overlap_primary_fraction_map, "Primary fitted contribution")
+        _decorate_fraction_axis(secondary_fraction_ax, self.session.overlap_secondary_fraction_map, "Residual fitted contribution")
 
         info_lines = [
             "Overlap optimization",
@@ -4370,13 +4393,20 @@ class MultiStepOverlapGUI(GUIControls, tk.Tk):
         if result is not None and result.index == index:
             info_lines.extend(
                 [
-                    f"Fractions: primary={_fmt(result.primary_fraction, 3)}, residual={_fmt(result.secondary_fraction, 3)}",
+                    f"Pattern contributions: primary={_fmt(result.primary_fraction, 3)}, residual={_fmt(result.secondary_fraction, 3)}",
                     f"NCC: old primary={_fmt(result.old_primary_ncc)}, old residual={_fmt(result.old_secondary_ncc)}, combined={_fmt(result.ncc_mixture)}",
                     f"Fitted sigma={result.fitted_sigma:.4f}; gain (gmin, gmax, p)={result.gain_params}",
                     f"Ellipse (a, b, y offset, x offset)={result.ellipse_params}",
                     f"Coefficients: primary={result.primary_coefficient:.4f}, residual={result.secondary_coefficient:.4f}",
                 ]
             )
+            for title, key in (("Primary phase", result.primary_phase_key), ("Residual phase", result.secondary_phase_key)):
+                if key:
+                    entry = self.session.phase_registry.by_key(key)
+                    info_lines.append(f"{title}: {entry.name} [{entry.output_id}]")
+            if result.overlap_acceptance_note:
+                info_lines.append(f"Overlap: {result.overlap_acceptance_note}")
+            info_lines.append("Contributions describe pattern intensity, not phase volume fractions.")
             if result.initial_mixture_ncc is not None:
                 info_lines.append(
                     f"Orientation refinement NCC: {result.initial_mixture_ncc:.4f} -> {result.ncc_mixture:.4f}"

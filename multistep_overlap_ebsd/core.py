@@ -18,6 +18,9 @@ import numpy as np
 from scipy.ndimage import gaussian_filter
 from scipy.optimize import differential_evolution, minimize
 
+from .multiphase import MultiPhaseSession
+from .phases import PhaseRegistry
+from .phase_export import write_h5_phase_catalog, ang_phase_header
 from .live_updates import progress_batches
 from .cpu_fitting import FIT_METHOD_DEFAULT, optimize_primary, optimize_mixture, validate_fit_method
 from .cpu_indexing import PreparedDictionary, cpu_job, refinement_chunks, unique_fit_rows
@@ -747,6 +750,7 @@ class LoadedInputData:
     ang_numeric: np.ndarray | None = None
     ang_angles_were_degrees: bool = False
     up_pattern_reader: UPPatternReader | None = None
+    patterns_available: bool = True
 
     @property
     def count(self) -> int:
@@ -894,6 +898,8 @@ class OverlapPointResult:
     secondary_simulated: np.ndarray | None = None
     secondary_refined: bool = False
     secondary_refinement_note: str = ""
+    primary_phase_key: str | None = None
+    secondary_phase_key: str | None = None
 
 
 @dataclass
@@ -928,6 +934,13 @@ class OverlapMixtureResult:
     initial_mixture_ncc: float | None = None
     primary_euler_delta_deg: tuple[float, ...] = ()
     secondary_euler_delta_deg: tuple[float, ...] = ()
+    primary_phase_key: str | None = None
+    secondary_phase_key: str | None = None
+    overlap_accepted: bool | None = None
+    overlap_acceptance_note: str = ""
+    single_component_ncc: float | None = None
+    overlap_ncc_improvement: float | None = None
+    phase_pair_ambiguous: bool = False
 
 
 @dataclass
@@ -2773,8 +2786,9 @@ def _convert_pc_map(
     raise ValueError(f"Unsupported destination PC convention '{dst_convention}'.")
 
 
-class WorkflowSession:
+class WorkflowSession(MultiPhaseSession):
     def __init__(self) -> None:
+        self._init_phases()
         self.data: LoadedInputData | None = None
         self.master: MasterPatternModel | None = None
 
@@ -2828,6 +2842,8 @@ class WorkflowSession:
 
     def close(self) -> None:
         """Release session-owned caches and input handles; safe to call twice."""
+        if getattr(self, "_borrowed_phase_context", False):
+            return
         data = self.data
         master = self.master
         cache = self.dictionary_cache
@@ -2835,6 +2851,9 @@ class WorkflowSession:
             getattr(data, "signal", None), getattr(master, "mp_signal", None),
             getattr(master, "source_mp_signal", None), getattr(cache, "signal", None),
         )
+        signals += tuple(signal for master in self.phase_masters.values()
+                         for signal in (master.mp_signal, master.source_mp_signal))
+        signals += tuple(cache.signal for cache in self.phase_dictionaries.values())
         seen_arrays: set[int] = set()
         handles: dict[object, object] = {}
         for signal in signals:
@@ -2863,6 +2882,12 @@ class WorkflowSession:
             reader._pattern_memmap = None
         self._invalidate_residual_cache()
         self._clear_dictionary_cache()
+        for cache in self.phase_dictionaries.values():
+            if cache.owns_storage and cache.storage_path:
+                Path(cache.storage_path).unlink(missing_ok=True)
+        self.phase_masters.clear()
+        self.phase_dictionaries.clear()
+        self._phase_preparations.clear()
         self._h5_pattern_source = None
         self._flat_pattern_source_cache = None
         self._orientation_color_cache.clear()
@@ -3032,6 +3057,20 @@ class WorkflowSession:
         indexing/refinement commits should invalidate only downstream residuals,
         so their newly computed primary scores and indexing masks remain valid.
         """
+        if not self._borrowed_phase_context:
+            if self.phase_score_gap is not None:
+                if indices is None:
+                    self.phase_score_gap[:] = np.nan
+                else:
+                    self.phase_score_gap[np.asarray(indices, dtype=np.int64).ravel()] = np.nan
+
+            if indices is None:
+                self.phase_candidates.clear()
+            else:
+                for records in self.phase_candidates.values():
+                    for index in np.asarray(indices).ravel():
+                        records.pop(int(index), None)
+
         selected = None if indices is None else np.unique(np.asarray(indices, dtype=np.int64).ravel())
         if selected is not None and selected.size == 0:
             return
@@ -3055,6 +3094,14 @@ class WorkflowSession:
         self._invalidate_residual_cache(selected)
 
     def _invalidate_residual_cache(self, indices: np.ndarray | None = None) -> None:
+        if not self._borrowed_phase_context:
+            if indices is None:
+                self.residual_phase_candidates.clear()
+            else:
+                for records in self.residual_phase_candidates.values():
+                    for index in np.asarray(indices).ravel():
+                        records.pop(int(index), None)
+
         if indices is not None:
             selected = np.unique(np.asarray(indices, dtype=np.int64).ravel())
             if selected.size == 0:
@@ -3206,6 +3253,15 @@ class WorkflowSession:
         if self.data is None:
             raise RuntimeError("Load input data first.")
         idx = int(result.index)
+        if self.phase_masters:
+            primary = self._entry_for_phase_id(int(self.current_phases[idx]))
+            if primary is not None and result.primary_phase_key is None:
+                result.primary_phase_key = primary.key
+            if self.residual_phases is not None:
+                secondary = self._entry_for_phase_id(int(self.residual_phases[idx]))
+                if secondary is not None and result.secondary_phase_key is None:
+                    result.secondary_phase_key = secondary.key
+
         if result.residual is not None:
             if self._residual_pattern_store is None:
                 self._residual_pattern_store = _ResidualPatternStore(
@@ -3252,6 +3308,8 @@ class WorkflowSession:
         if self.data is None:
             return []
         layers = list(self.data.map_layers.keys())
+        if self.phase_registry.entries:
+            layers.extend(label for label in self.phase_map_layers() if label not in layers)
         if not layers:
             layers = ["Phase"]
         for label in ORIENTATION_LAYER_LABELS:
@@ -3263,6 +3321,8 @@ class WorkflowSession:
         if self.data is None:
             raise RuntimeError("Load input data first.")
         key = str(label).strip()
+        if key in self.phase_map_layers():
+            return self.phase_layer_map(key)
         ipf_directions = {
             ORIENTATION_LAYER_LABEL.upper(): "z",
             IPF_X_LAYER_LABEL.upper(): "x",
@@ -3275,10 +3335,10 @@ class WorkflowSession:
         ipf_direction = ipf_directions.get(key.upper())
         if ipf_direction is not None:
             return self.get_ipf_color_map(direction=ipf_direction)
-        if key in self.data.map_layers:
-            return self.data.map_layers[key]
         if key.lower() == "phase" and self.current_phases is not None:
             return self.current_phases.reshape(self.data.rows, self.data.cols).astype(np.float32, copy=False)
+        if key in self.data.map_layers:
+            return self.data.map_layers[key]
         if self.data.map_layers:
             return self.data.map_layers[next(iter(self.data.map_layers.keys()))]
         return np.zeros((self.data.rows, self.data.cols), dtype=np.float32)
@@ -3324,6 +3384,8 @@ class WorkflowSession:
                 continue
             mask = (phase_ids == int(phase_id)) & valid_euler
             if not np.any(mask):
+                continue
+            if len(self.phase_registry.entries) > 1 and int(phase_id) not in metadata_symmetries:
                 continue
             sym = metadata_symmetries.get(int(phase_id), fallback_sym)
             sym = getattr(sym, "laue", sym)
@@ -3423,6 +3485,8 @@ class WorkflowSession:
         secondary_euler = None if result.secondary_euler_rad is None else np.asarray(result.secondary_euler_rad, dtype=np.float64).reshape(3)
         return OverlapPointResult(
             index=int(result.index),
+            primary_phase_key=result.primary_phase_key,
+            secondary_phase_key=result.secondary_phase_key,
             row=int(result.row),
             col=int(result.col),
             ncc_es=float(result.ncc_es),
@@ -3454,6 +3518,14 @@ class WorkflowSession:
     def _strip_overlap_mixture_result(self, result: OverlapMixtureResult) -> OverlapMixtureResult:
         return OverlapMixtureResult(
             index=int(result.index),
+            overlap_accepted=result.overlap_accepted,
+            overlap_acceptance_note=result.overlap_acceptance_note,
+            single_component_ncc=result.single_component_ncc,
+            overlap_ncc_improvement=result.overlap_ncc_improvement,
+            phase_pair_ambiguous=result.phase_pair_ambiguous,
+
+            primary_phase_key=result.primary_phase_key,
+            secondary_phase_key=result.secondary_phase_key,
             row=int(result.row),
             col=int(result.col),
             primary_fraction=float(result.primary_fraction),
@@ -3523,11 +3595,13 @@ class WorkflowSession:
         secondary_sim = None
         secondary_ncc_full = None if result.secondary_ncc_full is None else float(result.secondary_ncc_full)
         if result.secondary_euler_rad is not None:
-            secondary_sim = self._normalize_pattern_for_overlap(self._simulate_pattern_for_euler(idx, result.secondary_euler_rad))
+            secondary_sim = self._normalize_pattern_for_overlap(self._simulate_secondary_pattern(idx, result.secondary_euler_rad))
             if secondary_ncc_full is None:
                 secondary_ncc_full = self._pattern_ncc_for_overlap(residual, secondary_sim)
         return OverlapPointResult(
             index=int(result.index),
+            primary_phase_key=result.primary_phase_key,
+            secondary_phase_key=result.secondary_phase_key,
             row=int(result.row),
             col=int(result.col),
             ncc_es=fitted_ncc,
@@ -3599,6 +3673,15 @@ class WorkflowSession:
     def _store_overlap_mixture_result(self, result: OverlapMixtureResult, *, keep_patterns: bool) -> None:
         self._ensure_overlap_mixture_state()
         idx = int(result.index)
+        if self.phase_masters:
+            primary = self._entry_for_phase_id(int(self.current_phases[idx]))
+            if primary is not None and result.primary_phase_key is None:
+                result.primary_phase_key = primary.key
+            if self.residual_phases is not None:
+                secondary = self._entry_for_phase_id(int(self.residual_phases[idx]))
+                if secondary is not None and result.secondary_phase_key is None:
+                    result.secondary_phase_key = secondary.key
+
         if keep_patterns:
             self._cache_inspection_result(result, mixture=True)
             self.last_overlap_mixture = result
@@ -3627,8 +3710,12 @@ class WorkflowSession:
             else np.asarray(self.current_eulers_rad[idx], dtype=np.float64).reshape(3)
         )
         secondary_euler = np.asarray(result.secondary_euler_rad, dtype=np.float64).reshape(3)
-        primary_raw = self._simulate_pattern_for_euler(idx, primary_euler)
-        secondary_raw = self._simulate_pattern_for_euler(idx, secondary_euler)
+        if self.phase_masters and result.primary_phase_key and result.secondary_phase_key:
+            primary_raw = self._phase_context(result.primary_phase_key, private_arrays=False)._simulate_pattern_for_euler(idx, primary_euler)
+            secondary_raw = self._phase_context(result.secondary_phase_key, private_arrays=False)._simulate_pattern_for_euler(idx, secondary_euler)
+        else:
+            primary_raw = self._simulate_pattern_for_euler(idx, primary_euler)
+            secondary_raw = self._simulate_secondary_pattern(idx, secondary_euler)
         params = np.asarray(
             [
                 float(result.fitted_sigma),
@@ -3648,6 +3735,14 @@ class WorkflowSession:
         )
         materialized = OverlapMixtureResult(
             index=int(result.index),
+            primary_phase_key=result.primary_phase_key,
+            secondary_phase_key=result.secondary_phase_key,
+            overlap_accepted=result.overlap_accepted,
+            overlap_acceptance_note=result.overlap_acceptance_note,
+            single_component_ncc=result.single_component_ncc,
+            overlap_ncc_improvement=result.overlap_ncc_improvement,
+            phase_pair_ambiguous=result.phase_pair_ambiguous,
+
             row=int(result.row),
             col=int(result.col),
             primary_fraction=float(fit.primary_fraction),
@@ -3713,7 +3808,17 @@ class WorkflowSession:
         ext = Path(p).suffix.lower()
 
         if ext == ".h5oina":
-            s = kp.load(p, lazy=True)
+            patterns_available = True
+            try:
+                s = kp.load(p, lazy=True)
+            except Exception as pattern_error:
+                from .map_only import load_map_only_signal
+                try:
+                    s = load_map_only_signal(p)
+                    patterns_available = False
+                except Exception:
+                    raise pattern_error
+
             rows, cols, h, w = map(int, s.data.shape)
             expected = rows * cols
             loaded_indexing_state: tuple[np.ndarray, np.ndarray, str] | None = None
@@ -3901,8 +4006,11 @@ class WorkflowSession:
             self.last_indexed_indices = loaded_indices if loaded_indices.size else None
             self.indexed_candidate_eulers_rad = None
             self.residual_candidate_eulers_rad = None
+            self.data.patterns_available = patterns_available
+            self._import_phase_registry()
+            asset_note = self._restore_imported_phase_assets()
             unique_ph = np.unique(phases)
-            self.last_action_note = f"Phases in data: {unique_ph.tolist()}"
+            self.last_action_note = f"Phases in data: {unique_ph.tolist()} {asset_note}"
             correction_note = ""
             if phase_euler_corrections:
                 phase_labels = sorted(int(pid) for pid in phase_euler_corrections)
@@ -4053,6 +4161,7 @@ class WorkflowSession:
             self.indexed_mask = np.zeros(self.data.count, dtype=bool)
             self.indexed_candidate_eulers_rad = None
             self.residual_candidate_eulers_rad = None
+            self._import_phase_registry()
             unique_ph = np.unique(phase)
             self.last_action_note = f"Phases in data: {unique_ph.tolist()}"
             return (
@@ -4375,6 +4484,8 @@ class WorkflowSession:
         return self._flat_pattern_source_cache[1]
 
     def _pattern_at(self, index: int) -> np.ndarray:
+        if self.data is not None and not getattr(self.data, "patterns_available", True):
+            raise RuntimeError("This file contains maps only. Load matching pattern data before indexing or fitting.")
         if self.data is None:
             raise RuntimeError("Load input data first.")
         idx = int(index)
@@ -4509,6 +4620,8 @@ class WorkflowSession:
         return self._apply_dynamic_background_to_patterns(self._pattern_at(index))
 
     def _processed_patterns_from_indices(self, indices: np.ndarray) -> np.ndarray:
+        if self.data is not None and not getattr(self.data, "patterns_available", True):
+            raise RuntimeError("This file contains maps only. Load matching pattern data before indexing or fitting.")
         """Batch equivalent of _processed_pattern_at, including float32 background removal."""
         selection = self._pattern_selection_from_indices(indices)
         if self.data.source_type == "up_ang" and self.data.up_pattern_reader is not None:
@@ -4526,6 +4639,8 @@ class WorkflowSession:
         software_binning: int = 1,
         crop_extent: tuple[int, int, int, int] | None = None,
     ):
+        if self.data is not None and not getattr(self.data, "patterns_available", True):
+            raise RuntimeError("This file contains maps only. Load matching pattern data before indexing or fitting.")
         if self.data is None:
             raise RuntimeError("Load input data first.")
         selection = self._pattern_selection_from_indices(indices)
@@ -4755,14 +4870,16 @@ class WorkflowSession:
         *,
         residual_results: dict[int, OverlapPointResult] | None = None,
         apply_dictionary_binning: bool = True,
+        dictionary_cache: DictionaryCache | None = None,
         progress_callback: Callable[[float], None] | None = None,
     ):
         import dask.array as da
 
         if self.data is None:
             raise RuntimeError("Load input data first.")
-        if self.dictionary_cache is None:
-            raise RuntimeError("Generate or load a dictionary in tab 2 before indexing residuals.")
+        cache = dictionary_cache if dictionary_cache is not None else self.dictionary_cache
+        if cache is None:
+            raise RuntimeError("Generate or load a dictionary in tab 1 before indexing residuals.")
 
         idx = np.asarray(indices, dtype=np.int64).ravel()
         if idx.size == 0:
@@ -4770,7 +4887,6 @@ class WorkflowSession:
         if np.any(idx < 0) or np.any(idx >= self.data.count):
             raise IndexError("Pattern index out of bounds.")
 
-        cache = self.dictionary_cache
         residual_results = self.residual_point_results if residual_results is None else residual_results
 
         def signal_from_patterns(patterns: np.ndarray):
@@ -5135,6 +5251,27 @@ class WorkflowSession:
         progress_callback: Callable[[float, str], None] | None = None,
         parallel_cores: int = 0,
     ) -> str:
+        if self.phase_masters and not self._borrowed_phase_context:
+            selected = np.asarray(indices, dtype=np.int64).ravel()
+            messages = []
+            for pid in np.unique(self.current_phases[selected]):
+                group = selected[self.current_phases[selected] == pid]
+                entry = self._entry_for_phase_id(int(pid))
+                if entry is None:
+                    raise ValueError(f"Phase {pid} has no master association.")
+                view = self._phase_context(entry.key)
+                view.current_eulers_rad = self.current_eulers_rad.copy()
+                view.current_pc_bruker = self.current_pc_bruker.copy()
+                view.current_pc_custom = self.current_pc_custom.copy()
+                messages.append(view.refine_indices(group, phase_id=int(pid), trust_euler_deg=trust_euler_deg,
+                                                     trust_pc=trust_pc, maxfev=maxfev,
+                                                     progress_callback=progress_callback, parallel_cores=parallel_cores))
+                self.current_eulers_rad[group] = view.current_eulers_rad[group]
+                self.current_pc_bruker[group] = view.current_pc_bruker[group]
+                self.current_pc_custom[group] = view.current_pc_custom[group]
+                self._invalidate_primary_results(group)
+            return " ".join(messages)
+
         if self.data is None or self.master is None:
             raise RuntimeError("Load both input data and master pattern first.")
         if self.current_eulers_rad is None or self.current_pc_bruker is None or self.current_pc_custom is None:
@@ -5810,6 +5947,9 @@ class WorkflowSession:
         progress_callback: Callable[[float, str], None] | None = None,
         parallel_cores: int = 0,
     ) -> str:
+        if self.phase_masters and not self._borrowed_phase_context:
+            return self.index_enabled_phases(indices, keep_n=keep_n, progress_callback=progress_callback)
+
         if self.data is None or self.master is None:
             raise RuntimeError("Load both input data and master pattern first.")
         if self.current_eulers_rad is None or self.current_pc_bruker is None or self.current_phases is None:
@@ -5874,7 +6014,7 @@ class WorkflowSession:
 
         cache = self.dictionary_cache
         if cache is None:
-            raise RuntimeError("Generate the dictionary in tab 2 before indexing patterns.")
+            raise RuntimeError("Generate the dictionary in tab 1 before indexing patterns.")
         if cache.phase_id != int(phase_id):
             raise ValueError(
                 f"The generated dictionary is for phase {cache.phase_id}, but phase {phase_id} was requested. "
@@ -6237,6 +6377,9 @@ class WorkflowSession:
         progress_callback: Callable[[float, str], None] | None = None,
         parallel_cores: int = 0,
     ) -> str:
+        if self.phase_masters and not self._borrowed_phase_context:
+            return self.refine_enabled_phases(indices, trust_euler_deg=trust_euler_deg, maxfev=maxfev, use_full_resolution=use_full_resolution, progress_callback=progress_callback, parallel_cores=parallel_cores)
+
         """Run Kikuchipy orientation-only refinement after dictionary indexing."""
         import kikuchipy as kp
         from orix.crystal_map import CrystalMap
@@ -6470,7 +6613,15 @@ class WorkflowSession:
         weights = self._overlap_weights()
         return _zero_unweighted_pixels(_normalize_weighted(pattern, weights), weights)
 
+    def _simulate_secondary_pattern(self, index, euler_rad):
+        if self.phase_masters and not self._borrowed_phase_context:
+            return self._phase_context_for_index(index, secondary=True)._simulate_pattern_for_euler(index, euler_rad)
+        return self._simulate_pattern_for_euler(index, euler_rad)
+
     def _simulate_pattern_for_euler(self, index: int, euler_rad: np.ndarray) -> np.ndarray:
+        if self.phase_masters and not self._borrowed_phase_context:
+            return self._phase_context_for_index(index)._simulate_pattern_for_euler(index, euler_rad)
+
         if self.data is None or self.master is None or self.current_pc_bruker is None or self.current_pc_custom is None:
             raise RuntimeError("Load input data and a master pattern first.")
         idx = int(index)
@@ -6509,6 +6660,18 @@ class WorkflowSession:
 
     def _simulate_patterns_for_eulers(self, indices: np.ndarray, eulers_rad: np.ndarray) -> np.ndarray:
         """Project a bounded batch with the selected master and shared CPU limit."""
+        if self.phase_masters and not self._borrowed_phase_context:
+            idx = np.asarray(indices, dtype=np.int64).reshape(-1)
+            eulers = np.asarray(eulers_rad).reshape(-1, 3)
+            if len(idx) != len(eulers) or not len(idx):
+                raise ValueError("Projection requires one orientation per selected point.")
+            result = np.empty((len(idx), self.data.h, self.data.w), dtype=np.float32)
+            for pid in np.unique(self.current_phases[idx]):
+                positions = np.flatnonzero(self.current_phases[idx] == pid)
+                view = self._phase_context_for_index(idx[positions[0]])
+                result[positions] = view._simulate_patterns_for_eulers(idx[positions], eulers[positions])
+            return result
+
         if self.data is None or self.master is None or self.current_pc_bruker is None:
             raise RuntimeError("Load input data and a master pattern first.")
         idx = np.asarray(indices, dtype=np.int64).reshape(-1)
@@ -6605,6 +6768,17 @@ class WorkflowSession:
         residual_result: OverlapPointResult | None = None,
         parallel_cores: int = 0,
     ) -> OverlapPointResult:
+        if self.phase_masters and not self._borrowed_phase_context:
+            idx = int(index)
+            if residual_result is None:
+                self.analyze_overlap_point(idx, blur_sigma=blur_sigma)
+            else:
+                if residual_result.index != idx:
+                    raise ValueError("The residual belongs to a different point.")
+                self._store_residual_result(residual_result)
+            self.index_enabled_phases(np.array([idx]), keep_n=keep_n, residual=True)
+            return self.get_residual_point_result(idx)
+
         """Index one NCC-scaled residual with the dictionary generated in step 2."""
         import kikuchipy as kp
 
@@ -6612,7 +6786,7 @@ class WorkflowSession:
             raise RuntimeError("Residual dictionary indexing requires a Kikuchipy master pattern.")
         cache = self.dictionary_cache
         if cache is None:
-            raise RuntimeError("Generate or load a Kikuchipy dictionary in tab 2 before indexing a residual.")
+            raise RuntimeError("Generate or load a Kikuchipy dictionary in tab 1 before indexing a residual.")
 
         result = residual_result
         if result is None:
@@ -6678,7 +6852,7 @@ class WorkflowSession:
             raise RuntimeError("Residual dictionary indexing requires a Kikuchipy master pattern.")
         cache = self.dictionary_cache
         if cache is None:
-            raise RuntimeError("Generate or load a Kikuchipy dictionary in tab 2 before indexing a residual.")
+            raise RuntimeError("Generate or load a Kikuchipy dictionary in tab 1 before indexing a residual.")
 
         selected = np.asarray(indices, dtype=np.int64).ravel()
         if selected.size == 0:
@@ -6792,6 +6966,12 @@ class WorkflowSession:
         progress_callback: Callable[[float, str], None] | None = None,
         parallel_cores: int = 0,
     ) -> OverlapPointResult:
+        if self.phase_masters and not self._borrowed_phase_context:
+            self.refine_enabled_phases(np.array([result.index]), residual=True, trust_euler_deg=trust_euler_deg,
+                                       maxfev=maxfev, use_full_resolution=use_full_resolution,
+                                       progress_callback=progress_callback, parallel_cores=parallel_cores)
+            return self.get_residual_point_result(result.index)
+
         """Refine the residual dictionary match at dictionary or full resolution."""
         import kikuchipy as kp
         from orix.crystal_map import CrystalMap
@@ -6978,7 +7158,7 @@ class WorkflowSession:
             raise RuntimeError("Session state is not initialized.")
         cache = self.dictionary_cache
         if cache is None:
-            raise RuntimeError("Generate or load a Kikuchipy dictionary in tab 2 before refining residuals.")
+            raise RuntimeError("Generate or load a Kikuchipy dictionary in tab 1 before refining residuals.")
 
         selected = np.asarray(indices, dtype=np.int64).ravel()
         if selected.size == 0:
@@ -7307,7 +7487,7 @@ class WorkflowSession:
                 progress_callback(0.0, f"Preparing residual calculations for {selected.size} point(s)...")
 
             worker_count = self._parallel_worker_count(parallel_cores, int(selected.size))
-            use_parallel = selected.size >= 4 and worker_count > 1
+            use_parallel = not self.phase_masters and selected.size >= 4 and worker_count > 1
             if use_parallel:
                 bytes_per_pattern = max(
                     1,
@@ -7440,11 +7620,14 @@ class WorkflowSession:
         progress_callback: Callable[[float, str], None] | None = None,
         parallel_cores: int = 0,
     ) -> str:
+        if self.phase_masters and not self._borrowed_phase_context:
+            return self.index_enabled_phases(indices, keep_n=keep_n, residual=True, progress_callback=progress_callback)
+
         if self.data is None or self.master is None or self.master.kind != "kikuchipy":
             raise RuntimeError("Residual dictionary indexing requires a Kikuchipy master pattern.")
         cache = self.dictionary_cache
         if cache is None:
-            raise RuntimeError("Generate or load a Kikuchipy dictionary in tab 2 before indexing a residual.")
+            raise RuntimeError("Generate or load a Kikuchipy dictionary in tab 1 before indexing a residual.")
 
         selected = np.asarray(indices, dtype=np.int64).ravel()
         if selected.size == 0:
@@ -7505,11 +7688,14 @@ class WorkflowSession:
         progress_callback: Callable[[float, str], None] | None = None,
         parallel_cores: int = 0,
     ) -> str:
+        if self.phase_masters and not self._borrowed_phase_context:
+            return self.refine_enabled_phases(indices, residual=True, trust_euler_deg=trust_euler_deg, maxfev=maxfev, use_full_resolution=use_full_resolution, progress_callback=progress_callback, parallel_cores=parallel_cores)
+
         if self.data is None or self.master is None or self.master.kind != "kikuchipy":
             raise RuntimeError("Residual refinement requires a Kikuchipy master pattern.")
         cache = self.dictionary_cache
         if cache is None:
-            raise RuntimeError("Generate or load a Kikuchipy dictionary in tab 2 before refining residuals.")
+            raise RuntimeError("Generate or load a Kikuchipy dictionary in tab 1 before refining residuals.")
 
         selected = np.asarray(indices, dtype=np.int64).ravel()
         if selected.size == 0:
@@ -7640,7 +7826,7 @@ class WorkflowSession:
         primary_euler = np.asarray(self.current_eulers_rad[idx], dtype=np.float64).reshape(3)
         experimental_raw = self._processed_pattern_at(idx)
         primary_raw = self._simulate_pattern_for_euler(idx, primary_euler)
-        secondary_raw = self._simulate_pattern_for_euler(idx, secondary_euler)
+        secondary_raw = self._simulate_secondary_pattern(idx, secondary_euler)
         result = _overlap_mixture_result_from_raw_patterns(
             idx,
             row,
@@ -7658,6 +7844,9 @@ class WorkflowSession:
             fit_bounds=fit_bounds,
             fit_method=fit_method,
         )
+        if self.phase_masters and not self._borrowed_phase_context:
+            result = self._compare_phase_pair_fits(idx, result, fit_maxiter=fit_maxiter,
+                                                   fit_popsize=fit_popsize, fit_bounds=fit_bounds, fit_method=fit_method)
         if store_result:
             self._store_overlap_mixture_result(result, keep_patterns=True)
         return result
@@ -7752,8 +7941,12 @@ class WorkflowSession:
                 return cached
             primary_euler = primary_start + d[:3]
             secondary_euler = secondary_start + d[3:]
-            primary_raw = self._simulate_pattern_for_euler(idx, primary_euler)
-            secondary_raw = self._simulate_pattern_for_euler(idx, secondary_euler)
+            if self.phase_masters and result.primary_phase_key and result.secondary_phase_key:
+                primary_raw = self._phase_context(result.primary_phase_key, private_arrays=False)._simulate_pattern_for_euler(idx, primary_euler)
+                secondary_raw = self._phase_context(result.secondary_phase_key, private_arrays=False)._simulate_pattern_for_euler(idx, secondary_euler)
+            else:
+                primary_raw = self._simulate_pattern_for_euler(idx, primary_euler)
+                secondary_raw = self._simulate_secondary_pattern(idx, secondary_euler)
             fit = _evaluate_overlap_mixture_pattern(
                 experimental_raw,
                 primary_raw,
@@ -7875,11 +8068,16 @@ class WorkflowSession:
             secondary_euler_delta_deg=secondary_delta_deg,
         )
 
-        if accepted:
+        refined_result.primary_phase_key = result.primary_phase_key
+        refined_result.secondary_phase_key = result.secondary_phase_key
+        if self.phase_masters:
+            refined_result.overlap_acceptance_note = "Orientations changed; rerun mixture fitting to reassess overlap acceptance."
+        if accepted and not self.phase_masters:
             self.current_eulers_rad[idx] = np.asarray(chosen_primary, dtype=np.float64).reshape(3)
             self._ensure_residual_state()
             self.residual_eulers_rad[idx] = np.asarray(chosen_secondary, dtype=np.float64).reshape(3)
-            self.residual_phases[idx] = int(self.current_phases[idx])
+            if not self.phase_masters:
+                self.residual_phases[idx] = int(self.current_phases[idx])
             self.residual_point_results.pop(idx, None)
             if self.last_overlap is not None and int(self.last_overlap.index) == idx:
                 self.last_overlap = None
@@ -8007,7 +8205,7 @@ class WorkflowSession:
             )
 
         worker_count = self._parallel_worker_count(parallel_cores, int(selected.size))
-        use_parallel = selected.size >= 4 and worker_count > 1
+        use_parallel = not self.phase_masters and selected.size >= 4 and worker_count > 1
         if use_parallel:
             bytes_per_pattern = max(1, int(self.data.h * self.data.w * np.dtype(np.float32).itemsize))
             batch_target = max(1, int(np.ceil(selected.size / max(1, worker_count * 2))))
@@ -8138,6 +8336,8 @@ class WorkflowSession:
             "fitted_sigma": ("fitted_sigma", "Gaussian blur sigma fitted to the shared pattern model, in pattern pixels."),
             "component_correlation": ("component_correlation", "NCC between fitted primary and secondary components."),
             "initial_mixture_ncc": ("initial_mixture_ncc", "Mixture NCC before optional orientation refinement."),
+            "single_component_ncc": ("single_component_ncc", "Best single-component fit NCC used for overlap acceptance."),
+            "overlap_ncc_improvement": ("overlap_ncc_improvement", "Two-component NCC minus the best single-component NCC."),
         }
         scalar_maps = {
             name: np.full((rows, cols), np.nan, dtype=np.float32) for name in scalar_specs
@@ -8197,7 +8397,8 @@ class WorkflowSession:
         try:
             with h5py.File(staged, "w") as h5:
                 h5.attrs["format"] = STEP4_RESULTS_FORMAT
-                h5.attrs["schema_version"] = np.int64(1)
+                h5.attrs["schema_version"] = np.int64(2)
+                h5.attrs["phase_registry_json"] = self.phase_registry.to_json()
                 h5.attrs["created_utc"] = datetime.now(timezone.utc).isoformat()
                 h5.attrs["source_pattern_path"] = str(self.data.pattern_path)
                 h5.attrs["source_orientation_path"] = str(self.data.orientation_path or "")
@@ -8254,18 +8455,26 @@ class WorkflowSession:
                 ):
                     ds = maps.create_dataset(name, data=values, compression="gzip", shuffle=True)
                     ds.attrs["description"] = description
-                if self.current_phases is not None:
-                    ds = maps.create_dataset(
-                        "primary_phase", data=np.asarray(self.current_phases, dtype=np.int32).reshape(rows, cols),
-                        compression="gzip", shuffle=True,
-                    )
-                    ds.attrs["description"] = "Current primary phase ID for every scan point."
-                if self.residual_phases is not None:
-                    ds = maps.create_dataset(
-                        "secondary_phase", data=np.asarray(self.residual_phases, dtype=np.int32).reshape(rows, cols),
-                        compression="gzip", shuffle=True,
-                    )
-                    ds.attrs["description"] = "Current residual/secondary phase ID for every scan point."
+                for component, phase_values in (("primary", self.current_phases), ("secondary", self.residual_phases)):
+                    if phase_values is None:
+                        continue
+                    indexed_phases = np.asarray(phase_values, dtype=np.int32).reshape(rows, cols)
+                    fitted_phases = indexed_phases.copy()
+                    for result in point_results:
+                        key = getattr(result, component + "_phase_key")
+                        if key is not None:
+                            fitted_phases.reshape(-1)[result.index] = self.phase_registry.by_key(key).output_id
+                    maps.create_dataset("indexing_" + component + "_phase", data=indexed_phases, compression="gzip", shuffle=True)
+                    ds = maps.create_dataset(component + "_phase", data=fitted_phases, compression="gzip", shuffle=True)
+                    ds.attrs["description"] = "Fitted component phase at computed points; indexing phase elsewhere. Use computed_mask."
+                acceptance = np.full((rows, cols), -1, dtype=np.int8)
+                ambiguous = np.zeros((rows, cols), dtype=np.uint8)
+                for result in point_results:
+                    if result.overlap_accepted is not None:
+                        acceptance.reshape(-1)[result.index] = int(result.overlap_accepted)
+                    ambiguous.reshape(-1)[result.index] = int(result.phase_pair_ambiguous)
+                maps.create_dataset("overlap_accepted", data=acceptance).attrs["description"] = "-1 unassessed; 0 not accepted; 1 accepted by provisional fit diagnostics."
+                maps.create_dataset("phase_pair_ambiguous", data=ambiguous)
                 if self.current_pc_custom is not None:
                     ds = maps.create_dataset(
                         "pattern_center", data=np.asarray(self.current_pc_custom, dtype=np.float64).reshape(rows, cols, 3),
@@ -8296,6 +8505,13 @@ class WorkflowSession:
                 table.create_dataset("row", data=np.asarray([r.row for r in point_results], dtype=np.int64))
                 table.create_dataset("column", data=np.asarray([r.col for r in point_results], dtype=np.int64))
                 text_dtype = h5py.string_dtype(encoding="utf-8")
+                for label in ("single_component_ncc", "overlap_ncc_improvement"):
+                    table.create_dataset(label, data=[getattr(r, label) if getattr(r, label) is not None else np.nan for r in point_results])
+                table.create_dataset("overlap_accepted", data=[-1 if r.overlap_accepted is None else int(r.overlap_accepted) for r in point_results])
+                table.create_dataset("phase_pair_ambiguous", data=[r.phase_pair_ambiguous for r in point_results])
+                table.create_dataset("overlap_acceptance_note", data=[r.overlap_acceptance_note for r in point_results], dtype=text_dtype)
+                for label, attribute in (("primary_phase_key", "primary_phase_key"), ("secondary_phase_key", "secondary_phase_key")):
+                    table.create_dataset(label, data=[getattr(r, attribute) or "" for r in point_results], dtype=text_dtype)
                 table.create_dataset(
                     "fit_message", data=[str(r.fit_message) for r in point_results], dtype=text_dtype,
                 )
@@ -8314,6 +8530,9 @@ class WorkflowSession:
         )
 
     def preview_simulated_pattern(self, index: int) -> np.ndarray:
+        if self.phase_masters and not self._borrowed_phase_context:
+            return self._phase_context_for_index(index).preview_simulated_pattern(index)
+
         if self.data is None or self.master is None:
             raise RuntimeError("Load both input data and master pattern first.")
         if (
@@ -8670,6 +8889,8 @@ class WorkflowSession:
     def _residual_result_metadata(result: OverlapPointResult) -> dict[str, object]:
         return {
             "index": int(result.index),
+            "primary_phase_key": result.primary_phase_key,
+            "secondary_phase_key": result.secondary_phase_key,
             "row": int(result.row),
             "col": int(result.col),
             "ncc_es": float(result.ncc_es),
@@ -8700,6 +8921,8 @@ class WorkflowSession:
         secondary = values.get("secondary_euler_rad")
         return OverlapPointResult(
             index=int(values["index"]),
+            primary_phase_key=values.get("primary_phase_key"),
+            secondary_phase_key=values.get("secondary_phase_key"),
             row=int(values["row"]),
             col=int(values["col"]),
             ncc_es=float(values["ncc_es"]),
@@ -8739,6 +8962,14 @@ class WorkflowSession:
 
         return {
             "index": int(result.index),
+            "overlap_accepted": result.overlap_accepted,
+            "overlap_acceptance_note": result.overlap_acceptance_note,
+            "single_component_ncc": result.single_component_ncc,
+            "overlap_ncc_improvement": result.overlap_ncc_improvement,
+            "phase_pair_ambiguous": result.phase_pair_ambiguous,
+
+            "primary_phase_key": result.primary_phase_key,
+            "secondary_phase_key": result.secondary_phase_key,
             "row": int(result.row),
             "col": int(result.col),
             "primary_fraction": float(result.primary_fraction),
@@ -8774,6 +9005,14 @@ class WorkflowSession:
 
         return OverlapMixtureResult(
             index=int(values["index"]),
+            overlap_accepted=values.get("overlap_accepted", None),
+            overlap_acceptance_note=values.get("overlap_acceptance_note", ""),
+            single_component_ncc=values.get("single_component_ncc", None),
+            overlap_ncc_improvement=values.get("overlap_ncc_improvement", None),
+            phase_pair_ambiguous=values.get("phase_pair_ambiguous", False),
+
+            primary_phase_key=values.get("primary_phase_key"),
+            secondary_phase_key=values.get("secondary_phase_key"),
             row=int(values["row"]),
             col=int(values["col"]),
             primary_fraction=float(values["primary_fraction"]),
@@ -8859,7 +9098,9 @@ class WorkflowSession:
         )
         np.savez_compressed(
             out_path,
-            workflow_schema_version=np.asarray(3, dtype=np.int64),
+            workflow_schema_version=np.asarray(4, dtype=np.int64),
+            phase_registry_json=np.asarray(self.phase_registry.to_json()),
+            **self._phase_checkpoint_arrays(),
             detector_geometry_json=np.asarray(json.dumps(_detector_geometry_metadata(self.data))),
             pattern_path=np.asarray(self.data.pattern_path),
             orientation_path=np.asarray(self.data.orientation_path or ""),
@@ -9028,7 +9269,10 @@ class WorkflowSession:
                     energy_weights=weights,
                     energy_reference_pc_bruker=reference_pc,
                 )
-            if not master_path:
+            has_phase_assets = "phase_registry_json" in state.files and any(e.master_path for e in PhaseRegistry.from_json(str(state["phase_registry_json"].item())).entries)
+            if has_phase_assets:
+                master_note = "Restoring linked phase assets."
+            elif not master_path:
                 master_note = "No master pattern stored."
             elif master_energy_mode == MASTER_ENERGY_MODE_GLOBAL:
                 master_note = self.load_master(master_path, **master_load_kwargs)
@@ -9062,7 +9306,7 @@ class WorkflowSession:
                 if "dictionary_was_available" in state.files
                 else False
             )
-            if dictionary_path:
+            if dictionary_path and not has_phase_assets:
                 if Path(dictionary_path).is_file():
                     try:
                         restore_notes.append(self.load_dictionary(dictionary_path))
@@ -9073,6 +9317,15 @@ class WorkflowSession:
             elif dictionary_was_available:
                 restore_notes.append("The workflow used a temporary dictionary; regenerate or load a saved dictionary.")
 
+            if has_phase_assets:
+                for field in ("pc_bruker", "pc_custom"):
+                    values = np.asarray(state[field], dtype=np.float64).reshape(-1,3)
+                    if values.shape != (self.data.count,3) or not np.all(np.isfinite(values)):
+                        raise ValueError("Saved phase workflow has invalid pattern-center geometry.")
+                    setattr(self, "current_" + field, values.copy())
+            self._restore_phase_checkpoint(state, restore_notes)
+            if not has_phase_assets:
+                self._migrate_legacy_phase_assets()
             self.last_action_note = ""
             expected = self.data.count if self.data is not None else 0
             eulers = np.asarray(state["eulers_rad"], dtype=np.float64).reshape(-1, 3)
@@ -9801,8 +10054,10 @@ class WorkflowSession:
             if self.indexed_mask is None or self.indexed_mask.shape != (rows * cols,):
                 raise RuntimeError("No dictionary-indexed points are registered for primary export.")
             indexed_roi = self.indexed_mask.reshape(rows, cols)[r0:r1, c0:c1]
-            if not np.all(indexed_roi):
-                missing_count = int(indexed_roi.size - np.count_nonzero(indexed_roi))
+            unindexed_roi = self._phase_unindexed_mask(self.current_phases.reshape(rows, cols)[r0:r1, c0:c1])
+            missing_indexing = ~indexed_roi & ~unindexed_roi
+            if np.any(missing_indexing):
+                missing_count = int(np.count_nonzero(missing_indexing))
                 raise RuntimeError(
                     f"Primary ROI export requires every ROI point to be dictionary indexed; "
                     f"{missing_count} point(s) still contain source orientations. Re-index the ROI first."
@@ -9810,9 +10065,12 @@ class WorkflowSession:
             euler_grid = np.asarray(self.current_eulers_rad, dtype=np.float64).reshape(rows, cols, 3)
             quality_grid = np.nan_to_num(np.asarray(self.last_scores_map, dtype=np.float64).reshape(rows, cols), nan=0.0)
             phase_grid = np.asarray(self.current_phases, dtype=np.int32).reshape(rows, cols)
-            roi_eulers = np.asarray(euler_grid[r0:r1, c0:c1], dtype=np.float64)
-            roi_quality = np.asarray(quality_grid[r0:r1, c0:c1], dtype=np.float64)
-            roi_phase = np.asarray(phase_grid[r0:r1, c0:c1], dtype=np.int32)
+            roi_eulers = np.array(euler_grid[r0:r1, c0:c1], dtype=np.float64, copy=True)
+            roi_quality = np.array(quality_grid[r0:r1, c0:c1], dtype=np.float64, copy=True)
+            roi_phase = np.array(phase_grid[r0:r1, c0:c1], dtype=np.int32, copy=True)
+            roi_eulers[unindexed_roi] = 0
+            roi_quality[unindexed_roi] = 0
+            roi_phase[unindexed_roi] = 0
             if not np.all(np.isfinite(roi_eulers)):
                 first = np.argwhere(~np.all(np.isfinite(roi_eulers), axis=-1))[0]
                 raise RuntimeError(
@@ -9882,11 +10140,14 @@ class WorkflowSession:
                 if ncc_name not in ncc_parent:
                     ncc_parent.create_dataset(ncc_name, shape=(rows * cols,), dtype=np.float32)
                 ncc_ds = ncc_parent[ncc_name]
+                if self.phase_masters:
+                    write_h5_phase_catalog(h5, [root], self.phase_registry, self.phase_masters)
+                export_corrections = _h5_phase_euler_corrections(h5, roots=[root])
                 row_phase = roi_phase.reshape(roi_rows, roi_cols)
                 row_eulers = _apply_phase_euler_corrections(
                     roi_eulers.reshape(-1, 3),
                     row_phase.reshape(-1),
-                    self.data.phase_euler_corrections_rad,
+                    export_corrections,
                     inverse=True,
                 ).reshape(roi_rows, roi_cols, 3)
                 row_quality = roi_quality.reshape(roi_rows, roi_cols)
@@ -10085,6 +10346,8 @@ class WorkflowSession:
         if header_lines is None:
             _header, header_lines = _parse_ang_header_with_lines(str(source_path))
         header = _ang_header_with_pattern_center(header_lines, pc_mean)
+        if self.phase_masters:
+            header = ang_phase_header(header, self.phase_registry, self.phase_masters)
 
         with open(source_path, "r", encoding="utf-8", errors="replace") as src, open(out, "w", encoding="utf-8") as dst:
             for line in header:

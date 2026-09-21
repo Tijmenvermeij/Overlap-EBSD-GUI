@@ -6,6 +6,7 @@ from pathlib import Path
 import tkinter as tk
 from tkinter import ttk
 
+from .gui_phases import PhaseControls
 from .cpu_fitting import FIT_METHOD_LABELS
 from .gui_theme import BACKGROUND, configure_theme
 
@@ -33,7 +34,7 @@ class CollapsibleSection(ttk.Frame):
         self.set_open(not self.expanded)
 
 
-class GUIControls:
+class GUIControls(PhaseControls):
     """Layout and presentation helpers; processing actions live in gui.py."""
 
     def _box(self, parent, title):
@@ -170,6 +171,7 @@ class GUIControls:
         left, right = self._workspace_panes(parent)
         controls = self._scrollable_controls(left)
         self._build_input_controls(controls)
+        self._build_phase_controls(controls)
         self._build_refine_tab(self._box(controls, "Pattern-center calibration"))
         self._conditioning_section = self._advanced(controls, "Pattern conditioning · all stages")
         self._build_conditioning_controls(self._conditioning_section.content)
@@ -193,9 +195,6 @@ class GUIControls:
         self._hint(self._ang_input_row, "Orientations (.ang)")
         self._file_row(self._ang_input_row, self.orientation_path_var)
         self._input_load_button = self._action(box, "Load input data…", self._choose_and_load_input)
-        self._hint(box, "Master pattern")
-        self._file_row(box, self.master_path_var)
-        self._action(box, "Load master pattern…", self._choose_and_load_master)
         self._sample_tilt_entry = self._field(box, "Sample tilt (°)", self.sample_tilt_var)
         self._hint(box, variable=self.pc_conv_label_var)
         geometry = self._advanced(box, "Acquisition geometry").content
@@ -295,19 +294,12 @@ class GUIControls:
 
     def _build_index_tab(self, parent):
         self._hint(parent, variable=self.phase_summary_var)
-        self._field(parent, "Orientation spacing (°)", self.di_res_deg_var)
-        self._field(parent, "Dictionary software binning", self.di_binning_var)
-        self._hint(parent, variable=self.dictionary_binned_size_var)
-        row = ttk.Frame(parent)
-        row.pack(fill=tk.X)
-        ttk.Button(row, text="Generate dictionary", command=self._generate_dictionary).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 3))
-        ttk.Button(row, text="Load dictionary…", command=self._load_dictionary).pack(side=tk.LEFT, fill=tk.X, expand=True)
-        self.btn_save_dictionary = self._action(parent, "Save dictionary…", self._save_dictionary)
-        self.dictionary_progress_bar = self._progress(parent, self.dictionary_progress_var, self.dictionary_status_var)
-        storage = self._advanced(parent, "Dictionary file & phase assignment").content
-        ttk.Entry(storage, textvariable=self.dictionary_path_var, width=32).pack(fill=tk.X)
-        self._field(storage, "Output phase ID", self.phase_id_var)
-        self._hint(storage, "The master pattern supplies the crystal phase. This ID assigns its results to a phase in the input map; it is not a second phase search.")
+        self._hint(parent, "Indexing searches all enabled phases using the dictionaries linked in tab 1.")
+        self._action(parent, "Edit phases / dictionaries…", lambda: self.workflow_notebook.select(0))
+        self._action(parent, "Phase maps / IPF keys…", self._show_phase_maps)
+        self._keep_imported_phases_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(parent, text="Keep imported phase assignments", variable=self._keep_imported_phases_var,
+                        command=self._set_keep_imported_phases).pack(anchor="w")
         ttk.Checkbutton(parent, text="Refine automatically after indexing (tabs 2 and 3)", variable=self.auto_refine_var).pack(anchor="w", pady=(8, 3))
         self.btn_index_roi = self._action(parent, "Index ROI", self._index_roi)
         self.btn_refine_indexed = self._action(parent, "Refine last indexed ROI again", self._refine_last_indexed)
@@ -331,6 +323,7 @@ class GUIControls:
         self._build_plot_area(right, 2, fixed_ipf=True)
 
     def _build_overlap_tab(self, parent):
+        self._action(parent, "Phase maps / IPF keys…", self._show_phase_maps)
         self._hint(parent, "Retained matches, refinement range, evaluation limit and full-resolution choice are shared with tab 2.")
         self._action(parent, "Edit shared indexing settings…", lambda: self._show_section(self._refinement_section, 1))
         self._field(parent, "Minimum primary NCC for residual work", self.overlap_min_ncc_var)
@@ -410,6 +403,7 @@ class GUIControls:
         self._build_plot_area(right, 3, fixed_ipf=True)
 
     def _build_overlap_optimization_tab(self, parent):
+        self._action(parent, "Phase maps / IPF keys…", self._show_phase_maps)
         self._field(parent, "Minimum residual NCC for mixture fitting", self.overlap_mixture_residual_ncc_var)
         self._build_fit_method_controls(parent)
         self._action(parent, "Fit mixture for ROI", self._fit_overlap_mixture_roi)
@@ -555,6 +549,10 @@ class GUIControls:
             pass
 
     def _refresh_context_summary(self):
+        if hasattr(self, "phase_table"):
+            self._refresh_phase_table()
+        if hasattr(self, "_keep_imported_phases_var"):
+            self._keep_imported_phases_var.set(self.session.keep_imported_phase_assignments)
         data = self.session.data
         master = self.session.master
         cache = self.session.dictionary_cache
@@ -577,4 +575,11 @@ class GUIControls:
             else f"Single phase from {Path(master.path).stem}" if master is not None
             else "Load a master pattern to define the indexing phase."
         )
+        registry = getattr(self.session, "phase_registry", None)
+        if registry is not None and registry.entries:
+            enabled = [entry.name for entry in registry.entries if entry.enabled]
+            phase_text = "Enabled phases: " + (", ".join(enabled) or "none")
+            revision = getattr(self.session, "phase_search_revision", None)
+            if revision is not None and revision != registry.search_revision:
+                phase_text += " · results use an earlier phase selection; re-index to compare the current set"
         self.phase_summary_var.set(phase_text)
