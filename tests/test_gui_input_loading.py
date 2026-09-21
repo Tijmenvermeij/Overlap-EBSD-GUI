@@ -15,6 +15,23 @@ def value(initial):
 
 
 class GuiInputLoadingTests(unittest.TestCase):
+    def test_load_buttons_choose_files_and_load_only_after_selection(self):
+        for path, orientation, loads in (
+            ('/tmp/input.h5oina', None, True), ('/tmp/input.up1', '/tmp/input.ang', True),
+            ('/tmp/input.up2', None, False), (None, None, False),
+        ):
+            with self.subTest(path=path, orientation=orientation):
+                gui = SimpleNamespace(busy=False, _browse_patterns=Mock(return_value=path),
+                    _browse_orientation=Mock(return_value=orientation), _load_input=Mock())
+                MultiStepOverlapGUI._choose_and_load_input(gui)
+                self.assertEqual(gui._load_input.call_count, int(loads))
+                self.assertEqual(gui._browse_orientation.call_count,
+                                 int(bool(path and path.endswith(('.up1', '.up2')))))
+        for path in (None, '/tmp/master.h5'):
+            gui = SimpleNamespace(busy=False, _browse_master=Mock(return_value=path), _load_master=Mock())
+            MultiStepOverlapGUI._choose_and_load_master(gui)
+            self.assertEqual(gui._load_master.call_count, int(bool(path)))
+
     def input_stub(self):
         jobs = []
         previous = SimpleNamespace(master=object(), _clear_dictionary_cache=Mock())
@@ -115,6 +132,15 @@ class GuiInputLoadingTests(unittest.TestCase):
         self.assertIn('Load the master pattern', message)
         self.assertIsNone(gui.last_overlap)
         self.assertIsNone(gui.last_overlap_mixture)
+        gui.index_var.set.assert_called_with(0)
+        session.indexed_mask = np.array([False, False, False, False, True, True])
+        MultiStepOverlapGUI._finish_input_load(gui, 'Loaded partial indexing.')
+        gui.index_var.set.assert_called_with(4)
+        gui.row_var.set.assert_called_with(1)
+        gui.col_var.set.assert_called_with(1)
+        session.indexed_mask[:] = False
+        MultiStepOverlapGUI._finish_input_load(gui, 'Loaded unindexed input.')
+        gui.index_var.set.assert_called_with(0)
 
 
 if __name__ == '__main__':

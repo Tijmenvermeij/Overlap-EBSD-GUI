@@ -747,7 +747,7 @@ class MultiStepOverlapGUI(GUIControls, tk.Tk):
             target.insert("1.0", "\n".join(lines).strip() + "\n")
             target.configure(state=tk.DISABLED)
 
-    def _browse_patterns(self) -> None:
+    def _browse_patterns(self) -> str | None:
         fn = filedialog.askopenfilename(filetypes=[("Pattern files", "*.h5oina *.up1 *.up2"), ("All files", "*.*")])
         if fn:
             self.pattern_path_var.set(str(Path(fn).resolve()))
@@ -756,16 +756,33 @@ class MultiStepOverlapGUI(GUIControls, tk.Tk):
                 self.source_type_var.set("H5OINA" if suffix == ".h5oina" else "UP + ANG")
                 self._sync_input_type_controls(reset_up_tilt=True)
             self._refresh_default_workflow_path()
+            return str(Path(fn).resolve())
 
-    def _browse_orientation(self) -> None:
+    def _browse_orientation(self) -> str | None:
         fn = filedialog.askopenfilename(filetypes=[("ANG files", "*.ang"), ("All files", "*.*")])
         if fn:
             self.orientation_path_var.set(str(Path(fn).resolve()))
+            return str(Path(fn).resolve())
 
-    def _browse_master(self) -> None:
+    def _browse_master(self) -> str | None:
         fn = filedialog.askopenfilename(filetypes=[("Master patterns", "*.h5 *.hdf5 *.sdf5"), ("All files", "*.*")])
         if fn:
             self.master_path_var.set(str(Path(fn).resolve()))
+            return str(Path(fn).resolve())
+
+    @_guarded_action
+    def _choose_and_load_input(self) -> None:
+        path = self._browse_patterns()
+        if not path:
+            return
+        if Path(path).suffix.lower() in {".up1", ".up2"} and not self._browse_orientation():
+            return
+        self._load_input()
+
+    @_guarded_action
+    def _choose_and_load_master(self) -> None:
+        if self._browse_master():
+            self._load_master()
 
     def _browse_export(self) -> None:
         fn = filedialog.asksaveasfilename(defaultextension=".h5oina", filetypes=[("All files", "*.*")])
@@ -1441,6 +1458,8 @@ class MultiStepOverlapGUI(GUIControls, tk.Tk):
             "btn_refine_indexed": loaded and master and self.session.last_indexed_indices is not None,
             "btn_steps_2_3_analysis": loaded and master and dictionary,
             "btn_complete_analysis": loaded and master and dictionary,
+            "btn_steps_3_4_analysis": loaded and master and dictionary,
+            "btn_save_dictionary": dictionary,
         }
         for name, allowed in conditions.items():
             button = getattr(self, name, None)
@@ -1573,6 +1592,12 @@ class MultiStepOverlapGUI(GUIControls, tk.Tk):
             self.overlap_optimization_export_path_var.set(self._default_overlap_optimization_export_path())
             self._refresh_default_workflow_path()
             imported_count = int(np.count_nonzero(self.session.indexed_mask))
+            if imported_count and not self.session.indexed_mask[0]:
+                first_indexed = int(np.flatnonzero(self.session.indexed_mask)[0])
+                row, col = divmod(first_indexed, int(self.session.data.cols))
+                self.index_var.set(first_indexed)
+                self.row_var.set(row)
+                self.col_var.set(col)
             self._set_reindex_progress(
                 100.0 if imported_count else 0.0,
                 (f"Loaded {imported_count}/{self.session.data.count} indexed primary point(s); DI can be skipped."
@@ -2679,7 +2704,7 @@ class MultiStepOverlapGUI(GUIControls, tk.Tk):
     # -------------------------- Step 3 -------------------------- #
 
     @_guarded_action
-    def _run_residual_roi_analysis(self) -> None:
+    def _run_residual_roi_analysis(self, *, include_step4: bool = False) -> None:
         indexing_cores = int(self.parallel_cores_var.get())
         if self.session.data is None or self.session.dictionary_cache is None:
             raise ValueError("Load input and a dictionary before analyzing residuals.")
@@ -2698,7 +2723,7 @@ class MultiStepOverlapGUI(GUIControls, tk.Tk):
         fit_method = _selected_fit_method(self)
         fit_maxiter = int(self.gain_fit_maxiter_var.get())
         fit_popsize = int(self.gain_fit_popsize_var.get())
-        fit_bounds = self._primary_fit_bounds() if fit_blur_gain else None
+        fit_bounds = self._primary_fit_bounds() if fit_blur_gain or include_step4 else None
         parallel_cores = int(self.parallel_cores_var.get())
         write_patterns = bool(self.write_residual_patterns_var.get())
         output = self.residual_pattern_path_var.get().strip()
@@ -2706,18 +2731,24 @@ class MultiStepOverlapGUI(GUIControls, tk.Tk):
             raise ValueError("Keep N, optimizer limits and parallel cores must be positive.")
         if write_patterns and not output:
             raise ValueError("Choose a residual-pattern output path first.")
-        stages = 3 if auto_refine else 2
+        mixture_threshold = float(self._overlap_mixture_residual_ncc_threshold()) if include_step4 else 0.0
+        mixture_cores = int(self.step4_parallel_cores_var.get()) if include_step4 else parallel_cores
+        if mixture_cores < 1:
+            raise ValueError("Mixture worker cores must be positive.")
+        stages = (3 if auto_refine else 2) + int(include_step4)
         def progress(stage):
             def update(value, message):
                 self._check_job_cancelled()
                 overall = (stage * 100.0 + float(value)) / stages
                 self._post_ui(lambda v=overall, m=message: self._set_overlap_progress(v, m))
+                if include_step4 and stage == stages - 1:
+                    self._post_ui(lambda v=float(value), m=message: self._set_overlap_optimization_progress(v, m))
             return update
         def action():
             messages = [self.session.compute_overlap_residual_indices(
                 indices, fit_blur_gain=fit_blur_gain, blur_sigma=blur_sigma, fit_maxiter=fit_maxiter,
                 fit_method=fit_method,
-                fit_popsize=fit_popsize, fit_bounds=fit_bounds, parallel_cores=parallel_cores,
+                fit_popsize=fit_popsize, fit_bounds=fit_bounds if fit_blur_gain else None, parallel_cores=parallel_cores,
                 write_patterns=write_patterns, residual_output_path=output if write_patterns else None,
                 selected_index=selected_index, progress_callback=progress(0),
             )]
@@ -2737,8 +2768,27 @@ class MultiStepOverlapGUI(GUIControls, tk.Tk):
                     selected_index=selected_index, progress_callback=progress(2),
                     parallel_cores=indexing_cores,
                 ))
+            if include_step4:
+                self._check_job_cancelled()
+                MultiStepOverlapGUI._autosave_stage(self, "residual analysis")
+                mixture_indices = np.asarray([
+                    int(idx) for idx in indices
+                    if mixture_threshold <= 0.0 or (
+                        (score := self._overlap_mixture_residual_ncc_for_index(int(idx))) is not None
+                        and score >= mixture_threshold
+                    )
+                ], dtype=np.int64)
+                if mixture_indices.size == 0:
+                    raise RuntimeError("Residual analysis finished, but no ROI points meet the tab 4 residual NCC threshold.")
+                messages.append(self.session.compute_overlap_mixture_indices(
+                    mixture_indices, fit_maxiter=fit_maxiter, fit_popsize=fit_popsize,
+                    fit_bounds=fit_bounds, fit_method=fit_method, parallel_cores=mixture_cores,
+                    selected_index=selected_index if selected_index in mixture_indices else None,
+                    progress_callback=progress(stages - 1),
+                ))
+                messages.append(f"Skipped {indices.size - mixture_indices.size} point(s) at the residual NCC filter.")
             return " ".join(messages) + f" Skipped {skipped} point(s) at the primary NCC filter."
-        self._set_overlap_progress(0.0, "Starting residual ROI analysis...")
+        self._set_overlap_progress(0.0, "Starting steps 3–4 ROI analysis..." if include_step4 else "Starting residual ROI analysis...")
         self._run_threaded(action, autosave=True)
 
     @_guarded_action
@@ -3599,6 +3649,7 @@ class MultiStepOverlapGUI(GUIControls, tk.Tk):
         self.axes[0, 1].set_axis_off()
 
         sim_shown = False
+        preview_error = "Load a master pattern"
         live_residual = None
         live_ncc: float | None = None
         if self.session.master is not None:
@@ -3623,11 +3674,12 @@ class MultiStepOverlapGUI(GUIControls, tk.Tk):
                 self.axes[0, 2].set_axis_off()
                 sim_shown = True
                 live_ncc = float(ncc_es)
-            except Exception:
+            except Exception as exc:
                 sim_shown = False
+                preview_error = f"Simulation unavailable: {exc}"
 
         if not sim_shown:
-            self.axes[0, 2].text(0.5, 0.5, "Load a master pattern", ha="center", va="center")
+            self.axes[0, 2].text(0.5, 0.5, preview_error, ha="center", va="center", wrap=True)
             self.axes[0, 2].set_title("Primary Simulation")
 
         if sim_shown and live_residual is not None:

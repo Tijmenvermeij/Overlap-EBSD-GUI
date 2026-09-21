@@ -187,26 +187,27 @@ class GUIControls:
         combo.pack(side=tk.RIGHT)
         combo.bind("<<ComboboxSelected>>", lambda _e: self._sync_input_type_controls(reset_up_tilt=True))
         self._hint(box, variable=self.pattern_input_label_var)
-        self._file_row(box, self.pattern_path_var, self._browse_patterns)
+        self._file_row(box, self.pattern_path_var)
         self._ang_input_row = ttk.Frame(box)
         self._ang_input_row.pack(fill=tk.X)
         self._hint(self._ang_input_row, "Orientations (.ang)")
-        self._file_row(self._ang_input_row, self.orientation_path_var, self._browse_orientation)
-        self._input_load_button = self._action(box, "Load input data", self._load_input)
+        self._file_row(self._ang_input_row, self.orientation_path_var)
+        self._input_load_button = self._action(box, "Load input data…", self._choose_and_load_input)
         self._hint(box, "Master pattern")
-        self._file_row(box, self.master_path_var, self._browse_master)
-        self._action(box, "Load master pattern", self._load_master)
+        self._file_row(box, self.master_path_var)
+        self._action(box, "Load master pattern…", self._choose_and_load_master)
         self._sample_tilt_entry = self._field(box, "Sample tilt (°)", self.sample_tilt_var)
         self._hint(box, variable=self.pc_conv_label_var)
         geometry = self._advanced(box, "Acquisition geometry").content
         self._detector_tilt_entry = self._field(geometry, "Detector tilt (°)", self.detector_tilt_var)
         self._hint(geometry, "H5OINA supplies tilt and PC convention. UP + ANG starts at 70° sample tilt and uses Oxford PC scaling for compatibility; tilt edits apply on the next input load.")
 
-    def _file_row(self, parent, variable, browse):
+    def _file_row(self, parent, variable, browse=None):
         row = ttk.Frame(parent)
         row.pack(fill=tk.X, pady=2)
         ttk.Entry(row, textvariable=variable, width=30).pack(side=tk.LEFT, fill=tk.X, expand=True)
-        ttk.Button(row, text="Browse…", command=browse).pack(side=tk.RIGHT, padx=(4, 0))
+        if browse is not None:
+            ttk.Button(row, text="Browse…", command=browse).pack(side=tk.RIGHT, padx=(4, 0))
 
     def _build_refine_tab(self, parent):
         self._hint(parent, "Recalibration takes two steps: optimize selected points, then apply their average to the entire map.")
@@ -301,10 +302,10 @@ class GUIControls:
         row.pack(fill=tk.X)
         ttk.Button(row, text="Generate dictionary", command=self._generate_dictionary).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 3))
         ttk.Button(row, text="Load dictionary…", command=self._load_dictionary).pack(side=tk.LEFT, fill=tk.X, expand=True)
+        self.btn_save_dictionary = self._action(parent, "Save dictionary…", self._save_dictionary)
         self.dictionary_progress_bar = self._progress(parent, self.dictionary_progress_var, self.dictionary_status_var)
         storage = self._advanced(parent, "Dictionary file & phase assignment").content
         ttk.Entry(storage, textvariable=self.dictionary_path_var, width=32).pack(fill=tk.X)
-        self._action(storage, "Save dictionary…", self._save_dictionary)
         self._field(storage, "Output phase ID", self.phase_id_var)
         self._hint(storage, "The master pattern supplies the crystal phase. This ID assigns its results to a phase in the input map; it is not a second phase search.")
         ttk.Checkbutton(parent, text="Refine automatically after indexing (tabs 2 and 3)", variable=self.auto_refine_var).pack(anchor="w", pady=(8, 3))
@@ -335,6 +336,11 @@ class GUIControls:
         self._field(parent, "Minimum primary NCC for residual work", self.overlap_min_ncc_var)
         self._build_fit_method_controls(parent)
         self._action(parent, "Analyze residual ROI", self._run_residual_roi_analysis)
+        self.btn_steps_3_4_analysis = self._action(
+            parent, "Run steps 3–4 · residual + mixture fit",
+            lambda: self._run_residual_roi_analysis(include_step4=True),
+        )
+        self._hint(parent, "Uses existing primary indexing, computes and indexes residuals, then fits mixtures using the tab 4 NCC threshold.")
         self._field(parent, "Minimum residual NCC shown in maps", self.residual_ipf_ncc_var)
         self._hint(parent, "Display threshold: hides weak residual orientations. The processing threshold for mixture fitting is in tab 4.")
         self.overlap_progress_bar = self._progress(parent, self.overlap_progress_var, self.overlap_progress_status_var)

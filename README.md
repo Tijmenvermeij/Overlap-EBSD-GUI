@@ -13,12 +13,14 @@ python multistep_overlap_ebsd_gui.py
 
 ## Workflow
 
-1. **Load and calibrate:** open Oxford `.h5oina`, or EDAX `.up1`/`.up2` with a companion `.ang`, then load a matching master pattern. If recalibrating, optimize calibration points and then **Apply average PC to map**.
+1. **Load and calibrate:** click **Load input data…** to select and open Oxford `.h5oina`, or EDAX `.up1`/`.up2` followed by its companion `.ang`. Click **Load master pattern…** to select and open the matching master. Imported indexing selects the first indexed point when the first map pixel is unindexed, so its simulation appears after master loading. If recalibrating, optimize calibration points and then **Apply average PC to map**.
 2. **Dictionary indexing:** generate or load a dictionary, select a region of interest (ROI), and index it. Automatic orientation refinement is enabled by default.
 3. **Residual indexing:** fit and subtract the primary simulated pattern, then index and refine the residual to find a second orientation of the same phase.
 4. **Mixture optimization:** fit the two orientations together and inspect the NCC and contribution maps.
 
 **Run steps 2–3** and **Run steps 2–4** automate the corresponding stages. Workflow Open/Save, shared pattern conditioning, Cancel, and worker-core controls are available across tabs. The worker limit applies to indexing, orientation/PC refinement, residual fitting and mixture fitting; it defaults to **1** and is saved with the workflow.
+
+Tab 3 also offers **Run steps 3–4 · residual + mixture fit** to start from existing primary indexing. It computes and indexes residuals, optionally refines them, then fits mixtures using the tab 4 NCC threshold. **Save dictionary…** is directly visible in tab 2 beside the dictionary controls.
 
 Maps update between completed batches, preserving the selected tab, inspection point and zoom. Refreshes are at least five seconds apart and become less frequent when drawing is expensive. Updates and cancellation wait for completed work; slow batches or individual optimizations can take longer.
 

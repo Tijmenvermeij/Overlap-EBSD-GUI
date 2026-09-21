@@ -36,6 +36,36 @@ def bind(stub, *names):
 
 
 class GuiActionTests(unittest.TestCase):
+    def test_steps_three_four_runs_mixture_after_residuals_with_snapshot_threshold(self):
+        for auto in (False, True):
+            with self.subTest(auto=auto):
+                gui, jobs = self.fitting_stub()
+                gui.auto_refine_var.set(auto)
+                gui._index_refinement_settings = lambda: (1.5, 25, True)
+                gui.session.refine_overlap_residual_indices = Mock(return_value='refined')
+                gui._overlap_mixture_residual_ncc_threshold = lambda: .7
+                gui._overlap_mixture_residual_ncc_for_index = lambda idx: [.5, .8][idx]
+                gui.fit_blur_gain_var.set(False)
+                MultiStepOverlapGUI._run_residual_roi_analysis(gui, include_step4=True)
+                gui._overlap_mixture_residual_ncc_threshold = lambda: .95
+                self.run_fitting_worker(jobs)
+                gui.session.dictionary_index_indices.assert_not_called()
+                self.assertEqual(gui.session.refine_overlap_residual_indices.call_count, int(auto))
+                call = gui.session.compute_overlap_mixture_indices.call_args
+                np.testing.assert_array_equal(call.args[0], [1])
+                self.assertIsNone(call.kwargs['selected_index'])
+                self.assertEqual(call.kwargs['fit_bounds'], [(0.1, 5.0)])
+                self.assertIsNone(gui.session.compute_overlap_residual_indices.call_args.kwargs['fit_bounds'])
+
+    def test_steps_three_four_stops_before_mixture_when_no_residual_passes(self):
+        gui, jobs = self.fitting_stub()
+        gui._overlap_mixture_residual_ncc_threshold = lambda: .99
+        MultiStepOverlapGUI._run_residual_roi_analysis(gui, include_step4=True)
+        with self.assertRaisesRegex(RuntimeError, 'tab 4 residual NCC threshold'):
+            jobs[0]()
+        gui.session.index_overlap_residual_indices.assert_called_once()
+        gui.session.compute_overlap_mixture_indices.assert_not_called()
+
     def test_automated_run_checkpoints_primary_before_later_stage_fails(self):
         gui, jobs = self.fitting_stub()
         gui.complete_analysis_status_var = Value('')
