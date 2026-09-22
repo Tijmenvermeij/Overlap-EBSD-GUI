@@ -138,11 +138,9 @@ class PhaseControls:
         if getattr(self, "_worker_thread", None) is not None:
             return
         spacing, binning = float(self.di_res_deg_var.get()), int(self.di_binning_var.get())
-        def progress(value, message):
-            self._check_job_cancelled()
-            self._post_ui(lambda: self._set_dictionary_progress(value, message))
         def action():
             notes = []
+            pending = []
             entries = [e for e in self.session.phase_registry.entries if e.enabled]
             if not entries:
                 raise ValueError("Add or enable a phase first.")
@@ -155,6 +153,14 @@ class PhaseControls:
                     expected = self.session.phase_dictionary_provenance(entry.key, cache)
                     if entry.status(expected) == "Ready":
                         continue
+                pending.append(entry)
+            for number, entry in enumerate(pending, start=1):
+                label = f"Dictionary {number}/{len(pending)} — {entry.name} (phase {entry.output_id})"
+                def progress(value, message, label=label):
+                    self._check_job_cancelled()
+                    text = f"{label}: {message}"
+                    self._post_ui(lambda: self._set_dictionary_progress(value, text))
+                progress(0, "Starting generation…")
                 notes.append(self.session.generate_phase_dictionary(entry.key, resolution_deg=spacing,
                              software_binning=binning, progress_callback=progress))
             return " ".join(notes) or "All enabled phase dictionaries are ready."
