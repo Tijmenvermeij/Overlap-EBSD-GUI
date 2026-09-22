@@ -188,8 +188,18 @@ class PhaseControls:
             messagebox.showerror("Select a phase", str(exc))
             return
         entry = self.session.phase_registry.by_key(key)
+        cache = self.session.phase_dictionaries.get(key)
+        if cache is None:
+            messagebox.showerror("Save dictionary", "Generate or load a dictionary for this phase first.")
+            return
+        master_stem = Path(entry.master_path).stem if entry.master_path else entry.name
+        safe_stem = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_"
+                            for ch in master_stem).strip("_") or "master_pattern"
+        resolution = f"{cache.resolution_deg:g}".replace(".", "p")
+        energy_suffix = "_globalMC" if cache.master_energy_mode == "global_weighted" else ""
+        filename = f"{safe_stem}_dictionary{energy_suffix}_bin{cache.software_binning}_{resolution}deg"
         path = filedialog.asksaveasfilename(title=f"Save {entry.name} dictionary", defaultextension=".h5",
-                                           initialfile=f"{Path(entry.name).name}_dictionary.h5",
+                                           initialfile=filename,
                                            filetypes=[("HDF5 dictionary", "*.h5")])
         if path:
             self._run_threaded(lambda: self.session.save_phase_dictionary(key, path),
