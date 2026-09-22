@@ -260,6 +260,22 @@ class RealPipelineTests(unittest.TestCase):
             s.refine_orientations_indices(np.arange(6),phase_id=1,maxfev=5,parallel_cores=1)
             np.testing.assert_array_equal(s.current_phases,[1,2,3,1,2,3])
             self.assertTrue(np.all(s.last_scores_map>.99))
+            # Both GUI preview APIs must follow the point's phase, including
+            # added phases absent from the input and live Euler/PC overrides.
+            for master in s.phase_masters.values():
+                s.master = master
+                for index in range(3):
+                    expected = s.preview_simulated_pattern(index)
+                    for overrides in ({}, dict(euler_rad_override=s.current_eulers_rad[index],
+                                               pc_custom_override=s.current_pc_custom[index])):
+                        preview, ncc, residual, scale, residual_ncc = s.preview_simulated_pattern_with_ncc(index, **overrides)
+                        reference = s._phase_context_for_index(index).preview_simulated_pattern_with_ncc(index, **overrides)
+                        np.testing.assert_allclose(preview, reference[0], atol=1e-5)
+                        self.assertAlmostEqual(ncc, reference[1])
+                        if not overrides:
+                            np.testing.assert_allclose(preview, expected, atol=1e-5)
+                            self.assertGreater(ncc, .99)
+                        self.assertAlmostEqual(scale, ncc)
             s.save_workflow_state(str(helper.root/'workflow.npz'))
             with np.load(helper.root/'workflow.npz',allow_pickle=False) as state:
                 self.assertEqual(len(PhaseRegistry.from_json(str(state['phase_registry_json'].item())).entries),3)

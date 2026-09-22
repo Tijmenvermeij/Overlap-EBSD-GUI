@@ -8590,6 +8590,10 @@ class WorkflowSession(MultiPhaseSession):
         euler_rad_override: np.ndarray | None = None,
         pc_custom_override: np.ndarray | None = None,
     ) -> tuple[np.ndarray, float, np.ndarray, float, float]:
+        if self.phase_masters and not self._borrowed_phase_context:
+            return self._phase_context_for_index(index).preview_simulated_pattern_with_ncc(
+                index, euler_rad_override=euler_rad_override, pc_custom_override=pc_custom_override,
+            )
         if self.data is None or self.master is None:
             raise RuntimeError("Load both input data and master pattern first.")
         if (
