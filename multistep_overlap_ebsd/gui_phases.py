@@ -5,6 +5,32 @@ from tkinter import ttk, filedialog, messagebox
 
 
 class PhaseControls:
+    def _selected_solution_map(self):
+        direction, label = self._selected_ipf_direction()
+        return direction, "phase map" if self.solution_map_var.get() == "Phase maps" else label
+
+    def _solution_map_image(self, direction, *, secondary=False, preliminary=False):
+        if self.solution_map_var.get() != "Phase maps":
+            method = (self.session.get_residual_ipf_color_map if secondary else
+                      self.session.get_preliminary_ipf_color_map if preliminary else
+                      self.session.get_ipf_color_map)
+            return method(direction=direction)
+        import numpy as np
+        from matplotlib.colors import to_rgb
+        data = self.session.data
+        ids = (self.session.residual_phases if secondary else
+               data.phases if preliminary and data.phases is not None else self.session.current_phases)
+        image = np.ones((data.rows, data.cols, 3), dtype=np.float32)
+        if ids is None:
+            return image
+        ids = np.asarray(ids).reshape(data.rows, data.cols)
+        for entry in self.session.phase_registry.entries:
+            mask = np.isin(ids, entry.input_ids) if preliminary else ids == entry.output_id
+            if secondary and self.session.residual_eulers_rad is not None:
+                mask &= np.all(np.isfinite(self.session.residual_eulers_rad), axis=1).reshape(ids.shape)
+            image[mask] = to_rgb(entry.color)
+        return image
+
     def _simulation_title(self, title, index, *, result=None, secondary=False):
         """Label the displayed solution, independently of the selected phase row."""
         component = "secondary" if secondary else "primary"
@@ -285,6 +311,10 @@ class PhaseControls:
         selected = tk.StringVar(value="All phases")
         filter_box = ttk.Combobox(controls, textvariable=selected, values=["All phases", *phase_labels], state="readonly", width=26)
         filter_box.pack(side=tk.LEFT, padx=4)
+        extent = tk.StringVar(value="Full map")
+        extent_box = ttk.Combobox(controls, textvariable=extent, values=("Full map", "ROI"),
+                                 state="readonly", width=10)
+        extent_box.pack(side=tk.LEFT, padx=4)
         body=ttk.Frame(window); body.pack(fill=tk.BOTH, expand=True)
         fig=Figure(figsize=(7,5)); axis=fig.add_subplot(111)
         canvas=FigureCanvasTkAgg(fig,master=body);canvas.get_tk_widget().pack(side=tk.LEFT,fill=tk.BOTH,expand=True)
@@ -330,7 +360,11 @@ class PhaseControls:
                     plot = axis.imshow(values,cmap="viridis",vmin=0 if label.startswith("Contribution:") else None,
                                        vmax=1 if label.startswith("Contribution:") else None)
                     colorbars.append(fig.colorbar(plot, ax=axis, fraction=.046, pad=.04))
-            axis.set_title(label);axis.set_axis_off();canvas.draw_idle()
+            if extent.get() == "ROI":
+                r0, c0, nrows, ncols = self._roi_bounds()
+                axis.set_xlim(c0-.5, c0+ncols-.5)
+                axis.set_ylim(r0+nrows-.5, r0-.5)
+            axis.set_title(f"{label} — {extent.get()}");axis.set_axis_off();canvas.draw_idle()
             if entry is not None:
                 symmetry=self.session.data.phase_symmetries.get(entry.output_id)
                 if symmetry is not None:
@@ -344,6 +378,7 @@ class PhaseControls:
                 ttk.Label(key_frame,text="Select a phase to show its IPF color key.",wraplength=220).pack(padx=8,pady=10)
             ttk.Label(key_frame,text="Contributions are fitted pattern intensities, not phase volume fractions.\n\nOverlap acceptance uses provisional fit diagnostics; it is not a calibrated probability.",wraplength=220).pack(padx=8,pady=10)
         combo.bind("<<ComboboxSelected>>",draw);filter_box.bind("<<ComboboxSelected>>",draw)
+        extent_box.bind("<<ComboboxSelected>>",draw)
         ttk.Button(controls,text="Refresh",command=draw).pack(side=tk.LEFT,padx=4)
         def close():
             clear_key();window.destroy()

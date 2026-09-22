@@ -222,6 +222,7 @@ class MultiStepOverlapGUI(GUIControls, tk.Tk):
 
         self.map_layer_var = tk.StringVar(value=ORIENTATION_LAYER_LABEL)
         self.ipf_direction_var = tk.StringVar(value="Z")
+        self.solution_map_var = tk.StringVar(value="IPF maps")
         self.index_quality_layer_var = tk.StringVar(value="CI")
         self.status_var = tk.StringVar(value="Load data to begin.")
         self.refinement_progress_bar: ttk.Progressbar | None = None
@@ -272,7 +273,7 @@ class MultiStepOverlapGUI(GUIControls, tk.Tk):
             ipf_combo.bind("<<ComboboxSelected>>", lambda _e: self._refresh_plot())
             combo = ipf_combo
         elif fixed_ipf:
-            ttk.Label(top, text="Primary and residual IPF diagnostics").pack(side=tk.LEFT)
+            ttk.Label(top, text="Primary and residual maps").pack(side=tk.LEFT)
             ttk.Label(top, text="IPF direction").pack(side=tk.LEFT, padx=(14, 0))
             ipf_combo = ttk.Combobox(
                 top,
@@ -298,6 +299,11 @@ class MultiStepOverlapGUI(GUIControls, tk.Tk):
             )
             combo.pack(side=tk.LEFT, padx=4)
             combo.bind("<<ComboboxSelected>>", lambda _e: self._refresh_plot())
+        if view_index in (1, 2, 3):
+            map_kind = ttk.Combobox(top, textvariable=self.solution_map_var,
+                                   values=("IPF maps", "Phase maps"), state="readonly", width=12)
+            map_kind.pack(side=tk.LEFT, padx=4)
+            map_kind.bind("<<ComboboxSelected>>", lambda _e: self._refresh_plot())
         ttk.Button(top, text="Refresh", command=self._refresh_plot).pack(side=tk.LEFT, padx=4)
         if fixed_ipf:
             figure = Figure(figsize=(13.6, 8.8), dpi=100)
@@ -1751,6 +1757,7 @@ class MultiStepOverlapGUI(GUIControls, tk.Tk):
             "use_scan_pc_shift": self.use_scan_pc_shift_var,
             "effective_detector_px_size_um": self.detector_px_size_var,
             "ipf_direction": self.ipf_direction_var,
+            "solution_map": self.solution_map_var,
         }
         state = {key: variable.get() for key, variable in variables.items()}
         state["fit_method"] = _selected_fit_method(self)
@@ -1845,6 +1852,7 @@ class MultiStepOverlapGUI(GUIControls, tk.Tk):
             "use_scan_pc_shift": self.use_scan_pc_shift_var,
             "effective_detector_px_size_um": self.detector_px_size_var,
             "ipf_direction": self.ipf_direction_var,
+            "solution_map": self.solution_map_var,
         }
         self._suspend_point_trace = True
         try:
@@ -3827,13 +3835,13 @@ class MultiStepOverlapGUI(GUIControls, tk.Tk):
             quality_cmap = ListedColormap([color for _, _, color in phase_legend])
             qvmin, qvmax = -.5, len(phase_legend) - .5
 
-        ipf_direction, ipf_label = self._selected_ipf_direction()
-        preliminary_ipf = self.session.get_preliminary_ipf_color_map(direction=ipf_direction)
+        ipf_direction, ipf_label = self._selected_solution_map()
+        preliminary_ipf = self._solution_map_image(ipf_direction, preliminary=True)
         indexed_mask = self.session.indexed_mask
         indexed = indexed_mask is not None and bool(np.any(indexed_mask))
         updated_ipf = None
         if indexed and self.session.current_eulers_rad is not None:
-            current_ipf = self.session.get_ipf_color_map(direction=ipf_direction)
+            current_ipf = self._solution_map_image(ipf_direction)
             updated_ipf = np.ones_like(current_ipf, dtype=np.float32)
             indexed_indices = np.flatnonzero(np.asarray(indexed_mask, dtype=bool).reshape(-1))
             updated_ipf.reshape(-1, 3)[indexed_indices] = current_ipf.reshape(-1, 3)[indexed_indices]
@@ -3844,7 +3852,7 @@ class MultiStepOverlapGUI(GUIControls, tk.Tk):
 
         def _draw_rgb(ax, image: np.ndarray | None, title: str, *, zoom: bool) -> None:
             if image is None:
-                ax.text(0.5, 0.5, "No IPF available", ha="center", va="center")
+                ax.text(0.5, 0.5, f"No {ipf_label} available", ha="center", va="center")
             else:
                 ax.imshow(np.clip(np.asarray(image, dtype=np.float32), 0.0, 1.0), origin="upper")
             self._draw_inspection_marker(ax, row=row, col=col, ipf=True)
@@ -4034,8 +4042,8 @@ class MultiStepOverlapGUI(GUIControls, tk.Tk):
             ax.set_ylim(*ylim)
             ax.set_axis_off()
 
-        ipf_direction, ipf_label = self._selected_ipf_direction()
-        primary_ipf = self.session.get_ipf_color_map(direction=ipf_direction)
+        ipf_direction, ipf_label = self._selected_solution_map()
+        primary_ipf = self._solution_map_image(ipf_direction)
         primary_threshold_mask = self._primary_threshold_mask()
         primary_ipf = self._apply_white_mask(primary_ipf, primary_threshold_mask)
         residual_ipf = None
@@ -4043,7 +4051,7 @@ class MultiStepOverlapGUI(GUIControls, tk.Tk):
         threshold_mask = self._residual_threshold_mask()
         if residual_indexed:
             try:
-                residual_ipf = self.session.get_residual_ipf_color_map(direction=ipf_direction)
+                residual_ipf = self._solution_map_image(ipf_direction, secondary=True)
                 residual_map_note = f"Residual {ipf_label} (reindexed only)"
             except Exception:
                 residual_ipf = None
@@ -4317,14 +4325,14 @@ class MultiStepOverlapGUI(GUIControls, tk.Tk):
             ax.set_title(title)
             ax.set_axis_off()
 
-        ipf_direction, ipf_label = self._selected_ipf_direction()
-        primary_ipf = self.session.get_ipf_color_map(direction=ipf_direction)
+        ipf_direction, ipf_label = self._selected_solution_map()
+        primary_ipf = self._solution_map_image(ipf_direction)
         primary_threshold_mask = self._primary_threshold_mask()
         primary_ipf = self._apply_white_mask(primary_ipf, primary_threshold_mask)
         residual_ipf = None
         residual_note = f"Residual {ipf_label}"
         try:
-            residual_ipf = self.session.get_residual_ipf_color_map(direction=ipf_direction)
+            residual_ipf = self._solution_map_image(ipf_direction, secondary=True)
         except Exception:
             residual_note = f"Residual {ipf_label} after step 3"
         threshold_mask = self._overlap_mixture_residual_threshold_mask()
