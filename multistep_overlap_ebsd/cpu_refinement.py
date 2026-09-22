@@ -7,6 +7,8 @@ Keep fastmath disabled in the simplex arithmetic: small reassociations can
 change which candidate wins. Projection and NCC use Kikuchipy's own kernels.
 """
 import numpy as np
+from contextlib import nullcontext
+from types import FunctionType
 from numba import njit
 from scipy.optimize import OptimizeResult, minimize
 
@@ -14,6 +16,23 @@ from kikuchipy._utils.numba import rotation_from_euler
 from kikuchipy.indexing._refinement._objective_functions import _refine_orientation_objective_function
 from kikuchipy.indexing.similarity_metrics._normalized_cross_correlation import _ncc_single_patterns_1d_float32_exp_centered
 from kikuchipy.signals.util._master_pattern import _project_single_pattern_from_master_pattern
+
+
+def compute_orientation_results_without_console_progress(results, **kwargs):
+    """Use Kikuchipy's conversion unchanged, without its per-batch timer thread.
+
+    A private function namespace avoids patching library globals used by other
+    threads. Fall back to the public function if its implementation changes.
+    """
+    from kikuchipy.indexing import compute_refine_orientation_results
+    converter = compute_refine_orientation_results
+    if isinstance(converter, FunctionType) and "ProgressBar" in converter.__globals__:
+        namespace = dict(converter.__globals__, ProgressBar=nullcontext)
+        quiet = FunctionType(converter.__code__, namespace, converter.__name__,
+                             converter.__defaults__, converter.__closure__)
+        quiet.__kwdefaults__ = converter.__kwdefaults__
+        converter = quiet
+    return converter(results=results, **kwargs)
 
 
 @njit(cache=True, nogil=True)

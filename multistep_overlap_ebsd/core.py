@@ -4706,6 +4706,14 @@ class WorkflowSession(MultiPhaseSession):
         workers = int(dask.config.get("num_workers", default=os.cpu_count() or 1))
         kwargs.update(master_pattern=self._refinement_master(), rechunk=True,
                       chunk_kwargs={"chunk_shape": refinement_chunks(count, workers)})
+        if operation == "refine_orientation" and kwargs.get("compute", True):
+            from .cpu_refinement import compute_orientation_results_without_console_progress
+            results = signal.refine_orientation(**dict(kwargs, compute=False))
+            return compute_orientation_results_without_console_progress(
+                results, xmap=kwargs["xmap"], master_pattern=kwargs["master_pattern"],
+                navigation_mask=kwargs.get("navigation_mask"),
+                pseudo_symmetry_checked=kwargs.get("pseudo_symmetry_ops") is not None,
+            )
         return getattr(signal, operation)(**kwargs)
 
     def _refine_orientation_signal(self, signal, *, point_indices, **kwargs):

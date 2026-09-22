@@ -457,6 +457,9 @@ class MultiPhaseSession:
             for entry in entries:
                 stores.setdefault(entry.key, {}).update({int(i): (angles[i:i+1].copy(), np.array([np.nan]))
                                                          for i in selected if self._entry_for_phase_id(ids[i]) is entry and np.all(np.isfinite(angles[i]))})
+        # Keep only prepared masters across batches in this run. Mutable point
+        # state stays private; a later run rechecks the source and energy model.
+        prepared_masters = {}
         for start in range(0, len(selected), 128):
             batch = selected[start:start + 128]
             outcomes = []
@@ -469,6 +472,7 @@ class MultiPhaseSession:
                     progress_callback(100 * (start + n * len(batch) / len(entries)) / len(selected),
                                       f"Refining {entry.name}: {len(work)} points")
                 view = self._phase_context(entry.key)
+                view._refinement_master_cache = prepared_masters.get(entry.key)
                 k = max(len(rows[int(i)][0]) for i in work)
                 candidates = np.stack([np.pad(rows[int(i)][0], ((0, k-len(rows[int(i)][0])),(0,0)), mode="edge") for i in work])
                 k = candidates.shape[1]
@@ -494,6 +498,7 @@ class MultiPhaseSession:
                                                      trust_euler_deg=trust_euler_deg, maxfev=maxfev,
                                                      use_full_resolution=use_full_resolution, parallel_cores=parallel_cores)
                     values = [(int(i), view.current_eulers_rad[i], view.last_scores_map.reshape(-1)[i], None) for i in work]
+                prepared_masters[entry.key] = view._refinement_master_cache
                 for i, euler, score, result in values:
                     if score is not None and np.isfinite(score):
                         stores[entry.key][int(i)] = (np.asarray(euler).reshape(1,3).copy(), np.asarray([score]))
