@@ -51,6 +51,21 @@ class DictionaryProvenance:
         return saved_pc is not None and current_pc is not None and saved_pc != current_pc and saved == current
 
 
+    def reusable_geometry_difference(self, other: DictionaryProvenance) -> bool:
+        if (not self.master_sha256 or self.master_sha256 != other.master_sha256
+                or self.structure_sha256 != other.structure_sha256 or self.schema != other.schema):
+            return False
+        saved, current = json.loads(self.settings_json), json.loads(other.settings_json)
+        keys = ("pc_bruker", "detector_tilt")
+        if any(saved.get(key) is None or current.get(key) is None for key in keys):
+            return False
+        changed = any(saved[key] != current[key] for key in keys)
+        for key in keys:
+            saved.pop(key)
+            current.pop(key)
+        return changed and saved == current
+
+
 @dataclass
 class DictionaryAsset:
     key: str = field(default_factory=lambda: uuid4().hex)
@@ -60,11 +75,17 @@ class DictionaryAsset:
     legacy_linked: bool = False
     persistent: bool = True
     accepted_pc_bruker: list[float] | None = None
+    accepted_geometry: dict | None = None
 
     def compatible_with(self, expected: DictionaryProvenance) -> bool:
         if self.provenance is None:
             return False
-        return self.provenance.compatible_with(expected) or (
+        current = json.loads(expected.settings_json)
+        geometry_accepted = (
+            self.accepted_geometry == {key: current.get(key) for key in ("pc_bruker", "detector_tilt")}
+            and self.provenance.reusable_geometry_difference(expected)
+        )
+        return self.provenance.compatible_with(expected) or geometry_accepted or (
             self.accepted_pc_bruker is not None
             and self.accepted_pc_bruker == json.loads(expected.settings_json).get("pc_bruker")
             and self.provenance.differs_only_in_pc(expected)

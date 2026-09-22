@@ -128,7 +128,7 @@ class PhaseControls:
             status = entry.status(expected)
             if (status == "Ready" and expected is not None and entry.active_dictionary is not None
                     and not entry.active_dictionary.provenance.compatible_with(expected)):
-                status = "Ready (PC accepted)"
+                status = "Ready (geometry accepted)"
             self.phase_table.insert("", "end", iid=entry.key,
                                     values=("☑" if entry.enabled else "☐", entry.name,
                                             "Loaded" if master else "Missing", status))
@@ -270,26 +270,33 @@ class PhaseControls:
             return
         path = filedialog.askopenfilename(title="Load dictionary for selected phase", filetypes=[("Dictionary", "*.h5 *.hdf5")])
         if path:
-            accepted_pc = None
+            accepted_geometry = None
             try:
-                difference = self.session.dictionary_pc_difference(key, path)
+                difference = self.session.dictionary_geometry_difference(key, path)
             except Exception as exc:
                 messagebox.showerror("Load dictionary", str(exc), parent=self)
                 return
             if difference is not None:
                 saved, current = difference
-                format_pc = lambda pc: ", ".join(f"{value:.8g}" for value in pc)
+                lines = []
+                if saved["pc_bruker"] != current["pc_bruker"]:
+                    format_pc = lambda pc: ", ".join(f"{value:.8g}" for value in pc)
+                    lines.extend((f"Dictionary PC (Bruker): {format_pc(saved['pc_bruker'])}",
+                                  f"Current PC (Bruker): {format_pc(current['pc_bruker'])}"))
+                if saved["detector_tilt"] != current["detector_tilt"]:
+                    lines.extend((f"Dictionary detector tilt: {saved['detector_tilt']:.6g}°",
+                                  f"Current detector tilt: {current['detector_tilt']:.6g}°"))
                 if not messagebox.askyesno(
-                    "Use dictionary with a different PC?",
-                    f"Only the pattern center differs.\n\nDictionary PC (Bruker): {format_pc(saved)}"
-                    f"\nCurrent PC (Bruker): {format_pc(current)}\n\n"
-                    "You can reuse this dictionary as an approximate starting point. "
-                    "Orientation refinement will use the current PC, but dictionary matching may be less accurate."
+                    "Use dictionary with different geometry?",
+                    "\n".join(lines) + "\n\nYou can reuse this dictionary as an approximate starting point. "
+                    "Geometry differences can lower NCC or change the winning orientation or phase. "
+                    "Refinement uses the current PC and detector tilt, but may not recover the correct "
+                    "solution if it lies outside the refinement search range."
                     "\n\nUse this dictionary anyway?", parent=self, icon="warning", default="no",
                 ):
                     return
-                accepted_pc = current
-            self._run_threaded(lambda: self.session.load_phase_dictionary(key, path, accepted_pc_bruker=accepted_pc),
+                accepted_geometry = current
+            self._run_threaded(lambda: self.session.load_phase_dictionary(key, path, accepted_geometry=accepted_geometry),
                                on_success=lambda _msg: self._refresh_phase_table())
 
     def _save_phase_dictionary(self):
