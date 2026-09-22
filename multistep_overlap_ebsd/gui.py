@@ -172,7 +172,7 @@ class MultiStepOverlapGUI(GUIControls, tk.Tk):
         self.residual_maxfev_var = self.maxfev_var
         self.residual_refine_full_resolution_var = self.refine_full_resolution_var
         self.residual_keep_n_var = self.dictionary_keep_n_var
-        self.parallel_cores_var = tk.IntVar(value=1)
+        self.parallel_cores_var = tk.IntVar(value=min(6, os.cpu_count() or 1))
         self.step3_parallel_cores_var = self.parallel_cores_var
         self.overlap_mixture_trust_euler_var = tk.DoubleVar(value=1.0)
         self.overlap_mixture_maxfev_var = tk.IntVar(value=80)

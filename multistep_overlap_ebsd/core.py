@@ -32,7 +32,7 @@ DICTIONARY_FORMAT_V2 = "overlap-ebsd-kikuchipy-dictionary-v2"
 DICTIONARY_PATTERN_DTYPE = np.dtype(np.uint8)
 DICTIONARY_H5_CHUNK_PATTERNS = 128
 DICTIONARY_LAZY_CHUNK_PATTERNS = 8192
-DICTIONARY_INDEX_MAX_BATCH_PATTERNS = 4096
+DICTIONARY_INDEX_MAX_BATCH_PATTERNS = 1024
 DICTIONARY_INDEX_MIN_EXTRA_MEMORY = 128 * 1024**2
 DICTIONARY_INDEX_MAX_EXTRA_MEMORY = 512 * 1024**2
 MASTER_ENERGY_MODE_HIGHEST = "highest"
@@ -5085,12 +5085,17 @@ class WorkflowSession(MultiPhaseSession):
             )
         )
         by_memory = max(1, int(extra_memory_budget / max(1, bytes_per_experimental)))
+        # Input loading/background correction occurs before binning. Keep its
+        # full-resolution batch bounded for both single- and multi-phase DI.
+        input_pixels = self.data.h * self.data.w if self.data is not None else np.prod(cache.pattern_shape)
+        by_input_memory = max(1, (128 * 1024**2) // max(1, int(input_pixels) * 4))
         return max(
             1,
             min(
                 int(selected_count),
                 DICTIONARY_INDEX_MAX_BATCH_PATTERNS,
                 by_memory,
+                by_input_memory,
             ),
         )
 

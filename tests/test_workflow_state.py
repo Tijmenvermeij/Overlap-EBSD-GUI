@@ -688,8 +688,16 @@ class WorkflowStateTests(unittest.TestCase):
                 n_per_iteration=26_886,
             )
         self.assertGreater(large_batch, 512)
-        self.assertLessEqual(large_batch, 4096)
+        self.assertLessEqual(large_batch, 1024)
         self.assertLess(constrained_batch, large_batch)
+
+    def test_dictionary_batch_size_bounds_unbinned_input_memory(self) -> None:
+        session = WorkflowSession()
+        session.data = SimpleNamespace(h=1024, w=1024)
+        cache = SimpleNamespace(pattern_shape=(32, 32), rotation_count=8192)
+        with patch.object(WorkflowSession, '_available_memory_bytes', return_value=32 * 1024**3):
+            batch = session._dictionary_index_batch_size(cache, 10000, n_per_iteration=8192)
+        self.assertEqual(batch, 32)
 
     def test_step4_hdf5_export_keeps_full_scan_shape_for_small_roi(self) -> None:
         session = WorkflowSession()

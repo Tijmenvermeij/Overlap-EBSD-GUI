@@ -131,6 +131,37 @@ class CompetitionTests(unittest.TestCase):
         self.assertEqual(self.session.phase_score_gap[3],0.)
         np.testing.assert_array_equal(self.session.get_layer_map('Phase'),[[2,7],[19,2]])
 
+    def test_experimental_patterns_are_loaded_once_across_phases(self):
+        for residual in (False, True):
+            method = '_residual_signal_from_indices' if residual else '_signal_from_indices'
+            with self.subTest(residual=residual), patch.object(
+                    self.session, method, side_effect=lambda indices, **kw: np.asarray(indices)) as read:
+                self.index(residual=residual)
+                read.assert_called_once()
+                result = self.session.residual_phases if residual else self.session.current_phases
+                np.testing.assert_array_equal(result, [2,7,19,2])
+
+    def test_memory_limited_batches_preserve_phase_competition(self):
+        with patch.object(self.session, '_dictionary_index_batch_size', return_value=2), patch.object(
+                self.session, '_signal_from_indices', side_effect=lambda indices, **kw: np.asarray(indices)) as read:
+            self.index()
+        self.assertEqual(read.call_count, 2)
+        np.testing.assert_array_equal(read.call_args_list[0].args[0], [0,1])
+        np.testing.assert_array_equal(read.call_args_list[1].args[0], [2,3])
+        np.testing.assert_array_equal(self.session.current_phases, [2,7,19,2])
+
+    def test_one_enabled_phase_uses_same_matching_engine(self):
+        for entry in self.session.phase_registry.entries[1:]:
+            entry.enabled = False
+        for residual in (False, True):
+            with self.subTest(residual=residual), patch.object(
+                    self.session, '_residual_signal_from_indices', side_effect=lambda indices, **kw: np.asarray(indices)):
+                self.index(residual=residual)
+                result = self.session.residual_phases if residual else self.session.current_phases
+                np.testing.assert_array_equal(result, [2,2,2,2])
+                scores = self.session.last_residual_scores_map if residual else self.session.last_scores_map
+                np.testing.assert_allclose(scores.ravel(), self.scores[2])
+
     def test_cancellation_keeps_only_complete_phase_competitions(self):
         def before_complete(value, message):
             if value > 20:

@@ -345,12 +345,20 @@ class MultiPhaseSession:
             self._ensure_residual_state()
         completed = []
         # Orientation candidates are small; simulated/experimental images remain batched.
-        batch_size = max(1, min(256, (64 * 1024**2) // max(1, self.data.h * self.data.w * 4)))
+        # Bound score/selection temporaries as well as full-size input images.
+        # Larger batches amortize dictionary reads and expose more matching tasks.
+        batch_size = min(self._dictionary_index_batch_size(
+                self.phase_dictionaries[entry.key], len(selected),
+                n_per_iteration=self._dictionary_n_per_iteration(
+                    self.phase_dictionaries[entry.key],
+                    self._signal_mask_for_dictionary_cache(self.phase_dictionaries[entry.key])))
+              for entry in entries)
         batch_count = (len(selected) + batch_size - 1) // batch_size
         for start in range(0, len(selected), batch_size):
             batch_number = start // batch_size + 1
             batch = selected[start:start + batch_size]
             outcomes = []
+            signal = None
             for number, entry in enumerate(entries):
                 if progress_callback:
                     progress_callback(100 * (start + number * len(batch) / len(entries)) / len(selected),
@@ -358,9 +366,14 @@ class MultiPhaseSession:
                                       f"(phase {number + 1}/{len(entries)}): points {start + 1}–{start + len(batch)}/{len(selected)}")
                 view = self._phase_context(entry.key, private_arrays=False)
                 cache = view.dictionary_cache
-                signal = (self._residual_signal_from_indices(batch, dictionary_cache=cache)
-                          if residual else self._signal_from_indices(batch, software_binning=cache.software_binning,
-                                                                     crop_extent=cache.crop_extent))
+                if signal is None:
+                    # Enabled dictionaries have identical geometry and binning.
+                    # Materialize once so lazy reads/background/binning are not
+                    # repeated for every phase in this batch.
+                    signal = (self._residual_signal_from_indices(batch, dictionary_cache=cache)
+                              if residual else self._signal_from_indices(batch, software_binning=cache.software_binning,
+                                                                         crop_extent=cache.crop_extent))
+                    signal = self._materialize_signal_batch(signal)
                 mask = view._signal_mask_for_dictionary_cache(cache)
                 def matching_progress(fraction):
                     if progress_callback:
