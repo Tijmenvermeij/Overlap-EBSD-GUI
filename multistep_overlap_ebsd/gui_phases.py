@@ -6,7 +6,9 @@ from tkinter import ttk, filedialog, messagebox
 
 class PhaseControls:
     def _build_phase_controls(self, parent):
-        box = self._box(parent, "Phases, master patterns & dictionaries")
+        box = self._box(parent, "Phases & master patterns")
+        self._hint(box, "Load master patterns before PC calibration. They remain usable when the PC changes; "
+                       "generate dictionaries after calibration below.")
         self.phase_table = ttk.Treeview(box, columns=("enabled", "name", "master", "dictionary"),
                                        show="headings", height=4, selectmode="browse")
         for key, title, width in (("enabled", "Use", 35), ("name", "Phase", 100),
@@ -24,6 +26,12 @@ class PhaseControls:
         self._action(box, "Link master to selected phase…", self._choose_phase_master)
         self._action(box, "Edit phase name / color…", self._edit_phase_appearance)
         self._action(box, "Phase maps / IPF keys…", self._show_phase_maps)
+
+    def _build_phase_dictionary_controls(self, parent):
+        box = self._box(parent, "Dictionaries — after PC calibration")
+        self._hint(box, "Refine and apply the pattern center above before generating dictionaries. "
+                       "If you change the PC later, regenerate incompatible dictionaries before indexing.")
+        self._hint(box, "Load and save use the selected row in the phase table above.")
         self._field(box, "Shared orientation spacing (°)", self.di_res_deg_var)
         self._field(box, "Shared dictionary binning", self.di_binning_var)
         self._hint(box, variable=self.dictionary_binned_size_var)
