@@ -2,6 +2,7 @@
 from pathlib import Path
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
+from .gui_theme import BACKGROUND, TEXT
 
 
 class PhaseControls:
@@ -13,6 +14,7 @@ class PhaseControls:
             legend.pack_forget()
             return
         legend.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(12, 4))
+        legend.configure(background=BACKGROUND)
         entries = self.session.phase_registry.entries
         signature = tuple((entry.output_id, entry.name, entry.color) for entry in entries)
         if getattr(legend, "_phase_signature", None) == signature:
@@ -22,7 +24,8 @@ class PhaseControls:
         x = 4
         for entry in entries:
             legend.create_rectangle(x, 7, x+12, 19, fill=entry.color, outline="#777777")
-            label = legend.create_text(x+18, 13, text=f"{entry.name} [{entry.output_id}]", anchor="w")
+            label = legend.create_text(x+18, 13, text=f"{entry.name} [{entry.output_id}]",
+                                       anchor="w", fill=TEXT, font="TkDefaultFont")
             x = legend.bbox(label)[2] + 18
         legend.configure(scrollregion=(0, 0, x, 25))
         legend.xview_moveto(0)
