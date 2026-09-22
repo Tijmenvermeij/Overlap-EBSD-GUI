@@ -6,9 +6,7 @@ from tkinter import ttk, filedialog, messagebox
 
 class PhaseControls:
     def _build_phase_controls(self, parent):
-        box = self._box(parent, "Phases & master patterns")
-        self._hint(box, "Load master patterns before PC calibration. They remain usable when the PC changes; "
-                       "generate dictionaries after calibration below.")
+        box = self._box(parent, "Phases, master patterns & dictionaries")
         self.phase_table = ttk.Treeview(box, columns=("enabled", "name", "master", "dictionary"),
                                        show="headings", height=4, selectmode="browse")
         for key, title, width in (("enabled", "Use", 35), ("name", "Phase", 100),
@@ -27,11 +25,6 @@ class PhaseControls:
         self._action(box, "Edit phase name / color…", self._edit_phase_appearance)
         self._action(box, "Phase maps / IPF keys…", self._show_phase_maps)
 
-    def _build_phase_dictionary_controls(self, parent):
-        box = self._box(parent, "Dictionaries — after PC calibration")
-        self._hint(box, "Refine and apply the pattern center above before generating dictionaries. "
-                       "If you change the PC later, regenerate incompatible dictionaries before indexing.")
-        self._hint(box, "Load and save use the selected row in the phase table above.")
         self._field(box, "Shared orientation spacing (°)", self.di_res_deg_var)
         self._field(box, "Shared dictionary binning", self.di_binning_var)
         self._hint(box, variable=self.dictionary_binned_size_var)
@@ -145,15 +138,13 @@ class PhaseControls:
     def _generate_phase_dictionaries(self):
         if getattr(self, "_worker_thread", None) is not None:
             return
-        spacing, binning = float(self.di_res_deg_var.get()), int(self.di_binning_var.get())
-        def action():
-            notes = []
+        try:
+            spacing, binning = float(self.di_res_deg_var.get()), int(self.di_binning_var.get())
             pending = []
             entries = [e for e in self.session.phase_registry.entries if e.enabled]
             if not entries:
                 raise ValueError("Add or enable a phase first.")
             for entry in entries:
-                self._check_job_cancelled()
                 if entry.key not in self.session.phase_masters:
                     raise ValueError(f"{entry.name}: link a master pattern first.")
                 cache = self.session.phase_dictionaries.get(entry.key)
@@ -162,6 +153,26 @@ class PhaseControls:
                     if entry.status(expected) == "Ready":
                         continue
                 pending.append(entry)
+        except (ValueError, tk.TclError) as exc:
+            messagebox.showerror("Generate dictionaries", str(exc), parent=self)
+            return
+        if pending:
+            self._update_calibration_application_controls()
+            if self._calibration_apply_state != "applied":
+                message = (
+                    "PC calibration changes have not been applied to the entire map."
+                    if self._calibration_apply_state == "pending" else
+                    "The pattern center (PC) has not been refined and applied in this workflow."
+                )
+                if not messagebox.askyesno(
+                    "Generate dictionaries before PC calibration?",
+                    message + "\n\nRefining or changing the PC later will require regenerating the dictionaries."
+                    "\n\nGenerate dictionaries using the current PC anyway?",
+                    parent=self, icon="warning", default="no",
+                ):
+                    return
+        def action():
+            notes = []
             for number, entry in enumerate(pending, start=1):
                 label = f"Dictionary {number}/{len(pending)} — {entry.name} (phase {entry.output_id})"
                 def progress(value, message, label=label):

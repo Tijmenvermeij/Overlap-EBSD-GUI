@@ -173,7 +173,6 @@ class GUIControls(PhaseControls):
         self._build_input_controls(controls)
         self._build_phase_controls(controls)
         self._build_refine_tab(self._box(controls, "Pattern-center calibration"))
-        self._build_phase_dictionary_controls(controls)
         self._conditioning_section = self._advanced(controls, "Pattern conditioning · all stages")
         self._build_conditioning_controls(self._conditioning_section.content)
         self._build_selection_controls(controls, include_roi=False)
