@@ -428,6 +428,7 @@ class MultiStepOverlapGUI(GUIControls, tk.Tk):
             "_index_overlap_residual", "_refine_overlap_residual", "_compute_overlap_residual_roi",
             "_index_overlap_residual_roi", "_refine_overlap_residual_roi",
             "_fit_overlap_mixture", "_refine_overlap_mixture_orientations", "_fit_overlap_mixture_roi",
+            "_export_fitted_primary_patterns", "_export_fitted_residual_patterns",
         }
         def guarded(self, *args, **kwargs):
             if getattr(self, "busy", False):
@@ -3322,6 +3323,35 @@ class MultiStepOverlapGUI(GUIControls, tk.Tk):
             return msg
 
         self._run_threaded(action)
+
+    @_guarded_action
+    def _export_fitted_primary_patterns(self) -> None:
+        self._export_fitted_component_patterns(secondary=False)
+
+    @_guarded_action
+    def _export_fitted_residual_patterns(self) -> None:
+        self._export_fitted_component_patterns(secondary=True)
+
+    def _export_fitted_component_patterns(self, *, secondary: bool) -> None:
+        from .fitted_export import export_fitted_patterns
+        if self.session.data is None or not self.session.overlap_mixture_results:
+            messagebox.showinfo("No fitted patterns", "Complete mixture fitting in tab 4 before exporting.")
+            return
+        component = "residual" if secondary else "primary"
+        source = Path(self.session.data.pattern_path)
+        path = filedialog.asksaveasfilename(
+            title=f"Export fitted {component} solutions and patterns — H5OINA (full map)",
+            initialdir=str(source.parent),
+            initialfile=f"{self._source_stem(source)}_fitted_{component}.h5oina",
+            defaultextension=".h5oina", filetypes=[("H5OINA", "*.h5oina")],
+        )
+        if not path:
+            return
+        def progress(value, message):
+            self._check_job_cancelled()
+            self._post_ui(lambda v=value, m=message: self._set_overlap_optimization_progress(v, m))
+        self._run_threaded(lambda: export_fitted_patterns(self.session, path, secondary=secondary,
+            accepted_only=True, primary_subtract_residual=True, progress_callback=progress))
 
     @_guarded_action
     def _export_primary_roi_map(self) -> None:

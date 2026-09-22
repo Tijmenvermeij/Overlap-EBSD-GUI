@@ -411,6 +411,9 @@ class GUIControls(PhaseControls):
         self._progress(parent, self.overlap_optimization_progress_var, self.overlap_optimization_status_var)
         self._action(parent, "Export full-map mixture results…", self._export_overlap_optimization_results)
         self._hint(parent, "Export keeps full scan dimensions; missing fits are marked by a mask and NaN values.")
+        self._action(parent, "Export fitted primary + patterns…\nH5OINA · full map", self._export_fitted_primary_patterns)
+        self._action(parent, "Export fitted residual + patterns…\nH5OINA · full map", self._export_fitted_residual_patterns)
+        self._hint(parent, "Full-map patterns use the optimized fit at accepted overlap pixels and are scaled individually to full range. Elsewhere, primary patterns are original and residual patterns are black.")
         settings = self._advanced(parent, "Shared blur / gain optimizer settings").content
         self._field(settings, "Maximum fit iterations", self.gain_fit_maxiter_var)
         self._field(settings, "Population multiplier (minimum 4)", self.gain_fit_popsize_var)

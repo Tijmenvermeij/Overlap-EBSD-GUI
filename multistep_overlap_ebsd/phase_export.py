@@ -1,6 +1,7 @@
 """Standard component phase catalogs (no synthetic overlap phases)."""
 import json
 import re
+from pathlib import Path
 
 import h5py
 import numpy as np
@@ -16,6 +17,22 @@ def phase_metadata(entry, master=None):
     lattice = structure.get("lattice_angstrom_degrees")
     if not metadata and lattice is not None:
         metadata.update({"Lattice Dimensions": lattice[:3], "Lattice Angles": np.deg2rad(lattice[3:]).tolist()})
+    # EMsoft stores lattice lengths in nm. Some Kikuchipy versions preserve
+    # those raw values in the diffpy structure; H5OINA/ANG require angstroms.
+    # Read the declared source format rather than guessing from cell size.
+    source = getattr(master, "path", None)
+    if source and Path(source).is_file() and h5py.is_hdf5(source):
+        with h5py.File(source, "r") as h5:
+            if "CrystalData/LatticeParameters" in h5:
+                cell = np.asarray(h5["CrystalData/LatticeParameters"][()], dtype=float).reshape(6)
+                metadata["Lattice Dimensions"] = (10 * cell[:3]).tolist()
+                metadata["Lattice Angles"] = np.deg2rad(cell[3:]).tolist()
+                group = getattr(getattr(master, "phase", None), "point_group", None)
+                laue = getattr(getattr(group, "laue", None), "name", None)
+                if laue in LAUE:
+                    metadata["Laue Group"] = LAUE[laue]
+                if structure.get("space_group") is not None:
+                    metadata["Space Group"] = structure["space_group"]
     if "Laue Group" not in metadata:
         group = getattr(getattr(master, "phase", None), "point_group", None)
         laue = getattr(getattr(group, "laue", None), "name", structure.get("point_group"))

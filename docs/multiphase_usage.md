@@ -45,8 +45,7 @@ refinement, rerun mixture fitting to reassess acceptance.
 
 ## Saving and reopening
 
-Use the existing primary ROI, residual ROI and Step 4 export controls. No extra
-export modes are introduced. Component exports contain ordinary phase IDs and a
+Use the primary ROI, residual ROI and Step 4 export controls. Component exports contain ordinary phase IDs and a
 complete phase catalog, never a synthetic A+B crystallographic phase. Step 4
 HDF5 stores both component keys, their catalog, contributions and acceptance
 diagnostics. ANG retains the existing per-point PC sidecar; its confidence column
@@ -75,18 +74,49 @@ names and cubic/hexagonal metadata. Repeated export/reload checks guard against
 double hexagonal axis conversion. The GUI has a live smoke test for control
 placement and phase rows.
 
-Multi-phase residual generation and mixture fitting currently run points
-sequentially to avoid the former one-master process-worker assumption. Dictionary
-matching and orientation refinement use the configured worker limit. More phases
+Residual generation and mixture fitting use phase-aware process workers, with
+masters cached inside each worker. Mixture workers retain the same alternative
+phase-pair comparisons and acceptance checks as sequential fitting. Dictionary
+generation, matching and orientation refinement also use the configured worker limit. More phases
 increase runtime; experimental accuracy and performance on representative large
 multi-phase scans still need measurement. Synthetic tests do not establish
 experimental phase discrimination or Oxford AZtec re-import compatibility.
 
-When loading a saved dictionary, a difference only in the pattern center can be
+When loading a saved dictionary, differences only in the pattern center and/or detector tilt can be
 accepted explicitly in the confirmation dialog. The phase table then shows
-“Ready (PC accepted)”. Dictionary matching uses the saved patterns as an
+“Ready (geometry accepted)”. Dictionary matching uses the saved patterns as an
 approximate starting point; orientation refinement uses the current scan PC.
 The original dictionary metadata is preserved. Acceptance is recorded in the
-workflow for that dictionary and current PC; a subsequent PC change requires
+workflow for that dictionary and current geometry; a subsequent PC or detector-tilt change requires
 acceptance again. Differences in master, crystal structure, or other simulation
 settings are not covered by this option.
+
+
+## Fitted-pattern exports in tab 4
+
+Two buttons write full-map H5OINA files with solutions and patterns. They use
+accepted overlap fits (`overlap_accepted=True`); failed, ambiguous, unassessed
+and missing fits are treated as non-overlap for these exports.
+
+In the normalized, blur/gain-corrected fit model, let E be the measured pattern
+and a1*S1 the optimized primary contribution. The residual export contains
+E − a1*S1. The primary export contains E minus that residual, i.e. a1*S1.
+The exported phase IDs and orientations come from the optimized mixture result,
+including phase changes relative to Steps 2–3. At non-overlap pixels, primary
+exports contain the current primary solution and original measured pattern;
+residual exports contain phase zero, zero Euler angles/NCC, and black patterns.
+
+Each pattern is independently min/max scaled to the stored integer range
+(0–255, or 0–65535 for uint16 input). Constant patterns are black. Original
+non-overlap primary patterns use their whole image; fitted patterns use the
+fit's valid-pixel mask. Exported NCC is the correlation of the exported component
+with its simulated solution, not the original mixture fit score. In particular,
+the fitted primary simulation may have NCC near one. Scaling is performed only
+after component subtraction; scaled exported images cannot be added back to
+reconstruct the original intensities.
+
+Exports retain full scan dimensions, phase catalogues and current PCs. Writes
+are streamed into temporary files and only replace the destination on success;
+cancellation preserves any previous destination. Reloading starts a fresh
+primary analysis of the exported component. Source files and live results are
+not changed.
