@@ -13,12 +13,15 @@ class PhaseControls:
                                   ("master", "Master", 80), ("dictionary", "Dictionary", 130)):
             self.phase_table.heading(key, text=title)
             self.phase_table.column(key, width=width, stretch=True)
+        self.phase_table.column("enabled", anchor=tk.CENTER, stretch=False)
         self.phase_table.pack(fill=tk.X)
         self.phase_table.bind("<<TreeviewSelect>>", self._select_phase_row)
+        self.phase_table.bind("<Button-1>", self._click_phase_use)
+        self.phase_table.bind("<space>", self._toggle_phase_from_keyboard)
         self._hint(box, "Select an imported phase to link its master. Add a phase for a material absent from the input.")
-        self._action(box, "Add phase / master…", lambda: self._choose_phase_master(add=True))
+        self._hint(box, "Click a checkmark in Use to include or exclude a phase.")
+        self._action(box, "Add new phase (master pattern)", lambda: self._choose_phase_master(add=True))
         self._action(box, "Link master to selected phase…", self._choose_phase_master)
-        self._action(box, "Enable / disable selected phase", self._toggle_phase)
         self._action(box, "Edit phase name / color…", self._edit_phase_appearance)
         self._action(box, "Phase maps / IPF keys…", self._show_phase_maps)
         self._field(box, "Shared orientation spacing (°)", self.di_res_deg_var)
@@ -52,11 +55,12 @@ class PhaseControls:
             expected = self.session.phase_dictionary_provenance(entry.key, cache) if master and cache else None
             status = entry.status(expected)
             self.phase_table.insert("", "end", iid=entry.key,
-                                    values=("Yes" if entry.enabled else "No", entry.name,
+                                    values=("☑" if entry.enabled else "☐", entry.name,
                                             "Loaded" if master else "Missing", status))
         valid = [key for key in selected if self.phase_table.exists(key)]
         if valid:
             self.phase_table.selection_set(valid)
+            self.phase_table.focus(valid[0])
         elif self.phase_registry_entries():
             self.phase_table.selection_set(self.phase_registry_entries()[0].key)
 
@@ -99,6 +103,24 @@ class PhaseControls:
                 notes.append(self.session.attach_phase_master(path, phase_key=key))
             return " ".join(notes)
         self._run_threaded(action, on_success=lambda _msg: self._refresh_phase_table())
+
+    def _click_phase_use(self, event):
+        if (self.phase_table.identify_region(event.x, event.y) != "cell"
+                or self.phase_table.identify_column(event.x) != "#1"):
+            return
+        key = self.phase_table.identify_row(event.y)
+        if not key:
+            return
+        if getattr(self, "_worker_thread", None) is None:
+            self.phase_table.selection_set(key)
+            self.phase_table.focus(key)
+            self.phase_table.focus_set()
+            self._toggle_phase()
+        return "break"
+
+    def _toggle_phase_from_keyboard(self, _event):
+        self._toggle_phase()
+        return "break"
 
     def _toggle_phase(self):
         if getattr(self, "_worker_thread", None) is not None:
