@@ -5,6 +5,27 @@ from tkinter import ttk, filedialog, messagebox
 
 
 class PhaseControls:
+    def _simulation_title(self, title, index, *, result=None, secondary=False):
+        """Label the displayed solution, independently of the selected phase row."""
+        component = "secondary" if secondary else "primary"
+        key = getattr(result, f"{component}_phase_key", None)
+        registry = self.session.phase_registry
+        entry = next((entry for entry in registry.entries if entry.key == key), None) if key else None
+        phase_id = None
+        if entry is None and key is None:
+            phases = self.session.residual_phases if secondary else self.session.current_phases
+            if phases is not None:
+                phase_id = int(phases[index])
+                entry = self.session._entry_for_phase_id(phase_id)
+        if entry is not None:
+            name = entry.name
+        elif not registry.entries:
+            phase = getattr(self.session.master, "phase", None)
+            name = getattr(phase, "name", "") or "Unknown"
+        else:
+            name = f"ID {phase_id}" if phase_id is not None else "Unknown"
+        return f"{title}\nPhase: {name}"
+
     def _build_phase_controls(self, parent):
         box = self._box(parent, "Phases, master patterns & dictionaries")
         self.phase_table = ttk.Treeview(box, columns=("enabled", "name", "master", "dictionary"),

@@ -3406,7 +3406,7 @@ class MultiStepOverlapGUI(GUIControls, tk.Tk):
         self._overlay_pattern_mask(axes[0, 0])
         axes[0, 0].set_title(f"Experimental pattern — idx={result.index} ({result.row}, {result.col})")
         axes[0, 1].imshow(result.simulated, cmap="gray")
-        axes[0, 1].set_title(f"Primary simulated pattern — NCC={result.ncc_es:.4f}")
+        axes[0, 1].set_title(self._simulation_title(f"Primary simulated pattern — NCC={result.ncc_es:.4f}", result.index, result=result))
         rabs = max(float(np.max(np.abs(result.residual))), 1e-8)
         axes[1, 0].imshow(result.residual, cmap=RESIDUAL_PATTERN_CMAP, vmin=-rabs, vmax=rabs)
         axes[1, 0].set_title(f"Residual: Zexp − {result.scale:.4f}·Zsim")
@@ -3416,10 +3416,10 @@ class MultiStepOverlapGUI(GUIControls, tk.Tk):
                 seed = result.secondary_dictionary_ncc_kp
                 seed_note = f"; binned dictionary seed={seed:.4f}" if seed is not None else ""
                 axes[1, 1].set_title(
-                    f"Full-resolution refined residual match — KP NCC={result.secondary_ncc_kp:.4f}{seed_note}"
+                    self._simulation_title(f"Full-resolution refined residual match — KP NCC={result.secondary_ncc_kp:.4f}{seed_note}", result.index, result=result, secondary=True)
                 )
             else:
-                axes[1, 1].set_title(f"Binned dictionary residual match — KP NCC={result.secondary_ncc_kp:.4f}")
+                axes[1, 1].set_title(self._simulation_title(f"Binned dictionary residual match — KP NCC={result.secondary_ncc_kp:.4f}", result.index, result=result, secondary=True))
         else:
             axes[1, 1].text(
                 0.5,
@@ -3678,7 +3678,7 @@ class MultiStepOverlapGUI(GUIControls, tk.Tk):
                         pc_custom_override=pc_override,
                     )
                 self.axes[0, 2].imshow(sim, cmap="gray")
-                self.axes[0, 2].set_title(f"Primary Simulation | NCC={ncc_es:.4f}")
+                self.axes[0, 2].set_title(self._simulation_title(f"Primary Simulation | NCC={ncc_es:.4f}", idx))
                 self.axes[0, 2].set_axis_off()
                 sim_shown = True
                 live_ncc = float(ncc_es)
@@ -3739,7 +3739,7 @@ class MultiStepOverlapGUI(GUIControls, tk.Tk):
             and self.last_overlap.secondary_simulated is not None
         ):
             self.axes[1, 1].imshow(self.last_overlap.secondary_simulated, cmap="gray")
-            self.axes[1, 1].set_title(f"Residual-indexed Simulation | KP NCC={self.last_overlap.secondary_ncc_kp:.4f}")
+            self.axes[1, 1].set_title(self._simulation_title(f"Residual-indexed Simulation | KP NCC={self.last_overlap.secondary_ncc_kp:.4f}", idx, result=self.last_overlap, secondary=True))
             self.axes[1, 1].set_axis_off()
         else:
             self.axes[1, 1].text(0.5, 0.5, "Index residual with step 2 dictionary", ha="center", va="center")
@@ -4087,7 +4087,7 @@ class MultiStepOverlapGUI(GUIControls, tk.Tk):
             exp_ax.set_title("Experimental pattern")
             sim_ax.imshow(normalize_for_view(result.simulated), cmap="gray")
             pre = result.ncc_unfitted if result.ncc_unfitted is not None else float("nan")
-            sim_ax.set_title(f"Primary simulation — NCC {pre:.4f} → {result.ncc_es:.4f}")
+            sim_ax.set_title(self._simulation_title(f"Primary simulation — NCC {pre:.4f} → {result.ncc_es:.4f}", index, result=result))
             if result.gain_map is not None:
                 gain_ax.imshow(result.gain_map, cmap="viridis")
                 gain_ax.set_title("Fitted gain mask")
@@ -4105,7 +4105,7 @@ class MultiStepOverlapGUI(GUIControls, tk.Tk):
             if result.secondary_simulated is not None:
                 residual_sim_ax.imshow(normalize_for_view(result.secondary_simulated), cmap="gray")
                 match_label = "Refined residual simulation" if result.secondary_refined else "Residual simulation"
-                residual_sim_ax.set_title(f"{match_label} — KP NCC={result.secondary_ncc_kp:.4f}")
+                residual_sim_ax.set_title(self._simulation_title(f"{match_label} — KP NCC={result.secondary_ncc_kp:.4f}", index, result=result, secondary=True))
             else:
                 residual_sim_ax.text(0.5, 0.5, "Index the residual with tab 2 first", ha="center", va="center")
                 residual_sim_ax.set_title("Residual simulated pattern")
@@ -4134,7 +4134,7 @@ class MultiStepOverlapGUI(GUIControls, tk.Tk):
             exp_ax.set_title("Experimental pattern")
             if preview_sim is not None and preview_ncc is not None:
                 sim_ax.imshow(normalize_for_view(preview_sim), cmap="gray")
-                sim_ax.set_title(f"Indexed solution simulation — NCC={preview_ncc:.4f}")
+                sim_ax.set_title(self._simulation_title(f"Indexed solution simulation — NCC={preview_ncc:.4f}", index))
             else:
                 sim_ax.text(0.5, 0.5, "Run step 2 indexing first", ha="center", va="center")
                 sim_ax.set_title("Indexed solution simulation")
@@ -4352,9 +4352,9 @@ class MultiStepOverlapGUI(GUIControls, tk.Tk):
                 primary_title += f"\ndEuler={_fmt(_max_abs_delta_deg(result.primary_euler_delta_deg), 3)} deg"
                 secondary_title += f"\ndEuler={_fmt(_max_abs_delta_deg(result.secondary_euler_delta_deg), 3)} deg"
             primary_sim_ax.imshow(normalize_for_view(result.primary_simulated), cmap="gray")
-            primary_sim_ax.set_title(primary_title)
+            primary_sim_ax.set_title(self._simulation_title(primary_title, index, result=result))
             secondary_sim_ax.imshow(normalize_for_view(result.secondary_simulated), cmap="gray")
-            secondary_sim_ax.set_title(secondary_title)
+            secondary_sim_ax.set_title(self._simulation_title(secondary_title, index, result=result, secondary=True))
             rabs = max(float(np.max(np.abs(result.residual))), 1e-8)
             final_residual_ax.imshow(
                 result.residual,
