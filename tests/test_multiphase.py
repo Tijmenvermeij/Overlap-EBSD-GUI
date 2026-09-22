@@ -15,6 +15,29 @@ from orix.crystal_map import Phase
 from multistep_overlap_ebsd.core import WorkflowSession, MasterPatternModel, DictionaryCache
 from multistep_overlap_ebsd.phases import PhaseRegistry, DictionaryAsset, DictionaryProvenance, file_fingerprint
 from multistep_overlap_ebsd.phase_export import write_h5_phase_catalog, ang_phase_header
+from multistep_overlap_ebsd.multiphase import phase_structure
+
+
+class PhaseStructureTests(unittest.TestCase):
+    def test_real_lattice_metadata(self):
+        from diffpy.structure import Lattice, Structure
+        phase = Phase(name="hexagonal", point_group="6/mmm",
+                      structure=Structure(lattice=Lattice(2, 2, 4, 90, 90, 120)))
+        np.testing.assert_allclose(phase_structure(phase)["lattice_angstrom_degrees"],
+                                   [2, 2, 4, 90, 90, 120])
+
+    def test_lattice_without_new_cell_parms_api(self):
+        from diffpy.structure import Lattice, Structure
+        class LegacyLattice(Lattice):
+            def __getattribute__(self, name):
+                if name == "cell_parms":
+                    raise AttributeError("'Lattice' object has no attribute 'cell_parms'")
+                return super().__getattribute__(name)
+        structure = Structure(lattice=LegacyLattice(2, 3, 4, 80, 90, 100))
+        phase = SimpleNamespace(structure=structure)
+        self.assertFalse(hasattr(structure.lattice, "cell_parms"))
+        np.testing.assert_allclose(phase_structure(phase)["lattice_angstrom_degrees"],
+                                   [2, 3, 4, 80, 90, 100])
 
 
 class RegistryTests(unittest.TestCase):
@@ -416,4 +439,4 @@ class ExternalAngTests(unittest.TestCase):
             xmap=orix.io.load(path)
             np.testing.assert_array_equal(xmap.phase_id,values[:,7])
             self.assertEqual(xmap.phases[7].point_group.name,'622')
-            np.testing.assert_allclose(xmap.phases[7].structure.lattice.cell_parms(),[2,2,4,90,90,120])
+            np.testing.assert_allclose(phase_structure(xmap.phases[7])["lattice_angstrom_degrees"],[2,2,4,90,90,120])

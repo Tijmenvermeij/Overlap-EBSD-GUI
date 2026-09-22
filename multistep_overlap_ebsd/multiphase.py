@@ -31,7 +31,11 @@ def phase_structure(phase) -> dict:
     structure = getattr(phase, "structure", None)
     lattice = getattr(structure, "lattice", None)
     if lattice is not None:
-        result["lattice_angstrom_degrees"] = [float(v) for v in lattice.cell_parms()]
+        # These properties work across diffpy versions, including releases
+        # predating cell_parms() (which used abcABG() instead).
+        result["lattice_angstrom_degrees"] = [
+            float(getattr(lattice, name)) for name in ("a", "b", "c", "alpha", "beta", "gamma")
+        ]
     if structure is not None:
         result["atoms"] = [dict(element=str(a.element), xyz=[float(v) for v in a.xyz],
                                  occupancy=float(a.occupancy)) for a in structure]
