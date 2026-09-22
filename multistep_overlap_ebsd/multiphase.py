@@ -259,7 +259,24 @@ class MultiPhaseSession:
         entry.active_dictionary.persistent = True
         return note
 
-    def load_phase_dictionary(self, key, path, *, allow_legacy=False):
+    def dictionary_pc_difference(self, key, path):
+        """Inspect a PC-only mismatch without loading patterns or changing state."""
+        from types import SimpleNamespace
+        with h5py.File(path, "r") as h5:
+            value = h5.attrs.get("phase_provenance_json")
+            if not value:
+                return None
+            provenance = DictionaryProvenance(**json.loads(value))
+            cache = SimpleNamespace(software_binning=int(h5.attrs["software_binning"]),
+                crop_extent=h5["crop_extent"][()].tolist(), pattern_shape=h5["patterns"].shape[-2:],
+                resolution_deg=float(h5.attrs["resolution_deg"]), pattern_dtype=np.dtype(h5["patterns"].dtype).name)
+        expected = self.phase_dictionary_provenance(key, cache)
+        if provenance.differs_only_in_pc(expected):
+            return (json.loads(provenance.settings_json)["pc_bruker"],
+                    json.loads(expected.settings_json)["pc_bruker"])
+        return None
+
+    def load_phase_dictionary(self, key, path, *, allow_legacy=False, accepted_pc_bruker=None):
         entry = self.phase_registry.by_key(key)
         with h5py.File(path, "r") as h5:
             value = h5.attrs.get("phase_provenance_json")
@@ -272,12 +289,13 @@ class MultiPhaseSession:
         view.dictionary_cache = None
         note = view.load_dictionary(path)
         cache = view.dictionary_cache
-        if provenance is not None and not provenance.compatible_with(self.phase_dictionary_provenance(key, cache)):
+        asset = DictionaryAsset(path=str(Path(path).resolve()), provenance=provenance,
+                                legacy_linked=allow_legacy, accepted_pc_bruker=accepted_pc_bruker)
+        if provenance is not None and not asset.compatible_with(self.phase_dictionary_provenance(key, cache)):
             raise ValueError("Dictionary simulation settings or crystal metadata are incompatible.")
         # Stored numeric IDs are relocatable; the owning phase key is authoritative.
         cache.phase_id = entry.output_id
         self.phase_dictionaries[key] = cache
-        asset = DictionaryAsset(path=str(Path(path).resolve()), provenance=provenance, legacy_linked=allow_legacy)
         entry.dictionaries.append(asset)
         entry.active_dictionary_key = asset.key
         self.phase_registry.search_revision += 1
@@ -566,7 +584,8 @@ class MultiPhaseSession:
                 self.attach_phase_master(entry.master_path, phase_key=entry.key, **energy_options)
                 if asset is not None and asset.persistent and Path(asset.path).is_file():
                     try:
-                        self.load_phase_dictionary(entry.key, asset.path, allow_legacy=asset.legacy_linked)
+                        self.load_phase_dictionary(entry.key, asset.path, allow_legacy=asset.legacy_linked,
+                                                   accepted_pc_bruker=asset.accepted_pc_bruker)
                         # Loading is transactional and may add an asset: retain saved version identity.
                         entry.dictionaries.pop()
                         entry.active_dictionary_key = asset.key

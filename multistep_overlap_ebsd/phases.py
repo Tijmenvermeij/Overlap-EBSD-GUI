@@ -42,6 +42,14 @@ class DictionaryProvenance:
     def compatible_with(self, other: DictionaryProvenance) -> bool:
         return bool(self.master_sha256) and self == other
 
+    def differs_only_in_pc(self, other: DictionaryProvenance) -> bool:
+        if (not self.master_sha256 or self.master_sha256 != other.master_sha256
+                or self.structure_sha256 != other.structure_sha256 or self.schema != other.schema):
+            return False
+        saved, current = json.loads(self.settings_json), json.loads(other.settings_json)
+        saved_pc, current_pc = saved.pop("pc_bruker", None), current.pop("pc_bruker", None)
+        return saved_pc is not None and current_pc is not None and saved_pc != current_pc and saved == current
+
 
 @dataclass
 class DictionaryAsset:
@@ -51,6 +59,16 @@ class DictionaryAsset:
     # Explicit linking permits legacy assets, but never calls them verified.
     legacy_linked: bool = False
     persistent: bool = True
+    accepted_pc_bruker: list[float] | None = None
+
+    def compatible_with(self, expected: DictionaryProvenance) -> bool:
+        if self.provenance is None:
+            return False
+        return self.provenance.compatible_with(expected) or (
+            self.accepted_pc_bruker is not None
+            and self.accepted_pc_bruker == json.loads(expected.settings_json).get("pc_bruker")
+            and self.provenance.differs_only_in_pc(expected)
+        )
 
 
 @dataclass
@@ -81,7 +99,7 @@ class PhaseEntry:
             return "Legacy / unverified"
         if asset.provenance.master_sha256 != self.master_sha256:
             return "Incompatible"
-        if expected is not None and not asset.provenance.compatible_with(expected):
+        if expected is not None and not asset.compatible_with(expected):
             return "Incompatible"
         return "Ready" if expected is not None else "Check settings"
 
@@ -150,7 +168,8 @@ class PhaseRegistry:
             if provenance is None or status != "Ready":
                 raise ValueError(f"{entry.name}: {status}.")
             bindings.append(PhaseRunBinding(entry.key, entry.output_id, entry.master_path,
-                                            entry.master_sha256, entry.active_dictionary.path, provenance))
+                                            entry.master_sha256, entry.active_dictionary.path,
+                                            entry.active_dictionary.provenance))
         if not bindings:
             raise ValueError("Enable at least one phase.")
         return tuple(bindings)

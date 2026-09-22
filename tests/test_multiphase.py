@@ -222,6 +222,55 @@ class CatalogTests(unittest.TestCase):
         with self.assertRaises(ValueError):ang_phase_header([],registry,{})
 
 class RealPipelineTests(unittest.TestCase):
+    def test_explicit_pc_acceptance_survives_save_reload_and_keeps_current_pc(self):
+        from orix.quaternion import Rotation
+        from test_h5_indexed_input import IndexedInputTests
+        helper = IndexedInputTests(); helper.setUp()
+        s = helper.session
+        try:
+            helper.write_input(); helper.load_input()
+            with patch('kikuchipy.load', return_value=helper.master):
+                s.attach_phase_master(str(helper.master_path))
+            entry = s.phase_registry.entries[-1]
+            for other in s.phase_registry.entries:
+                other.enabled = other is entry
+            with patch('orix.sampling.get_sample_fundamental', return_value=Rotation.from_euler([[.1,.2,.3],[.4,.5,.6]])):
+                s.generate_phase_dictionary(entry.key, resolution_deg=5., software_binning=1)
+            path = helper.root/'dictionary.h5'
+            s.save_phase_dictionary(entry.key, str(path))
+            original = entry.active_dictionary.provenance
+            s.current_pc_bruker[:, 0] += .001
+            saved, current = s.dictionary_pc_difference(entry.key, str(path))
+            with self.assertRaises(ValueError):
+                s.load_phase_dictionary(entry.key, str(path))
+            s.load_phase_dictionary(entry.key, str(path), accepted_pc_bruker=current)
+            self.assertEqual(entry.active_dictionary.provenance, original)
+            np.testing.assert_allclose(s.phase_dictionaries[entry.key].pc_bruker, saved)
+            np.testing.assert_allclose(s.current_pc_bruker[0], current)
+            s._enabled_phase_contexts()
+            s.dictionary_index_indices(np.array([0]), phase_id=entry.output_id, keep_n=1)
+            workflow = helper.root/'accepted.npz'
+            s.save_workflow_state(str(workflow))
+            restored = WorkflowSession()
+            try:
+                with patch('kikuchipy.load', side_effect=lambda p, **kw: helper.master if Path(p).resolve()==helper.master_path.resolve() else s.data.signal):
+                    note = restored.restore_workflow_state(str(workflow))
+                restored_entry = restored.phase_registry.by_key(entry.key)
+                self.assertEqual(restored_entry.active_dictionary.accepted_pc_bruker, current)
+                self.assertIn(entry.key, restored.phase_dictionaries, note)
+                restored._enabled_phase_contexts()
+            finally:
+                restored.close()
+            s.current_pc_bruker[:, 0] += .001
+            with self.assertRaises(ValueError): s._enabled_phase_contexts()
+            s.current_pc_bruker[:, 0] -= .001
+            s.data.detector_tilt_deg += 1
+            self.assertIsNone(s.dictionary_pc_difference(entry.key, str(path)))
+            with self.assertRaises(ValueError):
+                s.load_phase_dictionary(entry.key, str(path), accepted_pc_bruker=current)
+        finally:
+            helper.tearDown()
+
     def test_three_masters_dictionary_index_refine_and_checkpoint(self):
         import kikuchipy as kp
         from orix.quaternion import Rotation

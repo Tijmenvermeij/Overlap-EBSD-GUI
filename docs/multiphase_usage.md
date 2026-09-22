@@ -81,3 +81,12 @@ matching and orientation refinement use the configured worker limit. More phases
 increase runtime; experimental accuracy and performance on representative large
 multi-phase scans still need measurement. Synthetic tests do not establish
 experimental phase discrimination or Oxford AZtec re-import compatibility.
+
+When loading a saved dictionary, a difference only in the pattern center can be
+accepted explicitly in the confirmation dialog. The phase table then shows
+“Ready (PC accepted)”. Dictionary matching uses the saved patterns as an
+approximate starting point; orientation refinement uses the current scan PC.
+The original dictionary metadata is preserved. Acceptance is recorded in the
+workflow for that dictionary and current PC; a subsequent PC change requires
+acceptance again. Differences in master, crystal structure, or other simulation
+settings are not covered by this option.

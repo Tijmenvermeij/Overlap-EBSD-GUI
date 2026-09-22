@@ -123,6 +123,9 @@ class PhaseControls:
             cache = self.session.phase_dictionaries.get(entry.key)
             expected = self.session.phase_dictionary_provenance(entry.key, cache) if master and cache else None
             status = entry.status(expected)
+            if (status == "Ready" and expected is not None and entry.active_dictionary is not None
+                    and not entry.active_dictionary.provenance.compatible_with(expected)):
+                status = "Ready (PC accepted)"
             self.phase_table.insert("", "end", iid=entry.key,
                                     values=("☑" if entry.enabled else "☐", entry.name,
                                             "Loaded" if master else "Missing", status))
@@ -263,7 +266,26 @@ class PhaseControls:
             return
         path = filedialog.askopenfilename(title="Load dictionary for selected phase", filetypes=[("Dictionary", "*.h5 *.hdf5")])
         if path:
-            self._run_threaded(lambda: self.session.load_phase_dictionary(key, path),
+            accepted_pc = None
+            try:
+                difference = self.session.dictionary_pc_difference(key, path)
+            except Exception as exc:
+                messagebox.showerror("Load dictionary", str(exc), parent=self)
+                return
+            if difference is not None:
+                saved, current = difference
+                format_pc = lambda pc: ", ".join(f"{value:.8g}" for value in pc)
+                if not messagebox.askyesno(
+                    "Use dictionary with a different PC?",
+                    f"Only the pattern center differs.\n\nDictionary PC (Bruker): {format_pc(saved)}"
+                    f"\nCurrent PC (Bruker): {format_pc(current)}\n\n"
+                    "You can reuse this dictionary as an approximate starting point. "
+                    "Orientation refinement will use the current PC, but dictionary matching may be less accurate."
+                    "\n\nUse this dictionary anyway?", parent=self, icon="warning", default="no",
+                ):
+                    return
+                accepted_pc = current
+            self._run_threaded(lambda: self.session.load_phase_dictionary(key, path, accepted_pc_bruker=accepted_pc),
                                on_success=lambda _msg: self._refresh_phase_table())
 
     def _save_phase_dictionary(self):
