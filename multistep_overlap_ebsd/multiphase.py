@@ -15,6 +15,7 @@ import h5py
 import numpy as np
 
 from .phases import DictionaryAsset, DictionaryProvenance, PhaseRegistry
+from .cpu_indexing import cpu_job
 
 
 def phase_structure(phase) -> dict:
@@ -228,7 +229,8 @@ class MultiPhaseSession:
                         orientation_convention="kikuchipy Bunge radians", generator=1)
         return DictionaryProvenance.create(entry.master_sha256, phase_structure(master.phase), settings)
 
-    def generate_phase_dictionary(self, key, *, resolution_deg, software_binning, progress_callback=None):
+    @cpu_job
+    def generate_phase_dictionary(self, key, *, resolution_deg, software_binning, progress_callback=None, parallel_cores=0):
         entry = self.phase_registry.by_key(key)
         view = self._phase_context(key)
         # Generation may dispose its old cache. The live asset remains valid until success.

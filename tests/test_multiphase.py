@@ -162,6 +162,21 @@ class CompetitionTests(unittest.TestCase):
                 scores = self.session.last_residual_scores_map if residual else self.session.last_scores_map
                 np.testing.assert_allclose(scores.ravel(), self.scores[2])
 
+    def test_dictionary_generation_scopes_requested_worker_limit(self):
+        import dask
+        observed = []
+        def generate(**kwargs):
+            observed.append(dask.config.get('num_workers'))
+            raise InterruptedError('cancel generation')
+        view = SimpleNamespace(dictionary_cache=None, generate_dictionary=generate)
+        with dask.config.set(num_workers=2), patch.object(self.session, '_phase_context', return_value=view):
+            with self.assertRaises(InterruptedError):
+                self.session.generate_phase_dictionary(self.session.phase_registry.entries[0].key,
+                    resolution_deg=5., software_binning=1, parallel_cores=6)
+            self.assertEqual(dask.config.get('num_workers'), 2)
+        from multistep_overlap_ebsd.cpu_indexing import cpu_worker_count
+        self.assertEqual(observed, [cpu_worker_count(6)])
+
     def test_cancellation_keeps_only_complete_phase_competitions(self):
         def before_complete(value, message):
             if value > 20:

@@ -969,6 +969,7 @@ class ResidualBatchPayload:
     eulers_rad: np.ndarray
     pc_bruker: np.ndarray
     pc_custom: np.ndarray
+    phase_keys: tuple[str, ...] | None = None
 
 
 @dataclass
@@ -1724,6 +1725,40 @@ def _copy_patterns_to_up1(source_reader: UPPatternReader, output_path: Path) -> 
 
 
 _RESIDUAL_ROI_WORKER_STATE: dict[str, object] | None = None
+_PHASE_RESIDUAL_WORKER_ARGS = None
+_PHASE_RESIDUAL_WORKER_MASTERS = None
+_PHASE_RESIDUAL_WORKER_CACHE = None
+
+
+def _init_phase_residual_roi_worker(common_args, masters):
+    """Load each required master once per process, on first use."""
+    import dask
+    # Parallelism is across processes here; do not create a nested thread
+    # pool for each worker's small projection batches.
+    dask.config.set(scheduler="synchronous", num_workers=1)
+    global _PHASE_RESIDUAL_WORKER_ARGS, _PHASE_RESIDUAL_WORKER_MASTERS, _PHASE_RESIDUAL_WORKER_CACHE
+    _PHASE_RESIDUAL_WORKER_ARGS = common_args
+    _PHASE_RESIDUAL_WORKER_MASTERS = masters
+    _PHASE_RESIDUAL_WORKER_CACHE = {}
+
+
+def _compute_phase_residual_roi_batch(payload):
+    global _RESIDUAL_ROI_WORKER_STATE
+    if payload.phase_keys is None or len(payload.phase_keys) != len(payload.indices):
+        raise ValueError("Residual batch needs a master association for every point.")
+    results = [None] * len(payload.indices)
+    for key in dict.fromkeys(payload.phase_keys):
+        if key not in _PHASE_RESIDUAL_WORKER_CACHE:
+            _init_residual_roi_worker(*_PHASE_RESIDUAL_WORKER_MASTERS[key], *_PHASE_RESIDUAL_WORKER_ARGS[6:])
+            _PHASE_RESIDUAL_WORKER_CACHE[key] = _RESIDUAL_ROI_WORKER_STATE
+        _RESIDUAL_ROI_WORKER_STATE = _PHASE_RESIDUAL_WORKER_CACHE[key]
+        positions = np.flatnonzero(np.asarray(payload.phase_keys) == key)
+        batch = ResidualBatchPayload(**{name: getattr(payload, name)[positions] for name in
+            ("indices", "experimental", "eulers_rad", "pc_bruker", "pc_custom")})
+        for position, result in zip(positions, _compute_residual_roi_batch(batch), strict=True):
+            result.primary_phase_key = key
+            results[position] = result
+    return results
 
 
 def _init_residual_roi_worker(
@@ -7493,6 +7528,8 @@ class WorkflowSession(MultiPhaseSession):
                 eulers_rad=np.ascontiguousarray(eulers),
                 pc_bruker=np.ascontiguousarray(pc_bruker),
                 pc_custom=np.ascontiguousarray(pc_custom),
+                phase_keys=tuple(self._entry_for_phase_id(self.current_phases[idx]).key
+                                 for idx in batch_indices) if self.phase_masters else None,
             )
 
         try:
@@ -7500,7 +7537,7 @@ class WorkflowSession(MultiPhaseSession):
                 progress_callback(0.0, f"Preparing residual calculations for {selected.size} point(s)...")
 
             worker_count = self._parallel_worker_count(parallel_cores, int(selected.size))
-            use_parallel = not self.phase_masters and selected.size >= 4 and worker_count > 1
+            use_parallel = selected.size >= 4 and worker_count > 1
             if use_parallel:
                 bytes_per_pattern = max(
                     1,
@@ -7543,10 +7580,25 @@ class WorkflowSession(MultiPhaseSession):
                             fit_method,
                         )
                         ctx = get_context("spawn")
+                        initializer = _init_residual_roi_worker
+                        compute_batch = _compute_residual_roi_batch
+                        if self.phase_masters:
+                            masters = {}
+                            _, first_positions = np.unique(self.current_phases[selected], return_index=True)
+                            for position in first_positions:
+                                idx = selected[position]
+                                view = self._phase_context_for_index(int(idx))
+                                key = self._entry_for_phase_id(self.current_phases[idx]).key
+                                master = view.master
+                                masters[key] = (master.kind, master.path, master.energy_kv,
+                                                master.energy_mode, master.energy_values_kv, master.energy_weights)
+                            initializer = _init_phase_residual_roi_worker
+                            compute_batch = _compute_phase_residual_roi_batch
+                            initargs = (initargs, masters)
                         with ProcessPoolExecutor(
                             max_workers=worker_count,
                             mp_context=ctx,
-                            initializer=_init_residual_roi_worker,
+                            initializer=initializer,
                             initargs=initargs,
                         ) as pool:
                             # Do not materialize every experimental-pattern batch up
@@ -7563,7 +7615,7 @@ class WorkflowSession(MultiPhaseSession):
                                     batch = next(batch_iter)
                                 except StopIteration:
                                     return False
-                                futures.add(pool.submit(_compute_residual_roi_batch, build_payload(batch)))
+                                futures.add(pool.submit(compute_batch, build_payload(batch)))
                                 return True
 
                             for _ in range(min(max_in_flight, len(batches))):
@@ -7585,9 +7637,9 @@ class WorkflowSession(MultiPhaseSession):
                                     pass
                     except InterruptedError:
                         raise
-                    except Exception:
+                    except Exception as exc:
                         if progress_callback is not None:
-                            progress_callback(0.0, "Residual batching failed; falling back to serial processing...")
+                            progress_callback(0.0, f"Residual batching failed ({exc}); falling back to serial processing...")
                         run_sequential()
                 else:
                     run_sequential()

@@ -245,6 +245,7 @@ class PhaseControls:
                     parent=self, icon="warning", default="no",
                 ):
                     return
+        parallel_cores = int(self.parallel_cores_var.get())
         def action():
             notes = []
             for number, entry in enumerate(pending, start=1):
@@ -255,7 +256,7 @@ class PhaseControls:
                     self._post_ui(lambda: self._set_dictionary_progress(value, text))
                 progress(0, "Starting generation…")
                 notes.append(self.session.generate_phase_dictionary(entry.key, resolution_deg=spacing,
-                             software_binning=binning, progress_callback=progress))
+                             software_binning=binning, progress_callback=progress, parallel_cores=parallel_cores))
             return " ".join(notes) or "All enabled phase dictionaries are ready."
         self._run_threaded(action, on_success=lambda _msg: self._refresh_phase_table())
 
