@@ -511,6 +511,13 @@ class MultiPhaseSession:
                     view.residual_candidate_eulers_rad = np.full((self.data.count, k, 3), np.nan)
                     view.residual_candidate_eulers_rad[work] = candidates
                     view.residual_eulers_rad[work] = candidates[:, 0]
+                    for row, index in enumerate(work):
+                        if int(index) in view.residual_point_results:
+                            # The one-candidate path reads its seed from the
+                            # point result, not the candidate array.
+                            result = view.residual_point_results[int(index)]
+                            result.secondary_euler_rad = candidates[row, 0].copy()
+                            result.secondary_phase_key = entry.key
                     refined = view._batch_refine_residual_points(work, trust_euler_deg=trust_euler_deg,
                                                                  maxfev=maxfev, use_full_resolution=use_full_resolution)
                     values = [(r.index, r.secondary_euler_rad, r.secondary_ncc_kp, r) for r in refined]
@@ -703,6 +710,18 @@ class MultiPhaseSession:
                      to_hex((np.asarray(to_rgb(a.color)) + np.asarray(to_rgb(b.color)))/2))
                     for n,(a,b) in enumerate((a,b) for i,a in enumerate(entries) for b in entries[i:])]
         return []
+
+    def _mixture_worker_phase_context(self, indices):
+        # Send candidate metadata for this batch only, never scan-sized arrays
+        # or live master/dictionary handles.
+        def subset(stores):
+            return {key: {int(i): records[int(i)] for i in indices if int(i) in records}
+                    for key, records in stores.items()}
+        return dict(
+            entries=[dict(key=e.key, output_id=e.output_id, enabled=e.enabled) for e in self.phase_registry.entries],
+            primary={int(i): self._entry_for_phase_id(self.current_phases[i]).output_id for i in indices},
+            secondary={int(i): self._entry_for_phase_id(self.residual_phases[i]).output_id for i in indices},
+            primary_candidates=subset(self.phase_candidates), secondary_candidates=subset(self.residual_phase_candidates))
 
     def _compare_phase_pair_fits(self, index, initial, *, fit_maxiter, fit_popsize, fit_bounds, fit_method):
         """Bounded candidate search, with explicit diagnostic acceptance criteria.

@@ -66,6 +66,36 @@ class ParallelResidualPhaseTests(unittest.TestCase):
                             self.assertEqual(actual.primary_phase_key, expected.primary_phase_key)
                             np.testing.assert_allclose(actual.residual, expected.residual, atol=2e-5)
                             self.assertAlmostEqual(actual.ncc_es, expected.ncc_es, places=5)
+            # Exercise the full phase-pair search, including alternative phases,
+            # through the same real process pool as residual generation.
+            from copy import deepcopy
+            for phases in (1, 2, 3):
+                s.current_phases[:] = np.arange(6) % phases + 1
+                s.residual_phases[:] = (np.arange(6)+1) % phases + 1
+                s.residual_eulers_rad = s.current_eulers_rad.copy() + .02
+                for entry in s.phase_registry.entries:
+                    entry.enabled = entry.output_id <= phases
+                    for stores in (s.phase_candidates, s.residual_phase_candidates):
+                        stores[entry.key] = {i: (s.current_eulers_rad[i:i+1] + entry.output_id*.01, np.array([.5])) for i in range(6)}
+                for i, result in s.residual_point_results.items():
+                    result.secondary_euler_rad = s.residual_eulers_rad[i].copy()
+                    result.secondary_ncc_kp = .5
+                options = dict(fit_maxiter=2, fit_popsize=2)
+                s.compute_overlap_mixture_indices(np.arange(6), parallel_cores=1, **options)
+                expected = deepcopy(s.overlap_mixture_results)
+                progress = []
+                with patch.object(core, 'ProcessPoolExecutor', side_effect=pool):
+                    s.compute_overlap_mixture_indices(np.arange(6), parallel_cores=2,
+                        progress_callback=lambda value, message: progress.append(message), **options)
+                self.assertFalse(any('falling back' in msg for msg in progress), progress)
+                for i, old in expected.items():
+                    new = s.overlap_mixture_results[i]
+                    for name in ('primary_phase_key', 'secondary_phase_key', 'overlap_accepted', 'phase_pair_ambiguous'):
+                        self.assertEqual(getattr(new, name), getattr(old, name))
+                    for name in ('ncc_mixture', 'primary_coefficient', 'secondary_coefficient', 'single_component_ncc'):
+                        self.assertAlmostEqual(getattr(new, name), getattr(old, name), places=5)
+                    np.testing.assert_allclose(new.primary_euler_rad, old.primary_euler_rad)
+                    np.testing.assert_allclose(new.secondary_euler_rad, old.secondary_euler_rad)
         finally:
             helper.tearDown()
 

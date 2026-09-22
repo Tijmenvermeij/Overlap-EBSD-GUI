@@ -982,6 +982,7 @@ class OverlapMixtureBatchPayload:
     pc_custom: np.ndarray
     old_primary_ncc: np.ndarray
     old_secondary_ncc: np.ndarray
+    phase_context: dict | None = None
 
 
 @dataclass
@@ -1742,16 +1743,65 @@ def _init_phase_residual_roi_worker(common_args, masters):
     _PHASE_RESIDUAL_WORKER_CACHE = {}
 
 
+def _select_phase_worker_master(key):
+    global _RESIDUAL_ROI_WORKER_STATE
+    if key not in _PHASE_RESIDUAL_WORKER_CACHE:
+        _init_residual_roi_worker(*_PHASE_RESIDUAL_WORKER_MASTERS[key], *_PHASE_RESIDUAL_WORKER_ARGS[6:])
+        _PHASE_RESIDUAL_WORKER_CACHE[key] = _RESIDUAL_ROI_WORKER_STATE
+    _RESIDUAL_ROI_WORKER_STATE = _PHASE_RESIDUAL_WORKER_CACHE[key]
+
+
+def _compute_phase_mixture_roi_batch(payload):
+    """Run the same alternative-pair search and acceptance checks in workers."""
+    from types import SimpleNamespace
+    context = payload.phase_context
+    entries = [SimpleNamespace(**entry) for entry in context["entries"]]
+    by_id = {entry.output_id: entry for entry in entries}
+    proxy = SimpleNamespace(
+        current_phases=context["primary"], residual_phases=context["secondary"],
+        phase_registry=SimpleNamespace(entries=entries), phase_masters=_PHASE_RESIDUAL_WORKER_MASTERS,
+        phase_candidates=context["primary_candidates"], residual_phase_candidates=context["secondary_candidates"],
+        _entry_for_phase_id=lambda pid: by_id[int(pid)],
+    )
+    results = []
+    for position, idx in enumerate(payload.indices):
+        idx = int(idx)
+        def simulate(key, angle):
+            _select_phase_worker_master(key)
+            pc = payload.pc_bruker[position] if _RESIDUAL_ROI_WORKER_STATE["master_kind"] == "kikuchipy" else payload.pc_custom[position]
+            return _residual_roi_worker_simulated_pattern(angle, pc)
+        proxy._phase_context = lambda key, **kwargs: SimpleNamespace(
+            _simulate_pattern_for_euler=lambda index, angle: simulate(key, angle))
+        proxy._processed_pattern_at = lambda index: payload.experimental[position]
+        primary = by_id[context["primary"][idx]]
+        secondary = by_id[context["secondary"][idx]]
+        primary_raw = simulate(primary.key, payload.primary_eulers_rad[position])
+        secondary_raw = simulate(secondary.key, payload.secondary_eulers_rad[position])
+        state = _RESIDUAL_ROI_WORKER_STATE
+        weights = state["weights"]
+        proxy._overlap_weights = lambda: weights
+        options = {name: state[name] for name in ("fit_maxiter", "fit_popsize", "fit_bounds", "fit_method")}
+        row, col = divmod(idx, state["cols"])
+        old_primary, old_secondary = payload.old_primary_ncc[position], payload.old_secondary_ncc[position]
+        initial = _overlap_mixture_result_from_raw_patterns(idx, row, col,
+            payload.experimental[position], primary_raw, secondary_raw, weights,
+            primary_euler_rad=payload.primary_eulers_rad[position],
+            secondary_euler_rad=payload.secondary_eulers_rad[position],
+            old_primary_ncc=float(old_primary) if np.isfinite(old_primary) else None,
+            old_secondary_ncc=float(old_secondary) if np.isfinite(old_secondary) else None, **options)
+        result = MultiPhaseSession._compare_phase_pair_fits(proxy, idx, initial, **options)
+        results.append(replace(result, experimental=None, primary_simulated=None,
+            secondary_simulated=None, combined_simulated=None, residual=None, gain_map=None))
+    return results
+
+
 def _compute_phase_residual_roi_batch(payload):
     global _RESIDUAL_ROI_WORKER_STATE
     if payload.phase_keys is None or len(payload.phase_keys) != len(payload.indices):
         raise ValueError("Residual batch needs a master association for every point.")
     results = [None] * len(payload.indices)
     for key in dict.fromkeys(payload.phase_keys):
-        if key not in _PHASE_RESIDUAL_WORKER_CACHE:
-            _init_residual_roi_worker(*_PHASE_RESIDUAL_WORKER_MASTERS[key], *_PHASE_RESIDUAL_WORKER_ARGS[6:])
-            _PHASE_RESIDUAL_WORKER_CACHE[key] = _RESIDUAL_ROI_WORKER_STATE
-        _RESIDUAL_ROI_WORKER_STATE = _PHASE_RESIDUAL_WORKER_CACHE[key]
+        _select_phase_worker_master(key)
         positions = np.flatnonzero(np.asarray(payload.phase_keys) == key)
         batch = ResidualBatchPayload(**{name: getattr(payload, name)[positions] for name in
             ("indices", "experimental", "eulers_rad", "pc_bruker", "pc_custom")})
@@ -8267,10 +8317,11 @@ class WorkflowSession(MultiPhaseSession):
                 ),
                 old_primary_ncc=np.ascontiguousarray(old_primary_ncc[batch_positions]),
                 old_secondary_ncc=np.ascontiguousarray(old_secondary_ncc[batch_positions]),
+                phase_context=self._mixture_worker_phase_context(batch_indices) if self.phase_masters else None,
             )
 
         worker_count = self._parallel_worker_count(parallel_cores, int(selected.size))
-        use_parallel = not self.phase_masters and selected.size >= 4 and worker_count > 1
+        use_parallel = selected.size >= 4 and worker_count > 1
         if use_parallel:
             bytes_per_pattern = max(1, int(self.data.h * self.data.w * np.dtype(np.float32).itemsize))
             batch_target = max(1, int(np.ceil(selected.size / max(1, worker_count * 2))))
@@ -8311,10 +8362,18 @@ class WorkflowSession(MultiPhaseSession):
                         fit_method,
                     )
                     ctx = get_context("spawn")
+                    initializer = _init_residual_roi_worker
+                    compute_batch = _compute_overlap_mixture_roi_batch
+                    if self.phase_masters:
+                        masters = {key: (m.kind, m.path, m.energy_kv, m.energy_mode, m.energy_values_kv, m.energy_weights)
+                                   for key, m in self.phase_masters.items()}
+                        initializer = _init_phase_residual_roi_worker
+                        compute_batch = _compute_phase_mixture_roi_batch
+                        initargs = (initargs, masters)
                     with ProcessPoolExecutor(
                         max_workers=worker_count,
                         mp_context=ctx,
-                        initializer=_init_residual_roi_worker,
+                        initializer=initializer,
                         initargs=initargs,
                     ) as pool:
                         # Keep large ROI fits bounded just like the residual
@@ -8330,7 +8389,7 @@ class WorkflowSession(MultiPhaseSession):
                                 batch = next(batch_iter)
                             except StopIteration:
                                 return False
-                            futures.add(pool.submit(_compute_overlap_mixture_roi_batch, build_payload(batch)))
+                            futures.add(pool.submit(compute_batch, build_payload(batch)))
                             return True
 
                         for _ in range(min(max_in_flight, len(batches))):
@@ -8352,9 +8411,9 @@ class WorkflowSession(MultiPhaseSession):
                                 pass
                 except InterruptedError:
                     raise
-                except Exception:
+                except Exception as exc:
                     if progress_callback is not None:
-                        progress_callback(0.0, "Overlap mixture batching failed; falling back to serial processing...")
+                        progress_callback(0.0, f"Overlap mixture batching failed ({exc}); falling back to serial processing...")
                     run_sequential()
             else:
                 run_sequential()

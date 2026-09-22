@@ -162,6 +162,28 @@ class CompetitionTests(unittest.TestCase):
                 scores = self.session.last_residual_scores_map if residual else self.session.last_scores_map
                 np.testing.assert_allclose(scores.ravel(), self.scores[2])
 
+    def test_single_residual_candidate_refinement_uses_each_phase_seed(self):
+        from multistep_overlap_ebsd.core import OverlapPointResult
+        self.session._residual_signal_from_indices = lambda indices, **kw: np.asarray(indices)
+        self.index(residual=True, keep_n=1)
+        for index in range(4):
+            self.session.residual_point_results[index] = OverlapPointResult(
+                index=index, row=index//2, col=index%2, ncc_es=.5, scale=.5,
+                ncc_residual_sim=0., experimental=None, simulated=None, residual=None,
+                secondary_euler_rad=np.zeros(3))
+        seen=[]
+        def refine(view, work, **kwargs):
+            for index in work:
+                result=view.residual_point_results[int(index)]
+                np.testing.assert_array_equal(result.secondary_euler_rad, view.residual_eulers_rad[index])
+                self.assertEqual(result.secondary_phase_key, view.phase_registry.by_output_id(view.dictionary_cache.phase_id).key)
+                result.secondary_ncc_kp=.6
+            seen.append(view.dictionary_cache.phase_id)
+            return list(view.residual_point_results.values())
+        with patch.object(WorkflowSession, '_batch_refine_residual_points', refine):
+            self.session.refine_enabled_phases(np.arange(4), residual=True)
+        self.assertEqual(seen, [2,7,19])
+
     def test_dictionary_generation_scopes_requested_worker_limit(self):
         import dask
         observed = []
