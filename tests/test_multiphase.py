@@ -249,6 +249,12 @@ class RealPipelineTests(unittest.TestCase):
             with h5py.File(helper.input,'r+') as h5:
                 values=np.stack([np.rint(255*(a-a.min())/(a.max()-a.min())).astype(np.uint8) for a in simulated])
                 h5['7/EBSD/Data/Processed Patterns'][...]=values.reshape(2,3,8,10)
+            # Selected-point indexing followed by automatic refinement must
+            # also work before any batch has warmed up the compiled optimizer.
+            s.dictionary_index_indices(np.array([0]),phase_id=1,keep_n=2,parallel_cores=1)
+            s.refine_orientations_indices(np.array([0]),phase_id=1,maxfev=5,parallel_cores=1)
+            self.assertEqual(s.current_phases[0],1)
+            self.assertGreater(s.last_scores_map.flat[0],.99)
             s.dictionary_index_indices(np.arange(6),phase_id=1,keep_n=2,parallel_cores=1)
             np.testing.assert_array_equal(s.current_phases,[1,2,3,1,2,3])
             s.refine_orientations_indices(np.arange(6),phase_id=1,maxfev=5,parallel_cores=1)

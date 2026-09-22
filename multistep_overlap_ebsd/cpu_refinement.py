@@ -26,7 +26,11 @@ def _orientation_objective(x, parameters):
         parameters[0], simulated, parameters[7]))
 
 
-@njit(cache=True, nogil=True)
+# This higher-order kernel specializes on a live objective dispatcher. Numba's
+# disk cache can retain dead dispatcher references across processes and fail
+# while saving a new specialization ("underlying object has vanished"). Keep
+# compiled specializations in memory, without reading/writing that disk cache.
+@njit(cache=False, nogil=True)
 def _nelder_mead(objective, x0, parameters, lower, upper, maxfev, maxiter, xatol, fatol):
     """Bounded simplex search, including SciPy's evaluation-budget semantics."""
     dimensions = len(x0)
