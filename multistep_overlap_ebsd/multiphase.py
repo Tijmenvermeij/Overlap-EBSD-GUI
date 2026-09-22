@@ -328,13 +328,16 @@ class MultiPhaseSession:
         completed = []
         # Orientation candidates are small; simulated/experimental images remain batched.
         batch_size = max(1, min(256, (64 * 1024**2) // max(1, self.data.h * self.data.w * 4)))
+        batch_count = (len(selected) + batch_size - 1) // batch_size
         for start in range(0, len(selected), batch_size):
+            batch_number = start // batch_size + 1
             batch = selected[start:start + batch_size]
             outcomes = []
             for number, entry in enumerate(entries):
                 if progress_callback:
                     progress_callback(100 * (start + number * len(batch) / len(entries)) / len(selected),
-                                      f"Matching {entry.name}: points {start + 1}–{start + len(batch)}/{len(selected)}")
+                                      f"Batch {batch_number}/{batch_count} — matching {entry.name} "
+                                      f"(phase {number + 1}/{len(entries)}): points {start + 1}–{start + len(batch)}/{len(selected)}")
                 view = self._phase_context(entry.key, private_arrays=False)
                 cache = view.dictionary_cache
                 signal = (self._residual_signal_from_indices(batch, dictionary_cache=cache)
@@ -344,7 +347,8 @@ class MultiPhaseSession:
                 def matching_progress(fraction):
                     if progress_callback:
                         progress_callback(100 * (start + (number + fraction) * len(batch) / len(entries)) / len(selected),
-                                          f"Matching {entry.name}: {fraction:.0%} of current batch")
+                                          f"Batch {batch_number}/{batch_count} — matching {entry.name} "
+                                          f"(phase {number + 1}/{len(entries)}): {fraction:.0%} of current batch")
                 eulers, scores, candidates, candidate_scores = view._dictionary_index_kikuchipy_signal(
                     signal, cache=cache, keep_n=min(keep_n, cache.rotation_count), signal_mask=mask,
                     n_per_iteration=view._dictionary_n_per_iteration(cache, mask), progress_callback=matching_progress)
@@ -404,7 +408,9 @@ class MultiPhaseSession:
             self._invalidate_orientation_cache()
             self._invalidate_residual_color_cache()
             if progress_callback:
-                progress_callback(100 * len(completed) / len(selected), f"Indexed {len(completed)}/{len(selected)} points across {len(entries)} phases")
+                progress_callback(100 * len(completed) / len(selected),
+                                  f"Batch {batch_number}/{batch_count} complete — indexed "
+                                  f"{len(completed)}/{len(selected)} points across {len(entries)} phases")
         return f"Indexed {len(selected)} points across {len(entries)} enabled phases."
 
     def _entry_for_phase_id(self, phase_id):
