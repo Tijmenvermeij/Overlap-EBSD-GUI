@@ -1603,7 +1603,9 @@ class MultiStepOverlapGUI(GUIControls, tk.Tk):
             self.primary_roi_export_path_var.set(self._default_roi_export_path(residual=False))
             self.residual_roi_export_path_var.set(self._default_roi_export_path(residual=True))
             self.overlap_optimization_export_path_var.set(self._default_overlap_optimization_export_path())
-            self._refresh_default_workflow_path()
+            # A newly loaded scan must not inherit a restored or Save-as path
+            # belonging to the previous scan (including for automatic saves).
+            self._refresh_default_workflow_path(force=True)
             imported_count = int(np.count_nonzero(self.session.indexed_mask))
             if imported_count and not self.session.indexed_mask[0]:
                 first_indexed = int(np.flatnonzero(self.session.indexed_mask)[0])

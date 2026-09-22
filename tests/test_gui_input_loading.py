@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from pathlib import Path
 import numpy as np
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -15,6 +16,24 @@ def value(initial):
 
 
 class GuiInputLoadingTests(unittest.TestCase):
+    def test_new_input_resets_previous_workflow_save_destination(self):
+        for previous_auto in (None, '/tmp/old_overlap_workflow.npz'):
+            with self.subTest(previous_auto=previous_auto):
+                gui = SimpleNamespace(
+                    pattern_path_var=value('/tmp/new.h5oina'),
+                    workflow_path_var=value('/tmp/custom_old_workflow.npz'),
+                    _auto_workflow_path=previous_auto,
+                    _source_stem=MultiStepOverlapGUI._source_stem,
+                )
+                gui._default_workflow_path = lambda: MultiStepOverlapGUI._default_workflow_path(gui)
+                # Ordinary refreshes preserve Save-as choices within a scan.
+                MultiStepOverlapGUI._refresh_default_workflow_path(gui)
+                gui.workflow_path_var.set.assert_not_called()
+                MultiStepOverlapGUI._refresh_default_workflow_path(gui, force=True)
+                expected = str(Path('/tmp/new_overlap_workflow.npz').resolve())
+                gui.workflow_path_var.set.assert_called_once_with(expected)
+                self.assertEqual(gui._auto_workflow_path, expected)
+
     def test_load_buttons_choose_files_and_load_only_after_selection(self):
         for path, orientation, loads in (
             ('/tmp/input.h5oina', None, True), ('/tmp/input.up1', '/tmp/input.ang', True),
@@ -127,6 +146,7 @@ class GuiInputLoadingTests(unittest.TestCase):
                      'residual_roi_export_path_var', 'overlap_optimization_export_path_var'):
             setattr(gui, name, value('NCC'))
         message = MultiStepOverlapGUI._finish_input_load(gui, 'Loaded saved NCC.')
+        gui._refresh_default_workflow_path.assert_called_once_with(force=True)
         gui._set_reindex_progress.assert_called_once_with(
             100., 'Loaded 3/6 indexed primary point(s); DI can be skipped.')
         self.assertIn('Load the master pattern', message)
