@@ -102,6 +102,9 @@ class GUIControls(PhaseControls):
             tab = ttk.Frame(self.workflow_notebook)
             self.workflow_notebook.add(tab, text=title)
             builder(tab)
+        self.btn_phase_maps = ttk.Button(self.workflow_notebook, text="Phase maps / IPF keys…",
+                                         command=self._show_phase_maps)
+        self.btn_phase_maps.place(relx=1.0, x=-12, y=8, anchor="ne")
         self.workflow_notebook.bind("<<NotebookTabChanged>>", self._on_workspace_changed)
         ttk.Label(self, textvariable=self.status_var, style="Status.TLabel", anchor="w").pack(fill=tk.X)
         self.bind("<Control-s>", lambda _e: self._save_workflow())
@@ -296,7 +299,6 @@ class GUIControls(PhaseControls):
         self._hint(parent, variable=self.phase_summary_var)
         self._hint(parent, "Indexing searches all enabled phases using the dictionaries linked in tab 1.")
         self._action(parent, "Edit phases / dictionaries…", lambda: self.workflow_notebook.select(0))
-        self._action(parent, "Phase maps / IPF keys…", self._show_phase_maps)
         self._keep_imported_phases_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(parent, text="Keep imported phase assignments", variable=self._keep_imported_phases_var,
                         command=self._set_keep_imported_phases).pack(anchor="w")
@@ -323,7 +325,6 @@ class GUIControls(PhaseControls):
         self._build_plot_area(right, 2, fixed_ipf=True)
 
     def _build_overlap_tab(self, parent):
-        self._action(parent, "Phase maps / IPF keys…", self._show_phase_maps)
         self._hint(parent, "Retained matches, refinement range, evaluation limit and full-resolution choice are shared with tab 2.")
         self._action(parent, "Edit shared indexing settings…", lambda: self._show_section(self._refinement_section, 1))
         self._field(parent, "Minimum primary NCC for residual work", self.overlap_min_ncc_var)
@@ -403,7 +404,6 @@ class GUIControls(PhaseControls):
         self._build_plot_area(right, 3, fixed_ipf=True)
 
     def _build_overlap_optimization_tab(self, parent):
-        self._action(parent, "Phase maps / IPF keys…", self._show_phase_maps)
         self._field(parent, "Minimum residual NCC for mixture fitting", self.overlap_mixture_residual_ncc_var)
         self._build_fit_method_controls(parent)
         self._action(parent, "Fit mixture for ROI", self._fit_overlap_mixture_roi)

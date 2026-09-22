@@ -70,7 +70,6 @@ class PhaseControls:
         self._action(box, "Add new phase (master pattern)", lambda: self._choose_phase_master(add=True))
         self._action(box, "Link master to selected phase…", self._choose_phase_master)
         self._action(box, "Edit phase name / color…", self._edit_phase_appearance)
-        self._action(box, "Phase maps / IPF keys…", self._show_phase_maps)
 
         self._field(box, "Shared orientation spacing (°)", self.di_res_deg_var)
         self._field(box, "Shared dictionary binning", self.di_binning_var)
