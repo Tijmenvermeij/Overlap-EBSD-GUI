@@ -322,6 +322,12 @@ class MultiStepOverlapGUI(GUIControls, tk.Tk):
         toolbar = NavigationToolbar2Tk(canvas, parent, pack_toolbar=False)
         toolbar.update()
         toolbar.pack(fill=tk.X)
+        phase_legend = None
+        if view_index in (1, 2, 3):
+            phase_legend = tk.Canvas(top, height=25, width=1, highlightthickness=0,
+                                     background=ttk.Style().lookup("TFrame", "background") or "#ffffff")
+            phase_legend.bind("<MouseWheel>", lambda event, legend=phase_legend:
+                              legend.xview_scroll(-1 if event.delta > 0 else 1, "units"))
         canvas.mpl_connect("button_press_event", lambda event, i=view_index: self._on_plot_click(event, i))
         canvas.mpl_connect("motion_notify_event", lambda event, i=view_index: self._on_plot_motion(event, i))
         canvas.mpl_connect("button_release_event", lambda event, i=view_index: self._on_plot_release(event, i))
@@ -333,6 +339,7 @@ class MultiStepOverlapGUI(GUIControls, tk.Tk):
             "ipf_combo": ipf_combo,
             "colorbar": None,
             "toolbar": toolbar,
+            "phase_legend": phase_legend,
         }
         if view_index == 0:
             self.map_layer_combo = combo
@@ -3550,6 +3557,7 @@ class MultiStepOverlapGUI(GUIControls, tk.Tk):
         if not self.busy:
             self._sync_pattern_conditioning_for_refresh()
         view = self._plot_views[view_index]
+        self._refresh_phase_legend(view)
         if self.session.data is None:
             self._draw_instruction("Load data and master pattern to start.")
             self._set_info_lines(["Load data and master pattern to start."])

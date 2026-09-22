@@ -5,6 +5,28 @@ from tkinter import ttk, filedialog, messagebox
 
 
 class PhaseControls:
+    def _refresh_phase_legend(self, view):
+        legend = view.get("phase_legend")
+        if legend is None:
+            return
+        if self.solution_map_var.get() != "Phase maps":
+            legend.pack_forget()
+            return
+        legend.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(12, 4))
+        entries = self.session.phase_registry.entries
+        signature = tuple((entry.output_id, entry.name, entry.color) for entry in entries)
+        if getattr(legend, "_phase_signature", None) == signature:
+            return
+        legend._phase_signature = signature
+        legend.delete("all")
+        x = 4
+        for entry in entries:
+            legend.create_rectangle(x, 7, x+12, 19, fill=entry.color, outline="#777777")
+            label = legend.create_text(x+18, 13, text=f"{entry.name} [{entry.output_id}]", anchor="w")
+            x = legend.bbox(label)[2] + 18
+        legend.configure(scrollregion=(0, 0, x, 25))
+        legend.xview_moveto(0)
+
     def _selected_solution_map(self):
         direction, label = self._selected_ipf_direction()
         return direction, "phase map" if self.solution_map_var.get() == "Phase maps" else label
