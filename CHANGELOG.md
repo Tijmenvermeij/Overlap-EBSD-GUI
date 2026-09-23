@@ -1,22 +1,14 @@
 # Release notes
 
-## Unreleased
+## 0.2 — 2026-09-23
 
-- Select an indexed inspection point when importing partial H5OINA indexing so the simulation appears after master loading; show the actual reason when a preview is unavailable. Input and master Load buttons now select and load files directly. Expose dictionary saving in the main tab 2 controls and add a tab 3 action for residual analysis followed by tab 4 mixture fitting, preserving shared settings, thresholds and autosaves.
-- Recognize H5OINA Pattern Matching NCC as existing primary indexing on fresh input load, including files without GUI export metadata. Previously residual patterns and their saved orientations become the new primary input; no parent residual/mixture state is imported. Preserve imported indexing when attaching the first master and loading a dictionary with the same energy settings, so Step 3 can extract/index a further overlap without primary DI. Validate score counts, phases, orientations and export masks, and show the imported point count in Step 2.
-- Prioritize computation over map refresh in all steps: use full memory-bounded batches, throttle expensive previews toward 1% overhead, draw only the visible tab, and remove forced redraws at combined-workflow stage transitions. Refinement batches no longer shrink toward a five-second refresh target.
-- Compile the primary/residual orientation Nelder–Mead loop and reuse detector direction cosines when all PCs are equal. Keep Kikuchipy's projection, NCC and public refinement API, all candidate seeds, trust regions and evaluation limits. A 1,536-point primary sample with six cores improved from 24.61 to 18.62 seconds at full resolution; binned refinement improved from 11.38 to 4.52 seconds (two-run means). Compared orientations and scores were exactly equal.
-- Speed up Step 3 residual refinement by generating inspection simulations only for the selected point. On 320 residuals with five candidates and ten cores, that earlier improvement reduced refinement from 11.83 to 2.92 seconds with exactly equal orientations, scores and selected-point images.
-- Show current/total batches throughout primary/residual dictionary indexing and orientation refinement, plus current point ranges/total. Calibration, residual fitting, mixture fitting and dictionary generation retain completed/total counts.
-- Extend the global CPU worker limit to primary/residual dictionary indexing and orientation/PC refinement, including selected points and combined workflows.
-- Index with aligned dictionary blocks, reusable float32 NCC normalization statistics, prepared experimental batches and a single top-candidate selection. Preserve progress/cancellation within dictionary scans without shrinking batches to a few patterns. Exact score ties use the lowest dictionary index; undefined NCC values remain NaN.
-- Deduplicate repeated refinement seeds, reuse the selected master energy and adapt navigation chunks to the number of candidate fits and workers. Preserve all distinct candidate seeds and the existing optimization settings.
-- Speed up Step 3 batch preparation after workflow loading: reconstruct residuals with batched input reads and projections, reuse the selected master, and skip unused inspection images. Preserve existing cached rows and report progress/cancellation between reconstruction batches. A 3,000-point batch on the supplied workflow improved from 82.45 to 2.10 seconds with exactly equal residual patterns.
-- Add a shared Steps 3–4 fitting selector: blur then gain (default), blur then gain plus joint refinement, and joint search. Preserve the selection in workflows and Step 4 export settings.
-- Reduce primary gain fitting analytically where bounds permit; cache Gaussian blurs, coordinates and weighted moments. Step 4 retains its shared gain map and nonnegative mixture coefficients. Optional joint refinement retains the staged result if the final reconstructed residual would worsen.
-- Read H5OINA batches directly from verified pattern datasets, preserving conditioning and selection order. Batch worker projections with individual PCs and retain the selected master energy in each worker.
-- Store exact float32 residuals in a temporary disk cache and bound inspection images in both steps. Transfer compact worker results, read cached residuals in batches, and release temporary files when sessions are replaced or closed.
-- On the supplied Cu workflow, an 80-point residual-construction sample on 10 cores improved from 6.16 to 19.66 patterns/s including startup. Six Step 4 fits improved from 7.30 to 1.28 seconds with the default staged method. These are sample timings; see [validation details](docs/cpu_performance.md).
+- Multi-phase primary and residual indexing with linked master patterns and dictionaries in tab 1; two-component fits can use the same or different phases.
+- Phase maps, per-phase IPF keys and phase-labelled pattern previews. Saved workflows and H5OINA exports retain phase identities.
+- Faster dictionary indexing and refinement; phase-aware parallel residual generation and mixture fitting. Default worker count is now 6.
+- Tab 4 exports fitted primary/residual H5OINA solutions with full-range patterns. Non-overlap residual pixels are black.
+- Fixes for workflow save paths, dictionary compatibility warnings, residual refinement seeds and exported lattice units.
+
+Development and testing assisted by OpenAI Codex. See the [multi-phase audit](docs/multiphase_gui_audit_2026-09-22.md) for validation and limits. Mixtures remain limited to two components per pixel.
 
 ## 0.1 — 2026-09-09
 
